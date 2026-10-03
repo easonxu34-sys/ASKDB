@@ -1,0 +1,56 @@
+name: orders
+table_reference:
+  catalog: ''
+  schema: askdb_tpcc
+  table: bmsql_oorder
+columns:
+- name: o_w_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 仓库ID
+- name: o_d_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 地区ID
+- name: o_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 订单ID
+- name: o_c_id
+  type: INT
+  not_null: true
+  properties:
+    description: 客户ID
+- name: o_carrier_id
+  type: INT
+  not_null: false
+  properties:
+    description: 承运商ID
+- name: o_ol_cnt
+  type: INT
+  not_null: true
+  properties:
+    description: 订单明细数量
+- name: o_all_local
+  type: TINYINT
+  not_null: true
+  properties:
+    description: 是否全部本地供货
+- name: o_entry_d
+  type: DATETIME
+  not_null: true
+  properties:
+    description: 下单时间
+primary_key:
+- o_w_id
+- o_d_id
+- o_id
+cached: false
+properties:
+  description: 销售订单

@@ -1,0 +1,56 @@
+name: payment_history
+table_reference:
+  catalog: ''
+  schema: askdb_tpcc
+  table: bmsql_history
+columns:
+- name: hist_id
+  type: BIGINT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 历史记录ID
+- name: h_c_id
+  type: INT
+  not_null: true
+  properties:
+    description: 客户ID
+- name: h_c_d_id
+  type: INT
+  not_null: true
+  properties:
+    description: 客户地区ID
+- name: h_c_w_id
+  type: INT
+  not_null: true
+  properties:
+    description: 客户仓库ID
+- name: h_d_id
+  type: INT
+  not_null: true
+  properties:
+    description: 付款地区ID
+- name: h_w_id
+  type: INT
+  not_null: true
+  properties:
+    description: 付款仓库ID
+- name: h_date
+  type: DATETIME
+  not_null: true
+  properties:
+    description: 付款时间
+- name: h_amount
+  type: DECIMAL(12, 2)
+  not_null: true
+  properties:
+    description: 付款金额
+- name: h_data
+  type: VARCHAR(64)
+  not_null: false
+  properties:
+    description: 付款备注
+primary_key: hist_id
+cached: false
+properties:
+  description: 客户付款历史

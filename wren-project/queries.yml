@@ -1,0 +1,6 @@
+# Curated NL-SQL pairs for this project.
+# These are auto-loaded into memory on `wren memory index`.
+# Use `wren memory dump` to export pairs from memory to this file.
+# Format: same as `wren memory dump` output.
+version: 1
+pairs: []

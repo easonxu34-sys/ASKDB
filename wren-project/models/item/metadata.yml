@@ -1,0 +1,36 @@
+name: item
+table_reference:
+  catalog: ''
+  schema: askdb_tpcc
+  table: bmsql_item
+columns:
+- name: i_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 商品ID
+- name: i_name
+  type: VARCHAR(64)
+  not_null: true
+  properties:
+    description: 商品名称
+- name: i_price
+  type: DECIMAL(10, 2)
+  not_null: true
+  properties:
+    description: 商品单价
+- name: i_data
+  type: VARCHAR(128)
+  not_null: false
+  properties:
+    description: 商品描述
+- name: i_im_id
+  type: INT
+  not_null: false
+  properties:
+    description: 商品图片ID
+primary_key: i_id
+cached: false
+properties:
+  description: 商品

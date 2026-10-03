@@ -1,0 +1,31 @@
+name: new_order
+table_reference:
+  catalog: ''
+  schema: askdb_tpcc
+  table: bmsql_new_order
+columns:
+- name: no_w_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 仓库ID
+- name: no_d_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 地区ID
+- name: no_o_id
+  type: INT
+  not_null: true
+  is_primary_key: true
+  properties:
+    description: 订单ID
+primary_key:
+- no_w_id
+- no_d_id
+- no_o_id
+cached: false
+properties:
+  description: 待处理新订单

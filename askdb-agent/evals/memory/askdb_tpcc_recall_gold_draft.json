@@ -1,0 +1,1561 @@
+{
+  "schema_version": 1,
+  "dataset_status": "draft_requires_review_and_scoring",
+  "purpose": "offline lexical recall evaluation only; never load into application memory",
+  "source": {
+    "jdbc_url": "jdbc:mysql://localhost:3306/askdb_tpcc",
+    "connector_type": "mysql",
+    "wren_project": "wren-project"
+  },
+  "bindings": {
+    "target_data_source_id": "offline:askdb_tpcc",
+    "target_wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+    "target_mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+    "target_connector_type": "mysql",
+    "control_data_source_id": "offline:synthetic_control_source",
+    "control_wren_revision_id": "offline:synthetic_control_source:fixture",
+    "control_mdl_digest": "ae7531bdd1c3fb3d6eae5590ee5a3cbcbcf69369dd2bbed3ad019f24fecfc934"
+  },
+  "case_counts": {
+    "total": 52,
+    "schema_rule": 20,
+    "query_example": 22,
+    "no_match_or_isolation": 10
+  },
+  "documents": [
+    {
+      "id": "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "customer",
+      "terms": [
+        "bmsql_customer",
+        "c_balance",
+        "c_city",
+        "c_credit",
+        "c_credit_lim",
+        "c_d_id",
+        "c_data",
+        "c_delivery_cnt",
+        "c_discount",
+        "c_first",
+        "c_id",
+        "c_last",
+        "c_middle",
+        "c_payment_cnt",
+        "c_phone",
+        "c_since",
+        "c_state",
+        "c_street_1",
+        "c_street_2",
+        "c_w_id",
+        "c_ytd_payment",
+        "c_zip",
+        "customer"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_customer\nDescription: 客户\nColumn: c_w_id (INT) — 仓库ID\nColumn: c_d_id (INT) — 地区ID\nColumn: c_id (INT) — [已脱敏记录标识]: c_discount (DECIMAL(6, 4)) — 客户折扣\nColumn: c_credit (CHAR(2)) — 信用类型\nColumn: c_last (VARCHAR(32)) — 姓\nColumn: c_first (VARCHAR(32)) — 名\nColumn: c_credit_lim (DECIMAL(14, 2)) — 信用额度\nColumn: c_balance (DECIMAL(14, 2)) — 账户余额\nColumn: c_ytd_payment (DECIMAL(14, 2)) — 年度付款额\nColumn: c_payment_cnt (INT) — 付款次数\nColumn: c_delivery_cnt (INT) — 收货次数\nColumn: c_street_1 (VARCHAR(64)) — 地址1\nColumn: c_street_2 (VARCHAR(64)) — 地址2\nColumn: c_city (VARCHAR(32)) — 城市\nColumn: c_state (VARCHAR(16)) — 省份/州\nColumn: c_zip (VARCHAR(16)) — 邮编\nColumn: c_phone (VARCHAR(32)) — 电话\nColumn: c_since (DATETIME) — 成为客户时间\nColumn: c_middle (CHAR(2)) — 中间名\nColumn: c_data (VARCHAR(255)) — 客户备注",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "2b101ff0fb2ee0a27611d87ef172943b874601f3726a9b76eeb73968e3e3ecb1",
+      "sql_template": null
+    },
+    {
+      "id": "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "district",
+      "terms": [
+        "bmsql_district",
+        "d_city",
+        "d_id",
+        "d_name",
+        "d_next_o_id",
+        "d_state",
+        "d_street_1",
+        "d_street_2",
+        "d_tax",
+        "d_w_id",
+        "d_ytd",
+        "d_zip",
+        "district"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_district\nDescription: 仓库下属销售地区\nColumn: d_w_id (INT) — 所属仓库ID\nColumn: d_id (INT) — 地区ID\nColumn: d_ytd (DECIMAL(14, 2)) — 年度累计销售额\nColumn: d_tax (DECIMAL(6, 4)) — 税率\nColumn: d_next_o_id (INT) — 下一[已脱敏记录标识]: d_name (VARCHAR(32)) — 地区名称\nColumn: d_street_1 (VARCHAR(64)) — 地址1\nColumn: d_street_2 (VARCHAR(64)) — 地址2\nColumn: d_city (VARCHAR(32)) — 城市\nColumn: d_state (VARCHAR(16)) — 省份/州\nColumn: d_zip (VARCHAR(16)) — 邮编",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "40f35841555d18702745c17019806417e32e81cbfe16de801c4daedd8d867397",
+      "sql_template": null
+    },
+    {
+      "id": "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "item",
+      "terms": [
+        "bmsql_item",
+        "i_data",
+        "i_id",
+        "i_im_id",
+        "i_name",
+        "i_price",
+        "item"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_item\nDescription: 商品\nColumn: i_id (INT) — 商品ID\nColumn: i_name (VARCHAR(64)) — 商品名称\nColumn: i_price (DECIMAL(10, 2)) — 商品单价\nColumn: i_data (VARCHAR(128)) — 商品描述\nColumn: i_im_id (INT) — 商品图片ID",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "b88701249daf6ebda9f96f44dc5759095da283bc1ccffa3826e8d0362015040e",
+      "sql_template": null
+    },
+    {
+      "id": "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "new_order",
+      "terms": [
+        "bmsql_new_order",
+        "new_order",
+        "no_d_id",
+        "no_o_id",
+        "no_w_id"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_new_order\nDescription: 待处理新订单\nColumn: no_w_id (INT) — 仓库ID\nColumn: no_d_id (INT) — 地区ID\nColumn: no_o_id (INT) — 订单ID",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "1fbe3030966bb11016311cc9f15fe1accb27de50d4ed07e268907642caed817d",
+      "sql_template": null
+    },
+    {
+      "id": "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "order_line",
+      "terms": [
+        "bmsql_order_line",
+        "ol_amount",
+        "ol_d_id",
+        "ol_delivery_d",
+        "ol_dist_info",
+        "ol_i_id",
+        "ol_number",
+        "ol_o_id",
+        "ol_quantity",
+        "ol_supply_w_id",
+        "ol_w_id",
+        "order_line"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_order_line\nDescription: 销售订单明细\nColumn: ol_w_id (INT) — 仓库ID\nColumn: ol_d_id (INT) — 地区ID\nColumn: ol_o_id (INT) — [已脱敏记录标识]: ol_number (INT) — 订单行号\nColumn: ol_i_id (INT) — 商品ID\nColumn: ol_delivery_d (DATETIME) — 配送时间\nColumn: ol_amount (DECIMAL(12, 2)) — 销售金额\nColumn: ol_supply_w_id (INT) — 供货仓库ID\nColumn: ol_quantity (INT) — 购买数量\nColumn: ol_dist_info (VARCHAR(64)) — 配送信息",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "070c3c77af49a661f77b20b5a7afb46dd0c97884766425d25a1b33c1dacf9d4d",
+      "sql_template": null
+    },
+    {
+      "id": "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "orders",
+      "terms": [
+        "bmsql_oorder",
+        "o_all_local",
+        "o_c_id",
+        "o_carrier_id",
+        "o_d_id",
+        "o_entry_d",
+        "o_id",
+        "o_ol_cnt",
+        "o_w_id",
+        "orders"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_oorder\nDescription: 销售订单\nColumn: o_w_id (INT) — 仓库ID\nColumn: o_d_id (INT) — 地区ID\nColumn: o_id (INT) — [已脱敏记录标识]: o_c_id (INT) — [已脱敏记录标识]: o_carrier_id (INT) — 承运商ID\nColumn: o_ol_cnt (INT) — 订单明细数量\nColumn: o_all_local (TINYINT) — 是否全部本地供货\nColumn: o_entry_d (DATETIME) — 下单时间",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "1a94f5695db8fbe1a53abbd33668f73a684505770a9396d96040e8a2af365aff",
+      "sql_template": null
+    },
+    {
+      "id": "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "payment_history",
+      "terms": [
+        "bmsql_history",
+        "h_amount",
+        "h_c_d_id",
+        "h_c_id",
+        "h_c_w_id",
+        "h_d_id",
+        "h_data",
+        "h_date",
+        "h_w_id",
+        "hist_id",
+        "payment_history"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_history\nDescription: 客户付款历史\nColumn: hist_id (BIGINT) — 历史记录ID\nColumn: h_c_id (INT) — [已脱敏记录标识]: h_c_d_id (INT) — 客户地区ID\nColumn: h_c_w_id (INT) — 客户仓库ID\nColumn: h_d_id (INT) — 付款地区ID\nColumn: h_w_id (INT) — 付款仓库ID\nColumn: h_date (DATETIME) — 付款时间\nColumn: h_amount (DECIMAL(12, 2)) — 付款金额\nColumn: h_data (VARCHAR(64)) — 付款备注",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "8c0271e08f804d5a4895d1291231c1939ff96694f7e9bb1e1bae5c7d8a6bf55d",
+      "sql_template": null
+    },
+    {
+      "id": "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "stock",
+      "terms": [
+        "bmsql_stock",
+        "s_data",
+        "s_dist_01",
+        "s_dist_02",
+        "s_dist_03",
+        "s_dist_04",
+        "s_dist_05",
+        "s_dist_06",
+        "s_dist_07",
+        "s_dist_08",
+        "s_dist_09",
+        "s_dist_10",
+        "s_i_id",
+        "s_order_cnt",
+        "s_quantity",
+        "s_remote_cnt",
+        "s_w_id",
+        "s_ytd",
+        "stock"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_stock\nDescription: 仓库商品库存\nColumn: s_w_id (INT) — 仓库ID\nColumn: s_i_id (INT) — 商品ID\nColumn: s_quantity (INT) — 库存数量\nColumn: s_ytd (INT) — 年度销售数量\nColumn: s_order_cnt (INT) — 订单次数\nColumn: s_remote_cnt (INT) — 跨仓订单次数\nColumn: s_data (VARCHAR(128)) — 库存备注\nColumn: s_dist_01 (VARCHAR(32)) — 商品1\nColumn: s_dist_02 (VARCHAR(32))\nColumn: s_dist_03 (VARCHAR(32))\nColumn: s_dist_04 (VARCHAR(32))\nColumn: s_dist_05 (VARCHAR(32))\nColumn: s_dist_06 (VARCHAR(32))\nColumn: s_dist_07 (VARCHAR(32))\nColumn: s_dist_08 (VARCHAR(32))\nColumn: s_dist_09 (VARCHAR(32))\nColumn: s_dist_10 (VARCHAR(32))",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "058b12864ffdf3df4241a4539a4bf97cfe4684ec60a020c6725534270847b58c",
+      "sql_template": null
+    },
+    {
+      "id": "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "system_config",
+      "terms": [
+        "bmsql_config",
+        "cfg_name",
+        "cfg_value",
+        "system_config"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_config\nDescription: TPC-C 测试配置\nColumn: cfg_name (VARCHAR(30)) — 配置项名称\nColumn: cfg_value (VARCHAR(50)) — 配置项值",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "a1c662d884d49fe2e64d491d7fe6b6489d597b41c5efe9095cd94572a807929d",
+      "sql_template": null
+    },
+    {
+      "id": "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "warehouse",
+      "terms": [
+        "bmsql_warehouse",
+        "w_city",
+        "w_id",
+        "w_name",
+        "w_state",
+        "w_street_1",
+        "w_street_2",
+        "w_tax",
+        "w_ytd",
+        "w_zip",
+        "warehouse"
+      ],
+      "body": "Table: askdb_tpcc.bmsql_warehouse\nDescription: 仓库/销售区域\nColumn: w_id (INT) — 仓库ID\nColumn: w_ytd (DECIMAL(14, 2)) — 年度累计销售额\nColumn: w_tax (DECIMAL(6, 4)) — 税率\nColumn: w_name (VARCHAR(32)) — 仓库/区域名称\nColumn: w_street_1 (VARCHAR(64)) — 地址1\nColumn: w_street_2 (VARCHAR(64)) — 地址2\nColumn: w_city (VARCHAR(32)) — 城市\nColumn: w_state (VARCHAR(16)) — 省份/州\nColumn: w_zip (VARCHAR(16)) — 邮编",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "536d8807bbbd553836692abe74f3cf093a57dd673acbaca04c807dbbd03265da",
+      "sql_template": null
+    },
+    {
+      "id": "schema:60753e74f79d2986690ff1a2f27d2fc6aeaf69371717ae770cf91f30e9d2cc91",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "orders_view",
+      "terms": [
+        "orders_view"
+      ],
+      "body": "View: orders_view\nDescription: 订单主表预览视图。",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "88b2ba8e3e8e3bdab78db52ffe00ffd8a5819713e7da24999f9511476a65386d",
+      "sql_template": null
+    },
+    {
+      "id": "schema:77fcb59b6cc53646923e23985f014fb4289d3e0b3d64c992c4c1e73235f8ea11",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "customer_district",
+      "terms": [
+        "customer",
+        "customer_district",
+        "district"
+      ],
+      "body": "Relationship: customer_district\nRelated models: customer, district\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "1283e84c0bca1f195b9d5baf29ff2814d99fdaf73db93d11180f4a46b5073df0",
+      "sql_template": null
+    },
+    {
+      "id": "schema:c185e7f641bbd6e59430965e5dc62229edd140a9b6cf08a98fba4a6c297412df",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "district_warehouse",
+      "terms": [
+        "district",
+        "district_warehouse",
+        "warehouse"
+      ],
+      "body": "Relationship: district_warehouse\nRelated models: district, warehouse\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "7ad4af976e18a9ba2d7809d6b800b741fa42ce227c5835fefbff25639266372a",
+      "sql_template": null
+    },
+    {
+      "id": "schema:5d6541c34ea2d385ac22106c710a23af7af21de39d22f9f0928a043b3c1327cc",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "history_customer",
+      "terms": [
+        "customer",
+        "history_customer",
+        "payment_history"
+      ],
+      "body": "Relationship: history_customer\nRelated models: payment_history, customer\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "712f3c4a8fc60e07f405fe4311818e4589adc7c9379e0959af9488893cc49349",
+      "sql_template": null
+    },
+    {
+      "id": "schema:909e3600242f798ddf6981024caf350e559a5df455b8b927c01e743408565afa",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "new_order_order",
+      "terms": [
+        "new_order",
+        "new_order_order",
+        "orders"
+      ],
+      "body": "Relationship: new_order_order\nRelated models: new_order, orders\nRelationship type: one_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "241b982068b57cbf3f321417ae859fc9178c3072dd6fcb8a0e9bd61228552d60",
+      "sql_template": null
+    },
+    {
+      "id": "schema:774bb91c610e882590f23151465f3c165b4f901dca6c1e410c0f72fe17f21d23",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "order_customer",
+      "terms": [
+        "customer",
+        "order_customer",
+        "orders"
+      ],
+      "body": "Relationship: order_customer\nRelated models: orders, customer\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "1a21ba1be4908d61c7ec3da6073068f0b4cafbb255fef3f480484b31de31d958",
+      "sql_template": null
+    },
+    {
+      "id": "schema:77c630e19462c9f03d81a3663dbf1a7ac9ab638c2df80fe32195e8dcaaeab505",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "order_line_item",
+      "terms": [
+        "item",
+        "order_line",
+        "order_line_item"
+      ],
+      "body": "Relationship: order_line_item\nRelated models: order_line, item\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "a17547486dc825ea82ea5fcac030f2ae2e3f5b5d9bbb5bf4ee8f9bcbfe3ddf16",
+      "sql_template": null
+    },
+    {
+      "id": "schema:a6fc4d0c6b47b8cbb8ca0cddb8b234f0d72b515f77a00c8fdc7281944919741f",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "order_line_order",
+      "terms": [
+        "order_line",
+        "order_line_order",
+        "orders"
+      ],
+      "body": "Relationship: order_line_order\nRelated models: order_line, orders\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "f6df183f5b94dcfae162e4527f77e93ebe872fb095ddee15ca25c633e15536be",
+      "sql_template": null
+    },
+    {
+      "id": "schema:47689d28b95bdedd3f5780a2f6b67d6e15d7cdbed5714cdc4bb75f14b1a87eed",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "order_line_stock",
+      "terms": [
+        "order_line",
+        "order_line_stock",
+        "stock"
+      ],
+      "body": "Relationship: order_line_stock\nRelated models: order_line, stock\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "539ea57bcd6ef90f6833e02bbb37ae821be2359a71231645bd9e519419d34f5b",
+      "sql_template": null
+    },
+    {
+      "id": "schema:7c1ae2ae8eb56608ed7ec7077cadf24daec79fd8605d295ae74303727551239a",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "stock_item",
+      "terms": [
+        "item",
+        "stock",
+        "stock_item"
+      ],
+      "body": "Relationship: stock_item\nRelated models: stock, item\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "6b9b9a268dfac694eec7cdb3b9af86ff7734b387654dc1c27841f220367e000e",
+      "sql_template": null
+    },
+    {
+      "id": "schema:184003878bdba41694ebd2c1a176ef0c9e1492fce83448eec7de5d007118a668",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "schema",
+      "title": "stock_warehouse",
+      "terms": [
+        "stock",
+        "stock_warehouse",
+        "warehouse"
+      ],
+      "body": "Relationship: stock_warehouse\nRelated models: stock, warehouse\nRelationship type: many_to_one",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "active",
+      "publication_status": "active",
+      "content_hash": "b90b8c115a6468c0fafc222fab749897eb194d247979cf23a45ede1a74fbb423",
+      "sql_template": null
+    },
+    {
+      "id": "tpcc_actual_001",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定仓库的名称、城市、省份、年度累计销售额和税率",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "2c337be573f99f48d8529675a1f91b1da9ff6324215c379467e9354e154627cc",
+      "sql_template": "SELECT w_id, w_name, w_city, w_state, w_ytd, w_tax FROM warehouse WHERE w_id = :w_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_006",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定仓库、指定地区的名称、年度销售额、税率和下一订单编号",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "34d140e3cd7af1060b279c2967cc5cee2bf3f67c52642055f628ae887eb637e3",
+      "sql_template": "SELECT d_w_id, d_id, d_name, d_ytd, d_tax, d_next_o_id FROM district WHERE d_w_id = :d_w_id AND d_id = :d_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_014",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定客户的姓名、信用类型、账户余额、付款次数和成为客户时间",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "27caa4b56df61a58ff511ca079d78e3981ae1960824463a208a357f641ef8c00",
+      "sql_template": "SELECT c_w_id, c_d_id, c_id, c_last, c_first, c_credit, c_balance, c_payment_cnt, c_since FROM customer WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_022",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定商品的名称和单价",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "03e4d244fb41c56b9a698456c65611d50fbc6b86c9fe553db98527e5786de413",
+      "sql_template": "SELECT i_id, i_name, i_price FROM item WHERE i_id = :i_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_089",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定商品的名称和价格",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "ba52171007cbda7b8b86737edaaf901b445019a637f4ad0eb42369635c139a5e",
+      "sql_template": "SELECT i_id, i_name, i_price FROM item WHERE i_id = :i_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_030",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定订单的客户、承运商、明细数量和下单时间",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "e9ae8c9c491f2b7bf8e4ef54dd8e02d3bc7dd2635fd1578f749e439ea322093d",
+      "sql_template": "SELECT o_w_id, o_d_id, o_id, o_c_id, o_carrier_id, o_ol_cnt, o_all_local, o_entry_d FROM orders WHERE o_w_id = :o_w_id AND o_d_id = :o_d_id AND o_id = :o_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_038",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "ac7a30fc90c24539c1e6823ee8135493ed95dc02e1bb52607e3f31efaecb7861",
+      "sql_template": "SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity, ol_delivery_d FROM order_line WHERE ol_w_id = :ol_w_id AND ol_d_id = :ol_d_id AND ol_o_id = :ol_o_id AND ol_number = :ol_number",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_047",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "ac7a30fc90c24539c1e6823ee8135493ed95dc02e1bb52607e3f31efaecb7861",
+      "sql_template": "SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity, ol_delivery_d FROM order_line WHERE ol_w_id = :ol_w_id AND ol_d_id = :ol_d_id AND ol_o_id = :ol_o_id AND ol_number = :ol_number",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_048",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定仓库的指定商品的库存数量、年度销售数量、订单次数和跨仓次数",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "19d312a496b0a4fab0eff3726ee4b8f07a15878195ebc28f3940936b7b09d920",
+      "sql_template": "SELECT s_w_id, s_i_id, s_quantity, s_ytd, s_order_cnt, s_remote_cnt FROM stock WHERE s_w_id = :s_w_id AND s_i_id = :s_i_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_058",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定付款历史的客户、付款时间、金额和备注",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "ea20e874d191557794553625253538eecf0742a1d18be5cd396d6aafea963261",
+      "sql_template": "SELECT hist_id, h_c_w_id, h_c_d_id, h_c_id, h_date, h_amount, h_data FROM payment_history WHERE hist_id = :hist_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_066",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定待处理新订单",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "22094460e4eedfe953092966453880175c824b965c0b47e7bc71a0150a4a479e",
+      "sql_template": "SELECT no_w_id, no_d_id, no_o_id FROM new_order WHERE no_w_id = :no_w_id AND no_d_id = :no_d_id AND no_o_id = :no_o_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_090",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询当前 TPC-C 配置项",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "479ef82fed8e94562c98a3aee06606192155acfe40404bc68bd2c6eebe3c89d8",
+      "sql_template": "SELECT cfg_name, cfg_value FROM system_config ORDER BY cfg_name",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_076",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "统计仓库数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "bc0c16d1c86734fe287acee065ad0a05b48264d00e2a71eab916a182a59ac493",
+      "sql_template": "SELECT COUNT(*) AS warehouse_count FROM warehouse",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_078",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "按信用类型统计客户数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "c6182c4d444da0b764336e945fa7174a295cdbb05bdb218802ee00c9193775d1",
+      "sql_template": "SELECT c_credit, COUNT(*) AS customer_count FROM customer GROUP BY c_credit ORDER BY c_credit",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_080",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "统计销售订单数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "419f014a5daf472b6a93e26b53b32ec6afcf30e7118aeb6c2ff7b54861e47ab4",
+      "sql_template": "SELECT COUNT(*) AS order_count FROM orders",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_085",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定日期最近创建的 8 个订单",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "2c6fa22fa81e1c774fc7decda4eb2a2136885e2999171e1e53b4ff4e929d7805",
+      "sql_template": "SELECT o_w_id, o_d_id, o_id, o_c_id, o_entry_d FROM orders WHERE o_entry_d >= :from_o_entry_d AND o_entry_d < :before_o_entry_d ORDER BY o_entry_d DESC, o_w_id, o_d_id, o_id LIMIT 8",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_086",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询销售金额最高的 8 条订单明细",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "eac4a81726fd2f31341cf8dae767792001d882d19ecd798ec1af3142030d2083",
+      "sql_template": "SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity FROM order_line ORDER BY ol_amount DESC, ol_w_id, ol_d_id, ol_o_id, ol_number LIMIT 8",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_087",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询库存数量最低的 8 条库存记录",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "bc272146eefdb60d5e5bd7fe5ddb5a5532eae506ffb6da40eef8f7c6edc370fe",
+      "sql_template": "SELECT s_w_id, s_i_id, s_quantity, s_ytd, s_order_cnt FROM stock ORDER BY s_quantity, s_w_id, s_i_id LIMIT 8",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_088",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "统计承运商为空的订单数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "e8ed968884e650bef91e854dcdf5fd1dd61d3500c63a9b8f04e7f1b06683b07b",
+      "sql_template": "SELECT COUNT(*) AS order_count FROM orders WHERE o_carrier_id IS NULL",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_091",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定客户的所属地区名称",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "3a5d28e374cd8094123e49dd9979069f2262bd2f521c04a392470d829dfaa5f7",
+      "sql_template": "SELECT c.c_w_id, c.c_d_id, c.c_id, d.d_name FROM customer AS c JOIN district AS d ON c.c_w_id = d.d_w_id AND c.c_d_id = d.d_id WHERE c.c_w_id = :c_w_id AND c.c_d_id = :c_d_id AND c.c_id = :c_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_092",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定订单对应的客户姓名",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "fea92d4787422bfb9e05e3f6ee61cec59a3ac3514aeffa9ef49e9fd59c017dcd",
+      "sql_template": "SELECT o.o_w_id, o.o_d_id, o.o_id, o.o_c_id, c.c_last, c.c_first FROM orders AS o JOIN customer AS c ON o.o_w_id = c.c_w_id AND o.o_d_id = c.c_d_id AND o.o_c_id = c.c_id WHERE o.o_w_id = :o_w_id AND o.o_d_id = :o_d_id AND o.o_id = :o_id",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "tpcc_actual_093",
+      "data_source_id": "offline:askdb_tpcc",
+      "kind": "query_example",
+      "title": "查询指定订单明细的库存数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "076c9bf173afaf0fa2ac8646b9f572ed4b95aa97490a61a7cc504bbf6c1dead8",
+      "sql_template": "SELECT ol.ol_number, ol.ol_i_id, ol.ol_supply_w_id, s.s_quantity FROM order_line AS ol JOIN stock AS s ON ol.ol_supply_w_id = s.s_w_id AND ol.ol_i_id = s.s_i_id WHERE ol.ol_w_id = :ol_w_id AND ol.ol_d_id = :ol_d_id AND ol.ol_o_id = :ol_o_id AND ol.ol_number = :ol_number",
+      "offline_fixture_only": true
+    },
+    {
+      "id": "synthetic:other_source:order_count",
+      "data_source_id": "offline:synthetic_control_source",
+      "kind": "query_example",
+      "title": "统计销售订单数量",
+      "terms": [],
+      "body": "",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:synthetic_control_source:fixture",
+      "mdl_digest": "ae7531bdd1c3fb3d6eae5590ee5a3cbcbcf69369dd2bbed3ad019f24fecfc934",
+      "review_status": "approved",
+      "publication_status": "active",
+      "content_hash": "921c9274e1486046646623d46bf6a9dc146f9107ec522912fbfa9f380e474b56",
+      "sql_template": "SELECT COUNT(*) AS order_count FROM retail_orders",
+      "offline_fixture_only": true,
+      "synthetic_isolation_sentinel": true
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "query-tpcc_actual_001",
+      "category": "query_example",
+      "query": "查询指定仓库的名称、城市、省份、年度累计销售额和税率",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_001"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_006",
+      "category": "query_example",
+      "query": "查询指定仓库、指定地区的名称、年度销售额、税率和下一订单编号",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_006"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_014",
+      "category": "query_example",
+      "query": "查询指定客户的姓名、信用类型、账户余额、付款次数和成为客户时间",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_014"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_022",
+      "category": "query_example",
+      "query": "查询指定商品的名称和单价",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_022"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_089",
+      "category": "query_example",
+      "query": "查询指定商品的名称和价格",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_089"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_030",
+      "category": "query_example",
+      "query": "查询指定订单的客户、承运商、明细数量和下单时间",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_030"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_038",
+      "category": "query_example",
+      "query": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_038"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_047",
+      "category": "query_example",
+      "query": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_047"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_048",
+      "category": "query_example",
+      "query": "查询指定仓库的指定商品的库存数量、年度销售数量、订单次数和跨仓次数",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_048"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_058",
+      "category": "query_example",
+      "query": "查询指定付款历史的客户、付款时间、金额和备注",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_058"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_066",
+      "category": "query_example",
+      "query": "查询指定待处理新订单",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_066"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_090",
+      "category": "query_example",
+      "query": "查询当前 TPC-C 配置项",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_090"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_076",
+      "category": "query_example",
+      "query": "统计仓库数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_076"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_078",
+      "category": "query_example",
+      "query": "按信用类型统计客户数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_078"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_080",
+      "category": "query_example",
+      "query": "统计销售订单数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_085",
+      "category": "query_example",
+      "query": "查询指定日期最近创建的 8 个订单",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_085"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_086",
+      "category": "query_example",
+      "query": "查询销售金额最高的 8 条订单明细",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_086"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_087",
+      "category": "query_example",
+      "query": "查询库存数量最低的 8 条库存记录",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_087"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_088",
+      "category": "query_example",
+      "query": "统计承运商为空的订单数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_088"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_091",
+      "category": "query_example",
+      "query": "查询指定客户的所属地区名称",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_091"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_092",
+      "category": "query_example",
+      "query": "查询指定订单对应的客户姓名",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_092"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "query-tpcc_actual_093",
+      "category": "query_example",
+      "query": "查询指定订单明细的库存数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_093"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-customer-overview",
+      "category": "schema_rule",
+      "query": "查看客户模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-customer-field",
+      "category": "schema_rule",
+      "query": "查询客户中的信用类型字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-district-overview",
+      "category": "schema_rule",
+      "query": "查看仓库下属销售地区模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-district-field",
+      "category": "schema_rule",
+      "query": "查询仓库下属销售地区中的税率字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-item-overview",
+      "category": "schema_rule",
+      "query": "查看商品模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-item-field",
+      "category": "schema_rule",
+      "query": "查询商品中的商品单价字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-new_order-overview",
+      "category": "schema_rule",
+      "query": "查看待处理新订单模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-new_order-field",
+      "category": "schema_rule",
+      "query": "查询待处理新订单中的订单ID字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-order_line-overview",
+      "category": "schema_rule",
+      "query": "查看销售订单明细模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-order_line-field",
+      "category": "schema_rule",
+      "query": "查询销售订单明细中的销售金额字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-orders-overview",
+      "category": "schema_rule",
+      "query": "查看销售订单模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-orders-field",
+      "category": "schema_rule",
+      "query": "查询销售订单中的承运商ID字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-payment_history-overview",
+      "category": "schema_rule",
+      "query": "查看客户付款历史模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-payment_history-field",
+      "category": "schema_rule",
+      "query": "查询客户付款历史中的付款金额字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-stock-overview",
+      "category": "schema_rule",
+      "query": "查看仓库商品库存模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-stock-field",
+      "category": "schema_rule",
+      "query": "查询仓库商品库存中的库存数量字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-system_config-overview",
+      "category": "schema_rule",
+      "query": "查看TPC-C 测试配置模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-system_config-field",
+      "category": "schema_rule",
+      "query": "查询TPC-C 测试配置中的配置项名称字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-warehouse-overview",
+      "category": "schema_rule",
+      "query": "查看仓库/销售区域模型有哪些字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "schema-warehouse-field",
+      "category": "schema_rule",
+      "query": "查询仓库/销售区域中的年度累计销售额字段",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-01",
+      "category": "no_match_or_isolation",
+      "query": "火星陨坑直径分布",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-02",
+      "category": "no_match_or_isolation",
+      "query": "黑洞引力波探测进展",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-03",
+      "category": "no_match_or_isolation",
+      "query": "古典音乐和弦进行",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-04",
+      "category": "no_match_or_isolation",
+      "query": "电影节摄影奖项列表",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-05",
+      "category": "no_match_or_isolation",
+      "query": "Tomorrow rainfall probability in Osaka",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-06",
+      "category": "no_match_or_isolation",
+      "query": "Hospital appointment queue by clinic",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-07",
+      "category": "no_match_or_isolation",
+      "query": "Household electricity usage by hour",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "no-match-08",
+      "category": "no_match_or_isolation",
+      "query": "Football league standings by club",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [],
+      "prohibited_document_ids": []
+    },
+    {
+      "case_id": "isolation-tpcc-order-count",
+      "category": "no_match_or_isolation",
+      "query": "统计销售订单数量",
+      "data_source_id": "offline:askdb_tpcc",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
+      "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
+      "expected_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "prohibited_document_ids": [
+        "synthetic:other_source:order_count"
+      ]
+    },
+    {
+      "case_id": "isolation-control-order-count",
+      "category": "no_match_or_isolation",
+      "query": "统计销售订单数量",
+      "data_source_id": "offline:synthetic_control_source",
+      "connector_type": "mysql",
+      "wren_revision_id": "offline:synthetic_control_source:fixture",
+      "mdl_digest": "ae7531bdd1c3fb3d6eae5590ee5a3cbcbcf69369dd2bbed3ad019f24fecfc934",
+      "expected_document_ids": [
+        "synthetic:other_source:order_count"
+      ],
+      "prohibited_document_ids": [
+        "tpcc_actual_080"
+      ]
+    }
+  ],
+  "policy_gate_case_ids": [
+    "tpcc_actual_094",
+    "tpcc_actual_095",
+    "tpcc_actual_097",
+    "tpcc_actual_099",
+    "tpcc_actual_100",
+    "tpcc_actual_101",
+    "tpcc_actual_102",
+    "tpcc_actual_103"
+  ],
+  "notes": [
+    "The 22 query-example cases come from user-approved CSV rows, with value redaction and typed SQL parameters.",
+    "The 20 schema cases are generated from the compiled local Wren MDL and still need human review.",
+    "The 8 no-match prompts and 2 cross-source cases are draft prompts; the control-source document is synthetic.",
+    "Offline data-source and revision IDs are placeholders and do not bind this fixture to any live runtime.",
+    "No SQL was executed; no database connection was opened; this draft has not been scored."
+  ]
+}

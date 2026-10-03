@@ -1,0 +1,2 @@
+statement: >
+  SELECT * FROM orders LIMIT 100

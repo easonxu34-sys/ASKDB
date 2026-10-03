@@ -1,0 +1,8 @@
+{
+  "name": "askdb-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix askdb-web run dev"
+  }
+}
