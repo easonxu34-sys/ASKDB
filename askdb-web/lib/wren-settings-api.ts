@@ -161,12 +161,20 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean
 function safeSemantic(value: unknown): Record<string, unknown> | null {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["tables", "models", "relationships", "rules", "views"])
+    !hasOnlyKeys(value, [
+      "tables",
+      "models",
+      "relationships",
+      "ignored_foreign_keys",
+      "rules",
+      "views",
+    ])
   )
     return null;
   const tables = value.tables ?? [];
   const models = value.models ?? [];
   const relationships = value.relationships ?? [];
+  const ignoredForeignKeys = value.ignored_foreign_keys ?? [];
   const rules = value.rules ?? [];
   const views = value.views ?? [];
   if (
@@ -174,6 +182,9 @@ function safeSemantic(value: unknown): Record<string, unknown> | null {
     !tables.every((item) => typeof item === "string") ||
     !Array.isArray(models) ||
     !Array.isArray(relationships) ||
+    !Array.isArray(ignoredForeignKeys) ||
+    ignoredForeignKeys.length > 2000 ||
+    !ignoredForeignKeys.every((item) => typeof item === "string" && item.length <= 2048) ||
     !Array.isArray(rules) ||
     !Array.isArray(views)
   )
@@ -208,18 +219,31 @@ function safeSemantic(value: unknown): Record<string, unknown> | null {
   });
   const safeRelationships = relationships.map((item) =>
     isRecord(item) &&
-    hasOnlyKeys(item, ["name", "left_model", "right_model", "join_type", "condition"]) &&
+    hasOnlyKeys(item, [
+      "name",
+      "left_model",
+      "right_model",
+      "join_type",
+      "condition",
+      "foreign_key_id",
+    ]) &&
     typeof item.name === "string" &&
     typeof item.left_model === "string" &&
     typeof item.right_model === "string" &&
     typeof item.join_type === "string" &&
-    typeof item.condition === "string"
+    typeof item.condition === "string" &&
+    (item.foreign_key_id === undefined ||
+      item.foreign_key_id === null ||
+      (typeof item.foreign_key_id === "string" && item.foreign_key_id.length <= 2048))
       ? {
           name: item.name,
           left_model: item.left_model,
           right_model: item.right_model,
           join_type: item.join_type,
           condition: item.condition,
+          ...(typeof item.foreign_key_id === "string"
+            ? { foreign_key_id: item.foreign_key_id }
+            : {}),
         }
       : null,
   );
@@ -251,6 +275,7 @@ function safeSemantic(value: unknown): Record<string, unknown> | null {
     tables,
     models: safeModels,
     relationships: safeRelationships,
+    ignored_foreign_keys: ignoredForeignKeys,
     rules: safeRules,
     views: safeViews,
   };
@@ -444,11 +469,21 @@ function safeSourceConfig(value: unknown): Record<string, unknown> | null {
     tables: value.tables,
     models: value.models,
     relationships: value.relationships,
+    ignored_foreign_keys: value.ignored_foreign_keys,
     rules: value.rules,
     views: value.views,
   });
   if (!semantic) return null;
-  for (const key of ["tables", "models", "relationships", "rules", "views"]) delete config[key];
+  for (const key of [
+    "tables",
+    "models",
+    "relationships",
+    "ignored_foreign_keys",
+    "rules",
+    "views",
+  ]) {
+    delete config[key];
+  }
   return { ...config, ...semantic };
 }
 
@@ -669,6 +704,7 @@ function safePayload(value: unknown, kind: SafePath["kind"]): unknown | null {
     return {
       data_source_id: value.data_source_id,
       revision_id: value.revision_id,
+      foreign_keys_complete: value.foreign_keys_complete === true,
       warnings: Array.isArray(value.warnings)
         ? value.warnings.filter((warning): warning is string => typeof warning === "string")
         : [],

@@ -229,6 +229,11 @@ async function historyTurnKey(turnId: string) {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
+export async function deriveSourceTurnKey(threadId: string, messageId: string) {
+  const turnId = await stableTurnId(threadId, messageId);
+  return { turnId, sourceTurnKey: await historyTurnKey(turnId) };
+}
+
 function stableExpectedSequence(
   userId: string,
   threadId: string,

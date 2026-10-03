@@ -31,6 +31,7 @@ class RelationshipForm(BaseModel):
     right_model: str = Field(min_length=1, max_length=128)
     join_type: Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"] = "many_to_one"
     condition: str = Field(min_length=1, max_length=4000)
+    foreign_key_id: str | None = Field(default=None, max_length=2048)
 
 
 class RuleForm(BaseModel):
@@ -54,6 +55,7 @@ class SemanticForm(BaseModel):
     tables: list[str] = Field(default_factory=list, max_length=2000)
     models: list[ModelForm] = Field(default_factory=list, max_length=1000)
     relationships: list[RelationshipForm] = Field(default_factory=list, max_length=2000)
+    ignored_foreign_keys: list[str] = Field(default_factory=list, max_length=2000)
     rules: list[RuleForm] = Field(default_factory=list, max_length=1000)
     views: list[ViewForm] = Field(default_factory=list, max_length=1000)
 

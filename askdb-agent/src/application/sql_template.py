@@ -56,6 +56,13 @@ def _parse_template(
     tree = statements[0]
     if isinstance(tree, exp.Select) and tree.args.get("locks"):
         raise SqlTemplateError("locking queries are not allowed")
+    # Candidates are persisted before review, so predicate constants must not
+    # be stored as concrete user/business values. Require named placeholders in
+    # WHERE/HAVING and leave structural constants (for example LIMIT 10) alone.
+    for clause_type in (exp.Where, exp.Having):
+        for clause in tree.find_all(clause_type):
+            if any(clause.find_all(exp.Literal)):
+                raise SqlTemplateError("filter values must use named parameters")
     placeholders = list(tree.find_all(exp.Placeholder))
     names: set[str] = set()
     for placeholder in placeholders:
@@ -159,6 +166,16 @@ def bind_sql_template(
         raise
     except (KeyError, TypeError, ValueError, sqlglot.errors.ParseError) as exc:
         raise SqlTemplateError("SQL template binding failed") from exc
+
+
+def validate_query_template_structure(
+    template: str,
+    *,
+    parameter_specs: tuple[QueryParameterSpec, ...],
+    connector_type: str,
+) -> None:
+    """Validate a candidate before persistence without executing it."""
+    _parse_template(template, parameter_specs, connector_type)
 
 
 def sample_parameter_values(

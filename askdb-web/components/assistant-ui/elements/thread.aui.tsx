@@ -9,8 +9,11 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { ComposerSelect } from "@/components/ui/composer-select";
 import { DataSourceSelector } from "@/components/assistant-ui/elements/data-source-selector";
+import { MemorySubmissionDialog, type MemorySubmissionContext } from "@/components/memory/memory-submission-dialog";
 import { cn } from "@/lib/utils";
 import type { AuthUser } from "@/lib/auth-api";
+import { deriveSourceTurnKey } from "@/lib/agent-chat-adapter";
+import { getSuccessfulQueryArtifacts } from "@/lib/chat-output";
 import { fetchChatModelOptions, type ChatModelCatalog } from "@/lib/model-profiles";
 import {
   fetchDataSourceCatalog,
@@ -19,6 +22,7 @@ import {
 } from "@/lib/data-sources";
 import {
   getThreadDataSourceId,
+  getThreadResultArtifacts,
   getDraftThreadDataSource,
   getDraftThreadModelProfileId,
   migrateLegacyThreadSources,
@@ -136,7 +140,7 @@ export const Thread: FC<{ user: AuthUser }> = ({ user }) => {
           </AuiIf>
 
           <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
-            <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+            <ThreadPrimitive.Messages>{() => <ThreadMessage user={user} />}</ThreadPrimitive.Messages>
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -157,13 +161,13 @@ export const Thread: FC<{ user: AuthUser }> = ({ user }) => {
   );
 };
 
-const ThreadMessage: FC = () => {
+const ThreadMessage: FC<{ user: AuthUser }> = ({ user }) => {
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
 
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
-  return <AssistantMessage />;
+  return <AssistantMessage user={user} />;
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -678,7 +682,7 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
+const AssistantMessage: FC<{ user: AuthUser }> = ({ user }) => {
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `min-h-7.5 ${ACTION_BAR_PT}`;
 
@@ -718,14 +722,75 @@ const AssistantMessage: FC = () => {
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
         <BranchPicker />
-        <AssistantActionBar />
+        <AssistantActionBar user={user} />
       </div>
     </MessagePrimitive.Root>
   );
 };
 
-const AssistantActionBar: FC = () => {
+const AssistantActionBar: FC<{ user: AuthUser }> = ({ user }) => {
+  const message = useAuiState((state) => state.message);
+  const messages = useAuiState((state) => state.thread.messages);
+  const threadId = useAuiState((state) => state.optional.threadListItem?.remoteId);
+  const [queryContext, setQueryContext] = useState<MemorySubmissionContext | null>(null);
+  const [ruleContext, setRuleContext] = useState<MemorySubmissionContext | null>(null);
+  const [queryReady, setQueryReady] = useState(false);
+  const [memoryMode, setMemoryMode] = useState<"query-example" | "business-rule" | null>(null);
+  const [memoryError, setMemoryError] = useState("");
+  const messageIndex = messages.findIndex((item) => item.id === message.id);
+  const sourceMessage = messageIndex > 0
+    ? [...messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user")
+    : undefined;
+  const sourceQuestion = sourceMessage?.content
+    .flatMap((part) => part.type === "text" ? [part.text] : [])
+    .join("")
+    .trim() ?? "";
+  const completed = message.status?.type === "complete";
+  const personalMemoryTurn = /(你.{0,6}记得.{0,6}我|我.{0,6}(?:叫什么|的名字|的偏好)|记住我)/u.test(sourceQuestion);
+
+  useEffect(() => {
+    let active = true;
+    setMemoryError("");
+    setQueryReady(false);
+    setQueryContext(null);
+    setRuleContext(null);
+    if (!threadId || !sourceMessage || !sourceQuestion || !completed || personalMemoryTurn) return;
+    const dataSourceId = getThreadDataSourceId(user.user_id, threadId);
+    if (!dataSourceId) return;
+    void deriveSourceTurnKey(threadId, sourceMessage.id).then(({ turnId, sourceTurnKey }) => {
+      if (!active) return;
+      const baseContext: MemorySubmissionContext = {
+        threadId,
+        dataSourceId,
+        sourceTurnKey,
+        question: sourceQuestion,
+        sqlTemplate: "",
+      };
+      setRuleContext(baseContext);
+      const artifacts = getThreadResultArtifacts(user.user_id, threadId, sourceTurnKey, turnId);
+      const query = getSuccessfulQueryArtifacts(artifacts)[0];
+      if (query) {
+        setQueryContext({ ...baseContext, sqlTemplate: query.sql });
+        setQueryReady(true);
+      }
+    }).catch(() => {
+      if (active) setMemoryError("暂时无法关联这条回答的查询来源，请刷新页面后重试。");
+    });
+    return () => { active = false; };
+  }, [completed, personalMemoryTurn, sourceMessage?.id, sourceQuestion, threadId, user.user_id]);
+
+  function openMemory(mode: "query-example" | "business-rule") {
+    setMemoryError("");
+    const context = mode === "query-example" ? queryContext : ruleContext;
+    if (!context) {
+      setMemoryError("这条回答的来源暂不可用，请刷新页面后重试。");
+      return;
+    }
+    setMemoryMode(mode);
+  }
+
   return (
+    <>
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
@@ -764,9 +829,21 @@ const AssistantActionBar: FC = () => {
               导出为 Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
+          {queryReady && <ActionBarMorePrimitive.Item onClick={() => openMemory("query-example")} className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">提交为查询示例</ActionBarMorePrimitive.Item>}
+          {ruleContext && <ActionBarMorePrimitive.Item onClick={() => openMemory("business-rule")} className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">提交为业务规则</ActionBarMorePrimitive.Item>}
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
     </ActionBarPrimitive.Root>
+    {memoryError && <p role="status" className="ml-2 text-[11px] text-[#9c6046]">{memoryError}</p>}
+    <MemorySubmissionDialog
+      open={memoryMode !== null}
+      onOpenChange={(open) => { if (!open) setMemoryMode(null); }}
+      mode={memoryMode ?? "business-rule"}
+      context={memoryMode === "query-example" ? queryContext : ruleContext}
+      user={user}
+      onSubmitted={() => window.dispatchEvent(new Event("askdb:memory-candidates-updated"))}
+    />
+    </>
   );
 };
 

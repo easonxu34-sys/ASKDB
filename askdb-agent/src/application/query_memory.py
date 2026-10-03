@@ -11,6 +11,7 @@ from domain.query_memory import QueryExampleCandidate
 from application.sql_template import (
     SqlTemplateError,
     ValidatedSqlTemplate,
+    validate_query_template_structure,
     validate_query_example_template,
     validate_bound_query_for_use,
 )
@@ -137,7 +138,7 @@ class QueryMemoryApplication:
 
     def submit(
         self, *, principal: Principal, thread_id: str,
-        source_turn_id: str | None, idempotency_key: str, question: str,
+        source_turn_key: str | None, idempotency_key: str, question: str,
         sql_template: str, parameter_specs: tuple[Any, ...],
     ) -> QueryExampleCandidate:
         data_source_id = self.store.resolve_thread_source(
@@ -149,11 +150,16 @@ class QueryMemoryApplication:
         normalized = self._question(question)
         template = self._template(sql_template)
         parameters = self._parameters(parameter_specs)
-        # Structural SQL and placeholder checks are repeated at approval time.
-        # Submission only stages a pending candidate and never enables retrieval.
+        try:
+            validate_query_template_structure(
+                template, parameter_specs=parameters, connector_type=connector_type
+            )
+        except SqlTemplateError as exc:
+            raise QueryMemoryValidationError("SQL template failed validation") from exc
+        # Submission stages a pending candidate and never enables retrieval.
         return self.store.submit(
             actor_id=principal.user_id, data_source_id=data_source_id,
-            thread_id=thread_id, source_turn_id=source_turn_id,
+            thread_id=thread_id, source_turn_key=source_turn_key,
             idempotency_key=idempotency_key, normalized_question=normalized,
             sql_template=template, parameter_specs=parameters,
             connector_type=connector_type, wren_revision_id=revision_id, mdl_digest=digest,

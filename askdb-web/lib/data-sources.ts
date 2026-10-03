@@ -67,6 +67,7 @@ export type WrenRelationship = {
   right_model: string;
   join_type: "one_to_one" | "one_to_many" | "many_to_one" | "many_to_many";
   condition: string;
+  foreign_key_id?: string | null;
 };
 
 export type WrenRule = { name: string; content: string };
@@ -76,6 +77,7 @@ export type WrenSemanticConfig = {
   tables: string[];
   models: WrenModel[];
   relationships: WrenRelationship[];
+  ignored_foreign_keys: string[];
   rules: WrenRule[];
   views: WrenView[];
 };
@@ -299,6 +301,7 @@ export function testDataSourceConnection(sourceId: string): Promise<{ ok: boolea
 
 export function refreshDataSourceSchema(sourceId: string): Promise<{
   tables: DataSourceTable[];
+  foreign_keys_complete: boolean;
   warnings?: string[];
 }> {
   return settingsRequest(["data-sources", sourceId, "schema", "refresh"], { method: "POST" });

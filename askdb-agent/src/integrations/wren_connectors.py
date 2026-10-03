@@ -24,7 +24,14 @@ SUPPORTED_DATABASE_CONNECTORS: dict[str, str] = {
     "trino": "Trino",
 }
 
-SEMANTIC_CONFIG_FIELDS = {"tables", "models", "relationships", "rules", "views"}
+SEMANTIC_CONFIG_FIELDS = {
+    "tables",
+    "models",
+    "relationships",
+    "ignored_foreign_keys",
+    "rules",
+    "views",
+}
 
 
 def _field_registry():

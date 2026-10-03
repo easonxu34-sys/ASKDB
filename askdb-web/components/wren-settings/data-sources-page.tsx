@@ -5,7 +5,6 @@ import {
   ActivityIcon,
   AlertCircleIcon,
   CheckCircle2Icon,
-  ChevronLeftIcon,
   CirclePlusIcon,
   DatabaseIcon,
   LoaderCircleIcon,
@@ -35,6 +34,7 @@ import {
   updateDataSource,
   type DataSourceConnection,
   type DataSourceDetail,
+  type DataSourceForeignKey,
   type DataSourceRevisionDetail,
   type DataSourceTable,
   type SourceFormPayload,
@@ -49,13 +49,23 @@ import {
   type WrenView,
 } from "@/lib/data-sources";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 
 const WREN_APPLY_FAILURE_FALLBACK = "Wren 配置应用失败，请修正配置后重试。";
+const semanticConfigKeys = new Set([
+  "tables",
+  "models",
+  "relationships",
+  "ignored_foreign_keys",
+  "rules",
+  "views",
+]);
 
 const emptySemantic = (): WrenSemanticConfig => ({
   tables: [],
   models: [],
   relationships: [],
+  ignored_foreign_keys: [],
   rules: [],
   views: [],
 });
@@ -80,6 +90,7 @@ function detailSemantic(detail: DataSourceDetail): WrenSemanticConfig {
     tables: detail.config.tables ?? [],
     models: detail.config.models ?? [],
     relationships: detail.config.relationships ?? [],
+    ignored_foreign_keys: detail.config.ignored_foreign_keys ?? [],
     rules: detail.config.rules ?? [],
     views: detail.config.views ?? [],
   };
@@ -148,7 +159,7 @@ function revisionDiff(active: WrenSourceConfig = {}, draft: WrenSourceConfig = {
     { name: "视图", ...collectionDiff(active.views ?? [], draft.views ?? [], (item) => item.name) },
   ];
   const connectionKeys = [...new Set([...Object.keys(active), ...Object.keys(draft)])].filter(
-    (key) => !["tables", "models", "relationships", "rules", "views"].includes(key),
+    (key) => !semanticConfigKeys.has(key),
   );
   const connectionChanged = connectionKeys.some(
     (key) => JSON.stringify(active[key]) !== JSON.stringify(draft[key]),
@@ -215,6 +226,214 @@ function createModelsForSelection(
       },
     ];
   });
+}
+
+function foreignKeyId(tableId: string, foreignKey: DataSourceForeignKey): string {
+  return JSON.stringify([
+    tableId,
+    foreignKey.name || `column:${foreignKey.column}`,
+    foreignKey.referenced_table,
+  ]);
+}
+
+function relationshipName(value: string): string {
+  if (value.length <= 128) return value;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  }
+  const suffix = `_${(hash >>> 0).toString(36)}`;
+  return `${value.slice(0, 128 - suffix.length)}${suffix}`;
+}
+
+function discoverForeignKeyRelationships(
+  schema: DataSourceTable[],
+  selectedTables: string[],
+  models: WrenModel[],
+): WrenRelationship[] {
+  const selectedModels = models.filter((model) => selectedTables.includes(model.table));
+  const modelForTable = (tableId: string) => {
+    const exact = selectedModels.find((model) => model.table === tableId);
+    if (exact) return exact;
+    const candidates = selectedModels.filter(
+      (model) =>
+        model.table.endsWith(`.${tableId}`) || model.table.split(".").pop() === tableId,
+    );
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  const grouped = new Map<
+    string,
+    {
+      source: WrenModel;
+      target: WrenModel;
+      constraint: string;
+      foreignKeyId: string;
+      conditions: string[];
+    }
+  >();
+
+  for (const table of schema) {
+    const tableId = table.id || table.name;
+    const source = modelForTable(tableId);
+    if (!source) continue;
+    for (const foreignKey of table.foreign_keys ?? []) {
+      const target = modelForTable(foreignKey.referenced_table);
+      if (!target) continue;
+      const id = foreignKeyId(tableId, foreignKey);
+      const item = grouped.get(id) ?? {
+        source,
+        target,
+        constraint: foreignKey.name || foreignKey.column,
+        foreignKeyId: id,
+        conditions: [],
+      };
+      item.conditions.push(
+        `${source.name}.${foreignKey.column} = ${target.name}.${foreignKey.referenced_column}`,
+      );
+      grouped.set(id, item);
+    }
+  }
+
+  return [...grouped.values()].map((item) => ({
+    name: relationshipName(`${item.source.name}_${item.target.name}_${item.constraint}`),
+    left_model: item.source.name,
+    right_model: item.target.name,
+    join_type: "many_to_one" as const,
+    condition: item.conditions.join(" AND "),
+    foreign_key_id: item.foreignKeyId,
+  }));
+}
+
+function includeDirectForeignKeyNeighbors(
+  selectedTables: string[],
+  schema: DataSourceTable[],
+): string[] {
+  const selected = new Set(selectedTables);
+  const anchors = new Set(selectedTables);
+  const tableId = (table: DataSourceTable) => table.id || table.name;
+  const resolveTable = (reference: string) => {
+    const exact = schema.find((table) => tableId(table) === reference);
+    if (exact) return tableId(exact);
+    const candidates = schema.filter(
+      (table) =>
+        table.name === reference ||
+        tableId(table).endsWith(`.${reference}`) ||
+        reference.endsWith(`.${table.name}`),
+    );
+    return candidates.length === 1 ? tableId(candidates[0]) : undefined;
+  };
+
+  for (const table of schema) {
+    const source = tableId(table);
+    for (const foreignKey of table.foreign_keys ?? []) {
+      const target = resolveTable(foreignKey.referenced_table);
+      if (!target) continue;
+      if (anchors.has(source)) selected.add(target);
+      if (anchors.has(target)) selected.add(source);
+    }
+  }
+
+  return [...selectedTables, ...[...selected].filter((table) => !selectedTables.includes(table))];
+}
+
+function mergeForeignKeyRelationships(
+  current: WrenSemanticConfig,
+  schema: DataSourceTable[],
+  selectedTables: string[],
+  models: WrenModel[],
+  foreignKeysComplete: boolean,
+): WrenSemanticConfig {
+  const suggestions = discoverForeignKeyRelationships(schema, selectedTables, models);
+  const schemaForeignKeyIds = new Set(
+    schema.flatMap((table) =>
+      (table.foreign_keys ?? []).map((foreignKey) =>
+        foreignKeyId(table.id || table.name, foreignKey),
+      ),
+    ),
+  );
+  const ignoredForeignKeys = foreignKeysComplete
+    ? current.ignored_foreign_keys.filter((id) => schemaForeignKeyIds.has(id))
+    : current.ignored_foreign_keys;
+  const ignored = new Set(ignoredForeignKeys);
+  const existingByForeignKey = new Map<string, WrenRelationship>();
+  for (const relationship of current.relationships) {
+    if (typeof relationship.foreign_key_id === "string") {
+      existingByForeignKey.set(relationship.foreign_key_id, relationship);
+    }
+  }
+  const selectedModelNames = new Set(
+    models.filter((model) => selectedTables.includes(model.table)).map((model) => model.name),
+  );
+  const claimedManualRelationships = new Set<number>();
+  const imported: WrenRelationship[] = [];
+  const representedConditions = new Set<string>();
+
+  for (const suggestion of suggestions) {
+    const id = suggestion.foreign_key_id;
+    if (!id || ignored.has(id)) continue;
+    const existing = existingByForeignKey.get(id);
+    if (existing) {
+      imported.push(existing);
+      representedConditions.add(existing.condition);
+      continue;
+    }
+    const matchingLegacyIndex = current.relationships.findIndex(
+      (relationship, index) =>
+        !relationship.foreign_key_id &&
+        !claimedManualRelationships.has(index) &&
+        relationship.name === suggestion.name,
+    );
+    const matchingManualIndex =
+      matchingLegacyIndex >= 0
+        ? matchingLegacyIndex
+        : current.relationships.findIndex(
+            (relationship, index) =>
+              !relationship.foreign_key_id &&
+              !claimedManualRelationships.has(index) &&
+              relationship.condition === suggestion.condition,
+          );
+    if (matchingManualIndex >= 0) {
+      claimedManualRelationships.add(matchingManualIndex);
+      const matchingManual = current.relationships[matchingManualIndex];
+      imported.push({ ...matchingManual, foreign_key_id: id });
+      representedConditions.add(matchingManual.condition);
+      continue;
+    }
+    if (representedConditions.has(suggestion.condition)) continue;
+    imported.push(suggestion);
+    representedConditions.add(suggestion.condition);
+  }
+
+  const manual = current.relationships.filter(
+    (relationship, index) =>
+      !relationship.foreign_key_id &&
+      !claimedManualRelationships.has(index) &&
+      selectedModelNames.has(relationship.left_model) &&
+      selectedModelNames.has(relationship.right_model),
+  );
+  if (!foreignKeysComplete) {
+    const importedIds = new Set(
+      imported.flatMap((relationship) =>
+        typeof relationship.foreign_key_id === "string" ? [relationship.foreign_key_id] : [],
+      ),
+    );
+    for (const relationship of current.relationships) {
+      if (
+        typeof relationship.foreign_key_id === "string" &&
+        !importedIds.has(relationship.foreign_key_id) &&
+        selectedModelNames.has(relationship.left_model) &&
+        selectedModelNames.has(relationship.right_model)
+      ) {
+        imported.push(relationship);
+        importedIds.add(relationship.foreign_key_id);
+      }
+    }
+  }
+  return {
+    ...current,
+    relationships: [...manual, ...imported],
+    ignored_foreign_keys: ignoredForeignKeys,
+  };
 }
 
 function Field({
@@ -408,7 +627,6 @@ function RevisionPreview({
   const isActive = revision.id === activeRevisionId;
   const canActivate =
     !isActive && (revision.status === "active" || revision.status === "retired");
-  const semanticKeys = new Set(["tables", "models", "relationships", "rules", "views"]);
   const connectorFields = new Map(
     (connector?.field_groups ?? []).flatMap((group) =>
       group.fields.map((field) => [field.name, field] as const),
@@ -418,7 +636,7 @@ function RevisionPreview({
     ([key, value]) => {
       const field = connectorFields.get(key);
       return (
-        !semanticKeys.has(key) &&
+        !semanticConfigKeys.has(key) &&
         value !== undefined &&
         value !== null &&
         value !== "" &&
@@ -624,6 +842,7 @@ export function DataSourcesPage() {
   const [secretChanged, setSecretChanged] = useState(false);
   const [semantic, setSemantic] = useState<WrenSemanticConfig>(emptySemantic);
   const [schema, setSchema] = useState<DataSourceTable[]>([]);
+  const [schemaForeignKeysComplete, setSchemaForeignKeysComplete] = useState(false);
   const [savedFingerprint, setSavedFingerprint] = useState("");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState("");
@@ -724,9 +943,7 @@ export function DataSourcesPage() {
     setConnection({
       ...defaultConnection(next.data_source.connector_type),
       ...Object.fromEntries(
-        Object.entries(next.config).filter(([key]) =>
-          !["tables", "models", "relationships", "rules", "views"].includes(key),
-        ),
+        Object.entries(next.config).filter(([key]) => !semanticConfigKeys.has(key)),
       ),
     });
     setSecretValues({});
@@ -735,14 +952,13 @@ export function DataSourcesPage() {
     const nextSemantic = detailSemantic(next);
     setSemantic(nextSemantic);
     setSchema(sourceTables(nextSemantic));
+    setSchemaForeignKeysComplete(false);
     setSavedFingerprint(
       baseFingerprint({
         display_name: next.data_source.display_name,
         connector_type: next.data_source.connector_type,
         connection: Object.fromEntries(
-          Object.entries(next.config).filter(([key]) =>
-            !["tables", "models", "relationships", "rules", "views"].includes(key),
-          ),
+          Object.entries(next.config).filter(([key]) => !semanticConfigKeys.has(key)),
         ),
         semantic: nextSemantic,
       }, next.connection.configured_secret_fields ?? []),
@@ -789,6 +1005,7 @@ export function DataSourcesPage() {
     setSecretChanged(false);
     setSemantic(emptySemantic());
     setSchema([]);
+    setSchemaForeignKeysComplete(false);
     setSavedFingerprint("");
     setOperation(null);
     setError("");
@@ -825,12 +1042,16 @@ export function DataSourcesPage() {
 
   function setConnectionField(key: string, value: DataSourceConnection[string]) {
     setConnection((current) => ({ ...current, [key]: value }));
+    setSchema([]);
+    setSchemaForeignKeysComplete(false);
     setNotice("连接参数已修改，请重新测试连接后再应用。");
   }
 
   function setSecretField(name: string, value: string) {
     setSecretValues((current) => ({ ...current, [name]: value }));
     setSecretChanged(true);
+    setSchema([]);
+    setSchemaForeignKeysComplete(false);
     setNotice("凭证已修改，请重新测试连接后再应用。");
   }
 
@@ -851,11 +1072,14 @@ export function DataSourcesPage() {
     setSecretChanged(false);
     setSemantic(emptySemantic());
     setSchema([]);
+    setSchemaForeignKeysComplete(false);
     setNotice("填写连接信息后保存，即可测试连接并读取表结构。");
   }
 
   async function persistForm() {
     if (!displayName.trim()) throw new Error("请填写数据源名称。");
+    const schemaBeforePersist = schema;
+    const foreignKeysCompleteBeforePersist = schemaForeignKeysComplete;
     let saved: DataSourceDetail;
     if (!detail) {
       saved = await createDataSource(payload);
@@ -867,6 +1091,10 @@ export function DataSourcesPage() {
     setSecretValues({});
     setSecretChanged(false);
     hydrateDetail(saved);
+    if (schemaBeforePersist.length > 0) {
+      setSchema(schemaBeforePersist);
+      setSchemaForeignKeysComplete(foreignKeysCompleteBeforePersist);
+    }
     setSources((current) => [
       saved,
       ...current.filter((item) => item.data_source.id !== saved.data_source.id),
@@ -925,17 +1153,33 @@ export function DataSourcesPage() {
       const saved = await persistForm();
       const result = await refreshDataSourceSchema(saved.data_source.id);
       setSchema(result.tables);
-      const selected = semantic.tables.length
-        ? semantic.tables.filter((name) => result.tables.some((table) => (table.id || table.name) === name))
-        : [];
+      setSchemaForeignKeysComplete(result.foreign_keys_complete);
+      const selectedBeforeRefresh = semantic.tables;
+      const existingSelection = selectedBeforeRefresh.filter((name) =>
+        result.tables.some((table) => (table.id || table.name) === name),
+      );
+      const selected = result.foreign_keys_complete
+        ? includeDirectForeignKeyNeighbors(existingSelection, result.tables)
+        : existingSelection;
       const models = createModelsForSelection(selected, result.tables, semantic.models);
-      setSemantic((current) => ({ ...current, tables: selected, models }));
-      const message = `读取到 ${result.tables.length} 张表。勾选表后保存，并配置语义模型。`;
-      if (result.warnings?.length) {
-        setError(`${message} ${result.warnings.join(" ")}`);
-      } else {
-        setNotice(message);
-      }
+      setSemantic({
+        ...mergeForeignKeyRelationships(
+          semantic,
+          result.tables,
+          selected,
+          models,
+          result.foreign_keys_complete,
+        ),
+        tables: selected,
+        models,
+      });
+      const addedRelatedTables = selected.filter((table) => !existingSelection.includes(table)).length;
+      const message = result.foreign_keys_complete
+        ? `读取到 ${result.tables.length} 张表，已根据数据库外键同步模型关系${
+            addedRelatedTables ? `，并自动选中 ${addedRelatedTables} 张直接关联表` : ""
+          }。`
+        : `读取到 ${result.tables.length} 张表；外键元数据未完整可用，已有关系已保留，可手动添加关系。`;
+      setNotice(result.warnings?.length ? `${message} ${result.warnings.join(" ")}` : message);
     });
   }
 
@@ -1038,27 +1282,23 @@ export function DataSourcesPage() {
   }
 
   function toggleTable(tableName: string) {
-    const selected = selectedTables.includes(tableName)
-      ? selectedTables.filter((name) => name !== tableName)
-      : [...selectedTables, tableName];
-    setSemantic((current) => ({
-      ...current,
-      tables: selected,
-      models: createModelsForSelection(selected, tableOptions, current.models),
-      relationships: current.relationships.filter(
-        (relationship) =>
-          selected.some(
-            (name) =>
-              current.models.find((model) => model.table === name)?.name ===
-              relationship.left_model,
-          ) &&
-          selected.some(
-            (name) =>
-              current.models.find((model) => model.table === name)?.name ===
-              relationship.right_model,
-          ),
-      ),
-    }));
+    setSemantic((current) => {
+      const selected = current.tables.includes(tableName)
+        ? current.tables.filter((name) => name !== tableName)
+        : [...current.tables, tableName];
+      const models = createModelsForSelection(selected, tableOptions, current.models);
+      return {
+        ...mergeForeignKeyRelationships(
+          current,
+          tableOptions,
+          selected,
+          models,
+          schemaForeignKeysComplete,
+        ),
+        tables: selected,
+        models,
+      };
+    });
   }
 
   function updateModel(index: number, update: Partial<WrenModel>) {
@@ -1124,74 +1364,27 @@ export function DataSourcesPage() {
     }));
   }
 
-  function foreignKeySuggestions(): WrenRelationship[] {
-    const modelsByTable = new Map(
-      semantic.models
-        .filter((model) => selectedTables.includes(model.table))
-        .map((model) => [model.table, model]),
-    );
-    const grouped = new Map<
-      string,
-      {
-        source: WrenModel;
-        target: WrenModel;
-        constraint: string;
-        conditions: string[];
-      }
-    >();
-    for (const table of schema) {
-      const source = modelsByTable.get(table.id || table.name);
-      if (!source) continue;
-      for (const foreignKey of table.foreign_keys ?? []) {
-        const target = modelsByTable.get(foreignKey.referenced_table);
-        if (!target) continue;
-        const key = `${table.name}:${foreignKey.name}:${foreignKey.referenced_table}`;
-        const item = grouped.get(key) ?? {
-          source,
-          target,
-          constraint: foreignKey.name,
-          conditions: [],
-        };
-        item.conditions.push(
-          `${source.name}.${foreignKey.column} = ${target.name}.${foreignKey.referenced_column}`,
-        );
-        grouped.set(key, item);
-      }
-    }
-    const existingConditions = new Set(semantic.relationships.map((item) => item.condition));
-    return [...grouped.values()]
-      .map((item) => ({
-        name: `${item.source.name}_${item.target.name}_${item.constraint}`,
-        left_model: item.source.name,
-        right_model: item.target.name,
-        join_type: "many_to_one" as const,
-        condition: item.conditions.join(" AND "),
-      }))
-      .filter((item) => !existingConditions.has(item.condition));
-  }
-
-  function addSuggestedRelationships() {
-    const suggestions = foreignKeySuggestions();
-    if (!suggestions.length) return;
+  function updateRelationship(index: number, update: Partial<WrenRelationship>) {
     setSemantic((current) => {
-      const existing = new Set(current.relationships.map((item) => item.condition));
+      const relationship = current.relationships[index];
+      const foreignKeyId = relationship?.foreign_key_id;
       return {
         ...current,
-        relationships: [
-          ...current.relationships,
-          ...suggestions.filter((item) => !existing.has(item.condition)),
-        ],
+        relationships: current.relationships.map((item, itemIndex) =>
+          itemIndex === index
+            ? {
+                ...item,
+                ...update,
+                ...(typeof foreignKeyId === "string" ? { foreign_key_id: null } : {}),
+              }
+            : item,
+        ),
+        ignored_foreign_keys:
+          typeof foreignKeyId === "string"
+            ? [...new Set([...current.ignored_foreign_keys, foreignKeyId])]
+            : current.ignored_foreign_keys,
       };
     });
-  }
-
-  function updateRelationship(index: number, update: Partial<WrenRelationship>) {
-    setSemantic((current) => ({
-      ...current,
-      relationships: current.relationships.map((item, itemIndex) =>
-        itemIndex === index ? { ...item, ...update } : item,
-      ),
-    }));
   }
 
   function addRule() {
@@ -1247,25 +1440,11 @@ export function DataSourcesPage() {
       : null;
   return (
     <main className="min-h-dvh bg-[#f5f2eb] text-[#393630]">
-      <header className="sticky top-0 z-10 border-b border-[#e7e2d8] bg-[#f8f6f1]/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-3 px-4 sm:px-8">
-          <a
-            href="/"
-            aria-label="返回 AskDB"
-            className="flex size-9 items-center justify-center rounded-lg text-[#77736b] hover:bg-[#ece8df] focus-visible:ring-2 focus-visible:ring-[#c57650]"
-          >
-            <ChevronLeftIcon className="size-4" />
-          </a>
-          <div className="flex size-9 items-center justify-center rounded-xl bg-[#e8e3d8] text-[#9c6046]">
-            <DatabaseIcon className="size-[18px]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h1 className="text-sm font-semibold tracking-tight">Wren 数据源</h1>
-            <p className="hidden text-[11px] text-[#89847a] sm:block">
-              管理 Wren 数据库/数仓连接、语义模型和生效版本
-            </p>
-          </div>
-          {detail && (
+      <SettingsPageHeader
+        title="数据源"
+        description="管理数据库/数仓连接、语义模型和生效版本"
+        icon={DatabaseIcon}
+        rightSlot={detail && (
             <span
               className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] sm:inline-flex ${detail.data_source.runtime_status === "ready" ? "bg-[#e7eee2] text-[#527249]" : "bg-[#f2e7dc] text-[#8c6149]"}`}
             >
@@ -1276,13 +1455,12 @@ export function DataSourcesPage() {
               )}
               {detail.data_source.runtime_status === "ready"
                 ? "运行中"
-                : detail.data_source.enabled
-                  ? "未应用"
-                  : "已停用"}
+                  : detail.data_source.enabled
+                    ? "未应用"
+                    : "已停用"}
             </span>
-          )}
-        </div>
-      </header>
+        )}
+      />
 
       <div className="mx-auto grid max-w-[1440px] gap-5 px-4 py-5 sm:px-8 lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-7 lg:py-8">
         <aside className="h-fit rounded-2xl border border-[#e7e2d8] bg-[#f9f7f2] p-3 lg:sticky lg:top-24">
@@ -1931,28 +2109,22 @@ export function DataSourcesPage() {
 
           <Section
             title="模型关系"
-            description="外键建议来自数据库约束；确认后再加入模型关系，也可以手动编辑连接条件。"
+            description="读取表结构时会保留已选表，并自动补齐与其直接关联的外键表、生成数据库关系；可取消不需要的表，也可手动添加数据库未声明的关系。"
           >
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <ActionButton
-                  onClick={addSuggestedRelationships}
-                  disabled={disabled || foreignKeySuggestions().length === 0}
-                >
-                  <WandSparklesIcon className="size-3.5" />
-                  应用外键建议
-                </ActionButton>
-                <span className="text-[10px] text-[#989186]">
-                  {foreignKeySuggestions().length
-                    ? `${foreignKeySuggestions().length} 条可用建议`
-                    : "重新读取表结构以发现外键"}
-                </span>
-              </div>
+              {semantic.relationships.length === 0 && (
+                <p className="text-xs text-[#89847a]">
+                  读取表结构并选中关联数据表后，可用的数据库外键会自动出现在这里；未声明或不可读取的关系可手动添加。
+                </p>
+              )}
               {semantic.relationships.map((relationship, index) => (
                 <div
                   key={`${relationship.name}-${index}`}
                   className="rounded-xl border border-[#ebe6dd] bg-white/65 p-3"
                 >
+                  {typeof relationship.foreign_key_id === "string" && (
+                    <p className="mb-2 text-[10px] text-[#89847a]">数据库外键</p>
+                  )}
                   <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr]">
                     <label className="grid gap-1 text-[10px] text-[#89847a]">
                       左侧模型
@@ -2014,12 +2186,19 @@ export function DataSourcesPage() {
                       type="button"
                       aria-label="删除关系"
                       onClick={() =>
-                        setSemantic((current) => ({
-                          ...current,
-                          relationships: current.relationships.filter(
-                            (_, itemIndex) => itemIndex !== index,
-                          ),
-                        }))
+                        setSemantic((current) => {
+                          const foreignKeyId = current.relationships[index]?.foreign_key_id;
+                          return {
+                            ...current,
+                            relationships: current.relationships.filter(
+                              (_, itemIndex) => itemIndex !== index,
+                            ),
+                            ignored_foreign_keys:
+                              typeof foreignKeyId === "string"
+                                ? [...new Set([...current.ignored_foreign_keys, foreignKeyId])]
+                                : current.ignored_foreign_keys,
+                          };
+                        })
                       }
                       className="rounded-lg px-2 text-[#9c6046] hover:bg-[#f8e9e4]"
                     >

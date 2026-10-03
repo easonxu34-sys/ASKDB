@@ -163,7 +163,7 @@ async def submit_query_example(
             _application(request).submit,
             principal=principal,
             thread_id=body.thread_id,
-            source_turn_id=body.source_turn_id.hex if body.source_turn_id else None,
+            source_turn_key=body.source_turn_key,
             idempotency_key=body.idempotency_key,
             question=body.question,
             sql_template=body.sql_template,

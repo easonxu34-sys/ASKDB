@@ -19,7 +19,8 @@ class QueryExampleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str = Field(min_length=16, max_length=128)
-    source_turn_id: UUID | None = None
+    # Opaque key derived from the client turn id, not a database row identifier.
+    source_turn_key: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str = Field(
         min_length=16, max_length=128, pattern=r"^[A-Za-z0-9_-]{16,128}$"
     )

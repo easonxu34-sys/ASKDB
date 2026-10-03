@@ -26,6 +26,7 @@ class WrenMetadataSchemaReader:
         self.connection_config = connection_config
         self.secrets = secrets or {}
         self.warnings: list[str] = []
+        self.foreign_keys_complete = False
 
     def _connect(self) -> Any:
         try:
@@ -537,11 +538,43 @@ class WrenMetadataSchemaReader:
                 "ORDER BY c.table_name, c.constraint_name, cc.position"
             )
             try:
-                return self._rows(connector.query(sql, limit=None))
+                rows = self._rows(connector.query(sql, limit=None))
+                self.foreign_keys_complete = True
+                return rows
             except Exception:
+                self.foreign_keys_complete = False
+                self.warnings.append("当前账号无法读取 Oracle 外键元数据；可手动添加模型关系。")
                 return []
         if self.connector_type in {"spark", "duckdb"}:
+            self.foreign_keys_complete = False
+            self.warnings.append("当前连接器不提供外键元数据；可手动添加模型关系。")
             return []
+        if self.connector_type == "mysql":
+            try:
+                relation = self._information_schema("key_column_usage")
+                sql = (
+                    "SELECT k.table_schema AS schema_name, k.table_name AS table_name, "
+                    "k.column_name AS column_name, k.constraint_name AS constraint_name, "
+                    "CASE WHEN k.referenced_table_name IS NOT NULL THEN 'FOREIGN KEY' "
+                    "ELSE 'PRIMARY KEY' END AS constraint_type, "
+                    "k.referenced_table_schema AS ref_schema_name, "
+                    "k.referenced_table_name AS ref_table_name, "
+                    "k.referenced_column_name AS ref_column_name "
+                    f"FROM {relation} k WHERE {self._scope_predicate('k')} "
+                    "AND (k.constraint_name = 'PRIMARY' OR k.referenced_table_name IS NOT NULL) "
+                    "ORDER BY k.table_schema, k.table_name, k.constraint_name, k.ordinal_position"
+                )
+                rows = self._rows(connector.query(sql, limit=None))
+                self.foreign_keys_complete = True
+                return rows
+            except Exception as exc:
+                self.foreign_keys_complete = False
+                first_arg = exc.args[0] if getattr(exc, "args", ()) else None
+                error_code = str(first_arg) if isinstance(first_arg, int) else type(exc).__name__
+                self.warnings.append(
+                    f"MySQL 外键元数据读取失败（{error_code}）；请检查数据库权限或连接器支持。"
+                )
+                return []
         try:
             relation = self._information_schema("key_column_usage")
             sql = (
@@ -559,11 +592,15 @@ class WrenMetadataSchemaReader:
                 f"WHERE {self._scope_predicate('k')} "
                 "ORDER BY k.table_schema, k.table_name, k.constraint_name"
             )
-            return self._rows(connector.query(sql, limit=None))
+            rows = self._rows(connector.query(sql, limit=None))
+            self.foreign_keys_complete = True
+            return rows
         except Exception:
+            self.foreign_keys_complete = False
             # Several warehouses do not publish key metadata or the user may
             # not have permission to inspect it. Table and column discovery is
             # still useful; users can add relationships manually.
+            self.warnings.append("当前连接器或账号无法读取外键元数据；可手动添加模型关系。")
             return []
 
     @staticmethod
@@ -573,6 +610,7 @@ class WrenMetadataSchemaReader:
     def introspect(self) -> list[TableSchema]:
         connector = None
         self.warnings = []
+        self.foreign_keys_complete = False
         try:
             connector = self._connect()
             column_rows = self._column_rows(connector)

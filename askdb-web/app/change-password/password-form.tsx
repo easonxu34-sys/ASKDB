@@ -1,12 +1,13 @@
 "use client";
 
-import { ArrowRightIcon, DatabaseIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowRightIcon, DatabaseIcon, KeyRoundIcon, LoaderCircleIcon } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { authMutation, fetchCurrentUser, responseError } from "@/lib/auth-api";
 import { PasswordField } from "@/components/auth/password-field";
+import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 
-export function PasswordForm() {
+export function PasswordForm({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -14,6 +15,7 @@ export function PasswordForm() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [firstLogin, setFirstLogin] = useState(false);
 
   useEffect(() => {
@@ -45,16 +47,21 @@ export function PasswordForm() {
     }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const response = await authMutation("/api/auth/change-password", "POST", {
         current_password: currentPassword,
         new_password: newPassword,
       });
+      if (!response.ok) {
+        setError(await responseError(response, "密码修改失败，请检查当前密码后重试。"));
+        return;
+      }
       setCurrentPassword("");
       setNewPassword("");
       setConfirmation("");
-      if (!response.ok) {
-        setError(await responseError(response, "密码修改失败，请检查当前密码后重试。"));
+      if (embedded) {
+        setNotice("密码修改成功。");
         return;
       }
       router.replace("/");
@@ -67,17 +74,33 @@ export function PasswordForm() {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-[#f7f5f0] px-5 py-10 text-[#30302e]">
-      <section className="w-full max-w-lg rounded-[1.75rem] border border-[#e7e2d8] bg-[#fbfaf7] p-7 shadow-[0_20px_70px_rgba(58,49,36,0.08)] sm:p-10">
-        <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-2xl bg-[#e8e3d8] text-[#5c554c]"><DatabaseIcon className="size-5" aria-hidden="true" /></div>
-          <div><p className="text-sm font-semibold">AskDB</p><p className="text-[11px] text-[#89847a]">账号安全</p></div>
-        </div>
-        <p className="mt-10 text-xs font-medium tracking-[0.15em] text-[#a1694b]">{firstLogin ? "首次登录" : "账户设置"}</p>
-        <h1 className="mt-3 font-serif text-3xl tracking-tight">{firstLogin ? "请设置新密码" : "修改密码"}</h1>
-        <p className="mt-3 text-sm leading-6 text-[#77736b]">
-          {firstLogin ? "为了保护账号，请先将临时密码更换为个人密码。" : "输入当前密码，再设置一个新的个人密码。"}
-        </p>
+    <>
+      {embedded && (
+        <SettingsPageHeader
+          title={firstLogin ? "请设置新密码" : "修改密码"}
+          description={firstLogin ? "为了保护账号，请先将临时密码更换为个人密码。" : "输入当前密码，再设置一个新的个人密码。"}
+          icon={KeyRoundIcon}
+        />
+      )}
+      <main className={embedded
+        ? "min-h-[calc(100dvh-4rem)] bg-[#f7f5f0] px-5 py-8 text-[#30302e] sm:px-8 sm:py-10"
+        : "flex min-h-dvh items-center justify-center bg-[#f7f5f0] px-5 py-10 text-[#30302e]"}
+      >
+      <section className={`w-full rounded-[1.75rem] border border-[#e7e2d8] bg-[#fbfaf7] p-7 shadow-[0_20px_70px_rgba(58,49,36,0.08)] sm:p-10 ${embedded ? "mx-auto max-w-xl" : "max-w-lg"}`}>
+        {!embedded && (
+          <>
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-[#e8e3d8] text-[#5c554c]"><DatabaseIcon className="size-5" aria-hidden="true" /></div>
+              <div><p className="text-sm font-semibold">AskDB</p><p className="text-[11px] text-[#89847a]">账号安全</p></div>
+            </div>
+            <p className="mt-10 text-xs font-medium tracking-[0.15em] text-[#a1694b]">{firstLogin ? "首次登录" : "账户设置"}</p>
+            <h1 className="mt-3 font-serif text-3xl tracking-tight">{firstLogin ? "请设置新密码" : "修改密码"}</h1>
+            <p className="mt-3 text-sm leading-6 text-[#77736b]">
+              {firstLogin ? "为了保护账号，请先将临时密码更换为个人密码。" : "输入当前密码，再设置一个新的个人密码。"}
+            </p>
+          </>
+        )}
+        {notice && <p role="status" className="mt-5 rounded-lg border border-[#d7e2d1] bg-[#f1f7ee] px-3 py-2.5 text-xs leading-5 text-[#4b6748]">{notice}</p>}
         <form className="mt-8 space-y-4" onSubmit={(event) => void submit(event)}>
           <PasswordField
             id="current-password"
@@ -109,6 +132,7 @@ export function PasswordForm() {
           </button>
         </form>
       </section>
-    </main>
+      </main>
+    </>
   );
 }

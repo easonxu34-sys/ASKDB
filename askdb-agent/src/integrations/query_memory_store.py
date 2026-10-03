@@ -275,7 +275,7 @@ class QueryMemoryStore:
 
     def submit(
         self, *, actor_id: str, data_source_id: str, thread_id: str,
-        source_turn_id: str | None, idempotency_key: str, normalized_question: str,
+        source_turn_key: str | None, idempotency_key: str, normalized_question: str,
         sql_template: str, parameter_specs: tuple[QueryParameterSpec, ...],
         connector_type: str, wren_revision_id: str, mdl_digest: str,
     ) -> QueryExampleCandidate:
@@ -288,6 +288,8 @@ class QueryMemoryStore:
             raise QueryMemoryValidationError("SQL template is invalid")
         if len(parameter_specs) > 32 or len({item.name for item in parameter_specs}) != len(parameter_specs):
             raise QueryMemoryValidationError("SQL template parameter list is invalid")
+        if source_turn_key is not None and not re.fullmatch(r"[a-f0-9]{64}", source_turn_key):
+            raise QueryMemoryValidationError("source turn key is invalid")
         for item in parameter_specs:
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item.name):
                 raise QueryMemoryValidationError("SQL template parameter name is invalid")
@@ -298,7 +300,7 @@ class QueryMemoryStore:
         )
         request_hash = _digest(_canonical({
             "data_source_id": data_source_id, "thread_id": thread_id,
-            "source_turn_id": source_turn_id, "content_hash": content_hash,
+            "source_turn_key": source_turn_key, "content_hash": content_hash,
         }))
         idempotency_hash = _digest(idempotency_key.encode("utf-8"))
         now = self._now()
@@ -322,11 +324,23 @@ class QueryMemoryStore:
                 or _parse_time(thread["expires_at"]) <= now
             ):
                 raise QueryMemoryNotFound("thread is unavailable")
-            if source_turn_id and connection.execute(
-                "SELECT 1 FROM agent_conversation_turns WHERE thread_id=? AND id=?",
-                (thread_id, source_turn_id),
-            ).fetchone() is None:
-                raise QueryMemoryValidationError("source turn does not belong to thread")
+            source_turn_id = None
+            if source_turn_key:
+                source_turn = connection.execute(
+                    """SELECT turn.id
+                       FROM agent_conversation_turns AS turn
+                       JOIN agent_turn_requests AS request
+                         ON request.thread_id=turn.thread_id
+                        AND request.turn_id=turn.turn_id
+                       WHERE turn.thread_id=? AND turn.turn_id=?
+                         AND turn.role='user' AND request.status='completed'""",
+                    (thread_id, source_turn_key),
+                ).fetchone()
+                if source_turn is None:
+                    raise QueryMemoryValidationError(
+                        "source turn is incomplete or does not belong to thread"
+                    )
+                source_turn_id = source_turn["id"]
             revision = connection.execute(
                 """SELECT source.active_revision_id, source.connector_type,
                           source.runtime_status, revision.status, revision.mdl_digest

@@ -1,8 +1,9 @@
 "use client";
 
 import { ThreadListItemPrimitive, ThreadListPrimitive } from "@assistant-ui/react";
-import { useEffect, useRef, useState } from "react";
-import { DatabaseIcon, KeyRoundIcon, LogOutIcon, MessageSquareIcon, PlusIcon, SearchIcon, Settings2Icon, UsersIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { DatabaseIcon, LogOutIcon, MessageSquareIcon, PlusIcon, SearchIcon, Settings2Icon } from "lucide-react";
 import { fetchDataSourceCatalog, type DataSourceCatalog } from "@/lib/data-sources";
 import {
   getThreadDataSourceId,
@@ -22,27 +23,9 @@ type ThreadListSidebarProps = {
 
 export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: ThreadListSidebarProps) => {
   const [search, setSearch] = useState("");
-  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [sourceCatalog, setSourceCatalog] = useState<DataSourceCatalog | null>(null);
   const [threadNotice, setThreadNotice] = useState("");
   const [, setSourceRevision] = useState(0);
-  const settingsMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!settingsMenuOpen) return;
-    const closeOnOutside = (event: PointerEvent) => {
-      if (!settingsMenuRef.current?.contains(event.target as Node)) setSettingsMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSettingsMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [settingsMenuOpen]);
 
   useEffect(() => {
     let active = true;
@@ -155,15 +138,21 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
 
       <footer className="shrink-0 border-t border-[#e4dfd5] px-4 py-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2 py-1.5">
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#e8e3d8] text-[#82796c]">
-              <MessageSquareIcon className="size-3.5" aria-hidden="true" />
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-[#514b42]">{user.username}</p>
-              <p className="text-[10px] text-[#89847a]">{user.role === "admin" ? "管理员" : "普通用户"}</p>
-            </div>
-          </div>
+          <Link
+            href="/settings"
+            aria-label="个人设置"
+            title="个人设置"
+            onClick={onNavigate}
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-[#e9e5dc] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
+          >
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#e8e3d8] text-[#82796c]">
+              <Settings2Icon className="size-3.5" aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-xs font-medium text-[#514b42]">个人设置</span>
+              <span className="block truncate text-[10px] text-[#89847a]">{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</span>
+            </span>
+          </Link>
           <button
             type="button"
             aria-label="退出登录"
@@ -173,59 +162,6 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
           >
             <LogOutIcon className="size-4" aria-hidden="true" />
           </button>
-          <a
-            href="/change-password"
-            aria-label="修改密码"
-            title="修改密码"
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[#837d73] transition-colors hover:bg-[#e9e5dc] hover:text-[#514b42] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
-          >
-            <KeyRoundIcon className="size-4" aria-hidden="true" />
-          </a>
-          {user.role === "admin" && <div className="relative" ref={settingsMenuRef}>
-            {settingsMenuOpen && (
-              <div
-                role="menu"
-                aria-label="设置菜单"
-                className="absolute right-0 bottom-full z-40 mb-2 min-w-36 rounded-xl border border-[#e7e2d8] bg-[#fbfaf7] p-1.5 shadow-[0_8px_24px_rgba(59,48,35,0.12)]"
-              >
-                <a
-                  href="/settings/models"
-                  role="menuitem"
-                  className="flex h-9 w-full items-center rounded-lg px-2.5 text-left text-xs text-[#514b42] outline-none hover:bg-[#ece8df] focus-visible:ring-2 focus-visible:ring-[#c57650]"
-                  onClick={() => setSettingsMenuOpen(false)}
-                >
-                  模型配置
-                </a>
-                <a
-                  href="/settings/wren"
-                  role="menuitem"
-                  className="flex h-9 w-full items-center rounded-lg px-2.5 text-left text-xs text-[#514b42] outline-none hover:bg-[#ece8df] focus-visible:ring-2 focus-visible:ring-[#c57650]"
-                  onClick={() => setSettingsMenuOpen(false)}
-                >
-                  Wren 数据源
-                </a>
-                <a
-                  href="/admin/users"
-                  role="menuitem"
-                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs text-[#514b42] outline-none hover:bg-[#ece8df] focus-visible:ring-2 focus-visible:ring-[#c57650]"
-                  onClick={() => setSettingsMenuOpen(false)}
-                >
-                  <UsersIcon className="size-3.5" aria-hidden="true" />
-                  用户管理
-                </a>
-              </div>
-            )}
-            <button
-              type="button"
-              aria-label="打开设置菜单"
-              aria-haspopup="menu"
-              aria-expanded={settingsMenuOpen}
-              className="flex size-9 items-center justify-center rounded-lg text-[#837d73] transition-colors hover:bg-[#e9e5dc] hover:text-[#514b42] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
-              onClick={() => setSettingsMenuOpen((value) => !value)}
-            >
-              <Settings2Icon className="size-4" aria-hidden="true" />
-            </button>
-          </div>}
         </div>
       </footer>
     </aside>

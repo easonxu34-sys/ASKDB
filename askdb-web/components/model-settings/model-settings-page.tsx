@@ -4,13 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIcon,
   CheckCircle2Icon,
-  ChevronLeftIcon,
   CirclePlusIcon,
   CpuIcon,
   LoaderCircleIcon,
   ServerIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { authMutation } from "@/lib/auth-api";
 import {
   fetchModelCatalog,
@@ -291,25 +291,11 @@ export function ModelSettingsPage() {
 
   return (
     <main className="min-h-dvh bg-[#f5f2eb] text-[#393630]">
-      <header className="sticky top-0 z-10 border-b border-[#e7e2d8] bg-[#f8f6f1]/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-3 px-4 sm:px-8">
-          <a
-            href="/"
-            aria-label="返回 AskDB"
-            className="flex size-9 items-center justify-center rounded-lg text-[#77736b] hover:bg-[#ece8df] focus-visible:ring-2 focus-visible:ring-[#c57650]"
-          >
-            <ChevronLeftIcon className="size-4" />
-          </a>
-          <div className="flex size-9 items-center justify-center rounded-xl bg-[#e8e3d8] text-[#9c6046]">
-            <CpuIcon className="size-[18px]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h1 className="text-sm font-semibold tracking-tight">模型配置</h1>
-            <p className="hidden text-[11px] text-[#89847a] sm:block">
-              管理可用模型；每个会话可以单独选择模型
-            </p>
-          </div>
-          {editingId && catalog && (
+      <SettingsPageHeader
+        title="模型配置"
+        description="管理可用模型；每个会话可以单独选择模型"
+        icon={CpuIcon}
+        rightSlot={editingId && catalog && (
             <span
               className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] sm:inline-flex ${catalog.profiles.find((profile) => profile.id === editingId)?.available ? "bg-[#e7eee2] text-[#527249]" : "bg-[#f2e7dc] text-[#8c6149]"}`}
             >
@@ -322,9 +308,8 @@ export function ModelSettingsPage() {
                 ? "可用"
                 : "未就绪"}
             </span>
-          )}
-        </div>
-      </header>
+        )}
+      />
 
       <div className="mx-auto grid max-w-[1440px] gap-5 px-4 py-5 sm:px-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-7 lg:py-8">
         <aside className="h-fit rounded-2xl border border-[#e7e2d8] bg-[#f9f7f2] p-3 lg:sticky lg:top-24">

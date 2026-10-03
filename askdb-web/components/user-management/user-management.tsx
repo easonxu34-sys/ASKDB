@@ -1,9 +1,10 @@
 "use client";
 
-import { ArrowLeftIcon, CheckIcon, CopyIcon, KeyRoundIcon, LoaderCircleIcon, PlusIcon, ShieldCheckIcon, UserRoundIcon, UsersIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, KeyRoundIcon, LoaderCircleIcon, PlusIcon, ShieldCheckIcon, UserRoundIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { authMutation, fetchCurrentUser, responseError, type AdminUser, type AuthUser } from "@/lib/auth-api";
+import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   fetchDataSourceCatalog,
@@ -205,7 +206,18 @@ export function UserManagement() {
   }
 
   if (loading) {
-    return <main className="flex min-h-dvh items-center justify-center bg-[#f7f5f0] text-sm text-[#77736b]" role="status">正在加载账号管理…</main>;
+    return (
+      <>
+        <SettingsPageHeader
+          title="用户与权限"
+          description="管理用户账号和可访问的数据源"
+          icon={UsersIcon}
+        />
+        <main className="flex min-h-[calc(100dvh-4rem)] items-center justify-center bg-[#f7f5f0] text-sm text-[#77736b]" role="status">
+          正在加载账号管理…
+        </main>
+      </>
+    );
   }
   if (!currentUser || currentUser.role !== "admin") {
     return (
@@ -221,21 +233,15 @@ export function UserManagement() {
   }
 
   return (
-    <main className="min-h-dvh bg-[#f7f5f0] px-4 py-7 text-[#30302e] sm:px-8 sm:py-10">
-      <div className="mx-auto max-w-6xl">
-        <header className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <Link href="/" className="inline-flex items-center gap-2 text-xs text-[#89847a] hover:text-[#514b42] focus-visible:ring-2 focus-visible:ring-[#c57650]">
-              <ArrowLeftIcon className="size-3.5" aria-hidden="true" />返回对话
-            </Link>
-            <div className="mt-5 flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-2xl bg-[#e8e3d8] text-[#6b5e4d]"><UsersIcon className="size-5" aria-hidden="true" /></div>
-              <div><p className="text-xs tracking-[0.13em] text-[#a1694b]">组织设置</p><h1 className="mt-1 font-serif text-3xl tracking-tight">用户与权限</h1></div>
-            </div>
-          </div>
-          <div className="rounded-xl border border-[#e7e2d8] bg-[#fbfaf7] px-3.5 py-2 text-xs text-[#77736b]">管理员 · {currentUser.username}</div>
-        </header>
-
+    <>
+      <SettingsPageHeader
+        title="用户与权限"
+        description="管理用户账号和可访问的数据源"
+        icon={UsersIcon}
+        rightSlot={<span className="hidden rounded-full border border-[#e7e2d8] bg-[#fbfaf7] px-3 py-1.5 text-xs text-[#77736b] sm:inline-flex">管理员 · {currentUser.username}</span>}
+      />
+      <main className="min-h-[calc(100dvh-4rem)] bg-[#f7f5f0] px-4 py-7 text-[#30302e] sm:px-8 sm:py-10">
+        <div className="mx-auto max-w-6xl">
         {error && <p role="alert" className="mt-6 rounded-xl border border-[#e7c6bd] bg-[#f8e9e4] px-4 py-3 text-sm text-[#9c4037]">{error}</p>}
         {notice && <p role="status" className="mt-6 rounded-xl border border-[#d7e0d0] bg-[#eff3eb] px-4 py-3 text-sm text-[#54734d]">{notice}</p>}
         {oneTimePassword && (
@@ -315,16 +321,17 @@ export function UserManagement() {
             {users.length === 0 && <div className="rounded-2xl border border-dashed border-[#d9d1c4] px-6 py-12 text-center text-sm text-[#89847a]"><UserRoundIcon className="mx-auto mb-3 size-5" aria-hidden="true" />还没有账号。</div>}
           </div>
         </section>
-      </div>
-      <ConfirmDialog
-        open={confirmation !== null}
-        title={confirmation?.title ?? ""}
-        description={confirmation?.description ?? ""}
-        confirmLabel={confirmation?.confirmLabel}
-        confirmVariant={confirmation?.confirmVariant}
-        onConfirm={() => finishConfirmation(true)}
-        onCancel={() => finishConfirmation(false)}
-      />
-    </main>
+        </div>
+        <ConfirmDialog
+          open={confirmation !== null}
+          title={confirmation?.title ?? ""}
+          description={confirmation?.description ?? ""}
+          confirmLabel={confirmation?.confirmLabel}
+          confirmVariant={confirmation?.confirmVariant}
+          onConfirm={() => finishConfirmation(true)}
+          onCancel={() => finishConfirmation(false)}
+        />
+      </main>
+    </>
   );
 }

@@ -3,9 +3,9 @@
 ## Setup and preflight
 
 - Reviewed the implementation plan and design source; user authorized development with “现在整理提示词开始开发”.
-- Checked `find . -maxdepth 3 -name .git`: no Git repository exists in the workspace, `askdb-agent`, or `askdb-web`. Codex has no attached artifact/worktree. `askdb-web/AGENTS.md` exists; `askdb-agent/AGENTS.md` does not.
+- The checkout is a Git repository on `main`; the working tree already contained unrelated user edits in Agent presentation/prompts and Web `composer-select.tsx`. Preserve those files and do not stage or commit any changes. `askdb-web/AGENTS.md` exists; `askdb-agent/AGENTS.md` does not.
 - Prior read-only audits cover Agent thread/API, Web migration, and Wren runtime boundaries; no code was changed by those audits.
-- Ruling: use the plan's documented serial fallback in the shared checkout, with one implementation lane active at a time and explicit file ownership. Do not initialize Git or create branches/worktrees during this task. Cost if wrong: slower integration and no Git-native rollback; this avoids inventing repository boundaries or including unrelated user data in an initial commit.
+- Ruling: continue serially in the existing shared checkout and preserve the pre-existing changes. No branch or worktree was created.
 
 ## Preflight file/interface conflict scan
 
@@ -33,7 +33,7 @@
 | T4 | Owns shared publication/runtime recovery and consumes the three T3 interfaces. |
 | T5 | Integrates and verifies completed lanes; no new product surface. |
 
-**Preflight result:** no remaining file ownership conflict after the plan updates. The initial parallel schedule is disabled for this unversioned checkout; tasks will run serially.
+**Preflight result:** no remaining file ownership conflict after the plan updates. Work remains serial because this continuation touches shared chat/UI and memory contracts.
 
 ## Progress
 
@@ -128,3 +128,10 @@
   - Rechecked Wren rollback suppression fences, business-rule publication/removal operation ordering, chat emission suppression, and Wren revision cleanup. Wren cleanup marks artifacts `cleanup_pending` before unlink and retries lease-skipped entries on later sweeps. The repository has no data-source deletion API/store path; the similarly named admin DELETE route only removes a user's source grant, so a source-deletion acceptance scenario is not currently executable.
   - Static verification after the fixes passed: `cd askdb-agent && .venv/bin/python -m compileall -q src/askdb_agent` and direct imports of the memory route, Wren application, and query-memory store. No tests/evaluation, MySQL access, or activation request were run. Live activation crash/recovery, Wren CLI behavior, restore, and approved-gold scoring remain open; online recall stays disabled.
   - Per the user's direction, human review and scoring of the TPCC recall gold draft are deferred until the full memory system is assembled and the user begins self-testing. Deferred items, exact thresholds, known draft defects, and resume conditions are recorded in [2026-10-03-memory-recall-evaluation-deferred.md](2026-10-03-memory-recall-evaluation-deferred.md). Recall remains disabled; this deferral does not block implementation work that does not enable online recall.
+- 2026-10-03 T3 Web implementation continuation:
+  - Organized the scoped implementation prompt at [2026-10-03-t3-web-implementation-prompt.md](../prompts/2026-10-03-t3-web-implementation-prompt.md) and linked it from the shared prompt packet. Continued in the existing `main` checkout and preserved the pre-existing Agent presentation/prompts and Web composer selector edits.
+  - Added an allowlisted authenticated Next BFF for candidate submit/list, review and withdrawal actions, explicit query-corpus activation, Wren publication/revocation, and operation status. Added typed Web API helpers, answer `…`-menu submission, personal-name/personal-preference exclusion, query-example and business-rule forms, “我的提交”, and the admin “记忆管理” page. Review status and effective/publication status are displayed independently.
+  - Corrected query-example turn provenance: Web sends the SHA-256 key for the originating logical user turn; Agent verifies the completed turn belongs to the authenticated thread and resolves its server-side DB row ID. The client cannot choose a row ID.
+  - Tightened privacy before candidate persistence. The SQLGlot structure check now rejects hard-coded literals in WHERE/HAVING so filters must use typed named parameters; structural constants outside those clauses remain allowed. The form explains this boundary and still omits result rows, parameter values, and the full conversation.
+  - Static check passed: `cd askdb-agent && .venv/bin/python -m compileall -q src`. Web `../node_modules/.bin/tsc --noEmit --project tsconfig.json` reports six diagnostics: the known model-selection type issue at `thread.aui.tsx:515`; two missing `ariaLabel` props at existing ComposerSelect usages; one missing prop in `data-source-selector.tsx`; and existing model-settings/Wren-settings type errors at `model-settings-page.tsx:92` and `data-sources-page.tsx:724,742`. No diagnostics point to the new memory modules or APIs. These Web errors are unresolved; typecheck is not clean.
+  - No tests or browser/API/database behavior checks were added or run. Per the user's plan, T3 browser behavior acceptance remains for the user after the memory system is assembled. Runtime activation was not invoked; online recall remains disabled.

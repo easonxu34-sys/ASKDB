@@ -445,7 +445,14 @@ class WrenSettingsApplication:
         semantic = semantic or {}
         if not isinstance(semantic, dict):
             raise WrenConfigurationError("语义模型配置格式无效。")
-        allowed = {"tables", "models", "relationships", "rules", "views"}
+        allowed = {
+            "tables",
+            "models",
+            "relationships",
+            "ignored_foreign_keys",
+            "rules",
+            "views",
+        }
         if set(semantic) - allowed:
             raise WrenConfigurationError("语义模型配置包含不支持的字段。")
         return semantic
@@ -584,6 +591,7 @@ class WrenSettingsApplication:
             "data_source_id": source_id,
             "revision_id": revision.id,
             "warnings": list(getattr(reader, "warnings", [])),
+            "foreign_keys_complete": getattr(reader, "foreign_keys_complete", False) is True,
             "tables": [
                 {
                     "id": str(getattr(table, "id", "") or ".".join(

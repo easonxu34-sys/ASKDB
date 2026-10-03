@@ -2,6 +2,8 @@
 
 **Source of truth:** [`Agent记忆体系设计.md`](../../Agent记忆体系设计.md) and [`2026-10-02-agent-memory-system.md`](../plans/2026-10-02-agent-memory-system.md). If a prompt and either source disagree, stop and report the conflict; do not silently change the contract.
 
+**Current continuation:** T3 Agent governance already exists in the checkout; continue with the focused [T3 Web implementation prompt](2026-10-03-t3-web-implementation-prompt.md), first reconciling its query-turn reference contract. Preserve current uncommitted workspace changes.
+
 **Requested model:** `gpt-6-luna`, high reasoning. The available dispatch interface has no separate fast setting.
 
 ## Shared instructions for every implementation lane
@@ -12,13 +14,13 @@ Copy this block before the lane-specific prompt:
 >
 > Do not add or run tests unless the user explicitly asks for testing or verification in the active task. When testing is not requested, use only the permitted static checks and state clearly that behavior remains unverified. Never claim a check passed without its output.
 >
-> This workspace currently has no Git repository or managed worktree. Work serially in the shared checkout; do not start another implementation lane while one is editing. Do not create a repository, branch, commit, or worktree. Avoid edits outside your assigned files. Before editing an existing file, inspect its current contents and preserve surrounding behavior. Report every changed path and any concern. The controller will review the resulting file changes before starting the next lane.
+> The checkout-state note in older lane prompts is historical. At the T3 continuation, the live workspace is a Git checkout on `main` with three unrelated user changes already present. Continue serially in this checkout to preserve them; do not reset, stage, commit, or rebase. Do not start another implementation lane while one is editing. Avoid edits outside the current T3 scope. Before editing an existing file, inspect its current contents and preserve surrounding behavior. Report every changed path and any concern.
 >
 > Use the user-confirmed decisions: thread deletion and 30-day automatic expiry cascade to linked business-rule memories; published query examples survive thread deletion/expiry. Superseded query-corpus revisions remain for 30 days from supersession and wait for the last runtime lease before cleanup. Revocation suppresses online recall immediately. Production requires a separate encrypted append-only deletion/revocation journal; restore replays after the captured DB `journal_applied_seq`, validates suppression, rebuilds indexes, and only then serves chat. A missing, corrupt, or discontinuous journal fails closed.
 
 ## Dispatch sequence
 
-The plan permits three initial parallel lanes, but this checkout has no Git boundaries and no attached worktree. Run them serially in this order; do not interpret the prompts as permission to launch them concurrently:
+The plan permits three initial parallel lanes, but previous work ran serially and the current T3 continuation remains serial. Do not interpret the prompts as permission to launch lanes concurrently:
 
 1. T1A — Agent thread store/API/lifecycle
 2. T1C — lexical recall core and evaluation fixtures

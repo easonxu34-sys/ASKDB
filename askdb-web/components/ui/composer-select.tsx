@@ -47,7 +47,7 @@ export function ComposerSelect({
         id={id}
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-9 min-w-0 max-w-[min(19rem,65vw)] items-center gap-2 rounded-lg border border-[#e5ded3] bg-white/70 px-3 text-left font-sans text-xs text-[#615b51] transition-colors hover:border-[#d8c5b1] hover:bg-[#f8f5ef] focus-visible:border-[#c57650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650]/30 disabled:cursor-not-allowed disabled:opacity-55",
+          "inline-flex h-8 min-w-0 max-w-[min(19rem,65vw)] items-center gap-2 rounded-lg border border-[#e5ded3] bg-white/70 px-3 text-left font-sans text-xs text-[#615b51] transition-colors hover:border-[#d8c5b1] hover:bg-[#f8f5ef] focus-visible:border-[#c57650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650]/30 disabled:cursor-not-allowed disabled:opacity-55",
           triggerClassName,
         )}
       >
@@ -76,7 +76,13 @@ export function ComposerSelect({
         </Select.Icon>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Positioner align="end" sideOffset={7} className="z-50 outline-none">
+        <Select.Positioner
+          align="end"
+          alignItemWithTrigger={false}
+          side="bottom"
+          sideOffset={7}
+          className="z-50 outline-none"
+        >
           <Select.Popup className="max-h-[min(20rem,calc(100vh-2rem))] min-w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[#e8dfd3] bg-[#fffdfa] p-1.5 text-[#514b42] shadow-[0_16px_40px_rgba(50,39,28,0.16)] outline-none">
             <Select.List className="flex flex-col gap-0.5">
               {options.map((option) => (
