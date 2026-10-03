@@ -45,8 +45,7 @@ askdb-agent/
 ├── uv.lock
 ├── .env.example
 ├── README.md
-├── src/askdb_agent/
-│   ├── __init__.py
+├── src/
 │   ├── main.py                    # ASGI app 导出与生命周期
 │   ├── api/
 │   │   ├── app.py                 # create_app、依赖注入
@@ -164,9 +163,9 @@ uv run pytest -q
 
 | 当前文件/职责 | 目标位置 | 整理时注意 |
 |---|---|---|
-| `src/askdb_agent/api.py` 请求 schema、FastAPI 路由、SSE 编码 | `api/schemas/chat.py`、`api/routes/chat.py`、`api/streaming.py` | 保留公开请求和事件行为；把通用事件映射移出路由 |
-| `src/askdb_agent/runtime.py` Settings、Wren/model 初始化、Agent 构建 | `config.py`、`integrations/`、`agent/graph.py`、装配层 | 避免拆成纯转发函数；用显式依赖构造便于测试 |
-| `src/askdb_agent/query.py` SQL 策略和 LangChain Tool | `domain/query_policy.py`、`tools/wren_query.py` | 策略不依赖 LangChain；工具按固定顺序调用 Wren |
+| `src/api.py` 请求 schema、FastAPI 路由、SSE 编码 | `api/schemas/chat.py`、`api/routes/chat.py`、`api/streaming.py` | 保留公开请求和事件行为；把通用事件映射移出路由 |
+| `src/runtime.py` Settings、Wren/model 初始化、Agent 构建 | `config.py`、`integrations/`、`agent/graph.py`、装配层 | 避免拆成纯转发函数；用显式依赖构造便于测试 |
+| `src/query.py` SQL 策略和 LangChain Tool | `domain/query_policy.py`、`tools/wren_query.py` | 策略不依赖 LangChain；工具按固定顺序调用 Wren |
 | `tests/test_*.py` | `tests/unit/`、`tests/api/`、`tests/integration/` | 按测试目的归类，不为了目录重排改变验证范围 |
 
 建议渐进迁移顺序：先抽配置与 runtime 装配边界，再拆 API schema/streaming；之后分离查询策略与 Tool adapter；最后在出现真实图复杂度或持久化需求时引入显式 graph state/checkpointer。每步维持现有问数 API 可运行。

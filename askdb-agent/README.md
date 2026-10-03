@@ -53,7 +53,7 @@ AskDB 使用 Agent 本地账号，Agent 是用户身份、角色、会话和数�
 
 ```bash
 cd askdb-agent
-uv run python -m askdb_agent.cli auth init-admin
+uv run askdb-agent auth init-admin
 ```
 
 命令要求使用交互式终端；用户名由操作者输入，临时密码由系统生成并仅在终端显示一次。请立即通过组织内部渠道交付。没有默认账号、默认密码或公开 bootstrap API；此命令只会在尚无账号时成功一次。
@@ -61,7 +61,7 @@ uv run python -m askdb_agent.cli auth init-admin
 若所有管理员都无法登录，在 Agent 主机上使用受控恢复命令；它会按输入的现有用户名/工号将账号恢复为启用管理员、撤销此账号的所有旧会话并生成新的临时密码。操作者必须交互确认，用户首次登录后仍需更改密码：
 
 ```bash
-uv run python -m askdb_agent.cli auth recover-admin
+uv run askdb-agent auth recover-admin
 ```
 
 此本地运维命令不开放 HTTP 接口，也不能读取旧密码。日常用户忘记密码时，仍由管理员通过 Web 用户管理页重置。
@@ -102,7 +102,7 @@ uv run --project ../askdb-agent wren profile debug askdb_mysql
 
 ```bash
 cd askdb-agent
-uv run uvicorn askdb_agent.main:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 终端二（Web）：

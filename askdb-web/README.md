@@ -15,7 +15,7 @@ npm run dev
 
 ## 账号登录与会话选择
 
-- 用户从 `/login` 登录；首位管理员由 Agent 主机上的 `uv run python -m askdb_agent.cli auth init-admin` 命令一次性初始化，普通账号由管理员创建。
+- 用户从 `/login` 登录；首位管理员由 Agent 主机上的 `uv run askdb-agent auth init-admin` 命令一次性初始化，普通账号由管理员创建。
 - Agent 是身份、角色、会话与数据源授权的权威方。Web 通过同源 BFF 使用 HttpOnly 会话 Cookie、Origin 和 CSRF 校验；浏览器不接触 Agent session token，也不直接请求 Python Agent。
 - `/api/settings/models` 及 Wren 数据源管理只供管理员使用；普通用户聊天时只会收到安全的模型选项和当前用户已获准的数据源。
 - 模型选择、thread metadata 和消息保存在浏览器按稳定 `user_id` 分区的 `localStorage`；新 thread ID 也包含用户命名空间。旧匿名 storage key 保留但登录后不读取，旧服务端 thread 不会自动认领。

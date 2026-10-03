@@ -7,11 +7,11 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from askdb_agent.api import create_app
-from askdb_agent.application.model_settings import ModelSettingsApplication
-from askdb_agent.model_settings import ModelConfiguration, ModelSettingsStore
-from askdb_agent.wren_settings import WrenSettingsStore
-from askdb_agent.application.runtime_manager import RuntimeDataSourceUnavailable
+from api import create_app
+from application.model_settings import ModelSettingsApplication
+from model_settings import ModelConfiguration, ModelSettingsStore
+from wren_settings import WrenSettingsStore
+from application.runtime_manager import RuntimeDataSourceUnavailable
 
 
 class FakeRuntime:

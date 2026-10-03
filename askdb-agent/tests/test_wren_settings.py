@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 from cryptography.fernet import Fernet
 
-from askdb_agent.wren_settings import ChatDataSourceMismatch, WrenSettingsStore
+from wren_settings import ChatDataSourceMismatch, WrenSettingsStore
 
 
 @pytest.fixture

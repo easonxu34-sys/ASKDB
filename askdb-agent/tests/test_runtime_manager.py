@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from askdb_agent.application.runtime_manager import RuntimeManager, RuntimeSnapshot
+from application.runtime_manager import RuntimeManager, RuntimeSnapshot
 
 
 @dataclass

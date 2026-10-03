@@ -9,18 +9,18 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from askdb_agent.api.dependencies import require_current_user
-from askdb_agent.api.routes.threads import router as threads_router
-from askdb_agent.domain.conversation_memory import (
+from api.dependencies import require_current_user
+from api.routes.threads import router as threads_router
+from domain.conversation_memory import (
     ThreadDeletionConflict,
     ThreadGrantRevoked,
     ThreadNotFound,
     TurnIdempotencyConflict,
     TurnSequenceConflict,
 )
-from askdb_agent.domain.auth import Principal
-from askdb_agent.integrations.conversation_store import ConversationMemoryStore
-from askdb_agent.integrations.deletion_journal import (
+from domain.auth import Principal
+from integrations.conversation_store import ConversationMemoryStore
+from integrations.deletion_journal import (
     DeletionJournalUnavailable,
     EncryptedDeletionJournal,
 )
@@ -492,7 +492,7 @@ def test_thread_api_delete_requires_confirmation_and_journal(tmp_path) -> None:
 
 
 def test_memory_sanitizer_excludes_sql_and_result_blocks() -> None:
-    from askdb_agent.application.conversation_memory import sanitize_turn_text
+    from application.conversation_memory import sanitize_turn_text
 
     cleaned = sanitize_turn_text(
         "收入是 100。\n```sql\nSELECT * FROM orders;\n```\n"

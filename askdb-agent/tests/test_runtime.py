@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from askdb_agent.runtime import Settings, build_model
+from runtime import Settings, build_model
 
 
 def test_build_model_uses_the_configured_deepseek_openai_endpoint(monkeypatch) -> None:

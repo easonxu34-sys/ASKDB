@@ -4,7 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from askdb_agent.application.chat import stream_chat_events
+from application.chat import stream_chat_events
 
 
 class FakeAgent:

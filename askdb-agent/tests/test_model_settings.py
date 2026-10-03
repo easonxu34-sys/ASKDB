@@ -7,8 +7,8 @@ import weakref
 import pytest
 from cryptography.fernet import Fernet
 
-from askdb_agent.application.model_settings import ModelSettingsApplication
-from askdb_agent.model_settings import (
+from application.model_settings import ModelSettingsApplication
+from model_settings import (
     ModelConfiguration,
     ModelConfigurationError,
     ModelProfileNotFound,

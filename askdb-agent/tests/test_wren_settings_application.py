@@ -8,13 +8,13 @@ import pytest
 import yaml
 from cryptography.fernet import Fernet
 
-from askdb_agent.application.wren_settings import WrenSettingsApplication
-from askdb_agent.config import Settings
-from askdb_agent.integrations.mysql_schema import ForeignKeySchema, MysqlSchemaReader, TableSchema
-from askdb_agent.integrations.wren_cli import WrenCli
-from askdb_agent.integrations.wren_project import WrenProjectBuilder
-from askdb_agent.wren_settings import WrenConfigurationError
-from askdb_agent.wren_settings import WrenSettingsStore
+from application.wren_settings import WrenSettingsApplication
+from config import Settings
+from integrations.mysql_schema import ForeignKeySchema, MysqlSchemaReader, TableSchema
+from integrations.wren_cli import WrenCli
+from integrations.wren_project import WrenProjectBuilder
+from wren_settings import WrenConfigurationError
+from wren_settings import WrenSettingsStore
 
 
 class FakeCommandRunner:

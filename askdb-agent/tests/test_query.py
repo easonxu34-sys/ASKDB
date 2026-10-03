@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from askdb_agent.query import create_guarded_query_tool, validate_read_query
+from query import create_guarded_query_tool, validate_read_query
 
 
 @pytest.mark.parametrize(

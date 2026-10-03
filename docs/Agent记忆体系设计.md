@@ -28,7 +28,7 @@
 - Wren 数据源目录、revision、operations 和 `chat_thread_data_sources` 当前都由 `WrenSettingsStore` 写入 SQLite；建表是 `_connect()` 中的 `CREATE TABLE IF NOT EXISTS` 加列检查/`ALTER TABLE`，仓库没有通用版本化迁移 runner。`start_apply()` 将 operation 写 DB，但用进程内 `asyncio.create_task` 执行；当前 active revision 指针在 runtime 激活前先更新。M1 应新增原子、可重入的 schema migration runner；memory 发布不能照搬现有仅进程内调度和“先改指针后激活”的顺序。
 - `RuntimeSnapshot` 已按数据源 revision 和模型 profile 版本缓存；`RuntimeManager` 已提供 candidate prepare、原子激活和请求 lease。Wren revision 的 `mdl_digest` 当前由 `target/mdl.json` 字节的 SHA-256 生成，方案应复用并明确定义额外的规则/连接器兼容摘要。未来若启用 PostgreSQL 多 worker，必须迁移 WrenSettingsStore、thread binding、memory 操作/active pointer 到同一共享事务存储；只把新 memory 表放 PostgreSQL 不足以跨 worker 一致。
 
-相关代码：[Agent graph](../askdb-agent/src/askdb_agent/agent/graph.py)、[chat API schema](../askdb-agent/src/askdb_agent/api/schemas/chat.py)、[chat route](../askdb-agent/src/askdb_agent/api/routes/chat.py)、[auth principal](../askdb-agent/src/askdb_agent/domain/auth.py)、[Web chat adapter](../askdb-web/lib/agent-chat-adapter.tsx)、[thread adapter](../askdb-web/lib/local-thread-adapter.tsx)、[Wren project builder](../askdb-agent/src/askdb_agent/integrations/wren_project.py)、[runtime manager](../askdb-agent/src/askdb_agent/application/runtime_manager.py)。
+相关代码：[Agent graph](../askdb-agent/src/agent/graph.py)、[chat API schema](../askdb-agent/src/api/schemas/chat.py)、[chat route](../askdb-agent/src/api/routes/chat.py)、[auth principal](../askdb-agent/src/domain/auth.py)、[Web chat adapter](../askdb-web/lib/agent-chat-adapter.tsx)、[thread adapter](../askdb-web/lib/local-thread-adapter.tsx)、[Wren project builder](../askdb-agent/src/integrations/wren_project.py)、[runtime manager](../askdb-agent/src/application/runtime_manager.py)。
 
 ## 3. 术语和信任边界
 
@@ -195,7 +195,7 @@ flowchart TB
 ### 6.2 建议代码结构
 
 ```text
-askdb-agent/src/askdb_agent/
+askdb-agent/src/
 ├── domain/
 │   └── memory.py                 # MemoryType、CandidateStatus、强类型记录
 ├── application/
