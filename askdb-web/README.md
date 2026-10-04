@@ -15,6 +15,12 @@ npm run dev
 
 ## 账号登录与会话选择
 
+## 聊天图表
+
+助手可将本轮成功查询结果渲染为折线图、柱状图或饼图。明确请求类型可使用“折线图”/`line chart`、“柱状图”/`bar chart` 或“饼图”/`pie chart`；没有指定时，时间维度优先生成折线图，其他分类维度生成柱状图。饼图只支持一个数值指标和最多 8 个分类。图表由已保存的查询结果 artifact 恢复，不会在历史回放时重新查询；无效或不匹配的图表 artifact 会被跳过，查询表格仍可用。
+
+## 账号登录与会话选择
+
 - 用户从 `/login` 登录；首位管理员由 Agent 主机上的 `uv run askdb-agent auth init-admin` 命令一次性初始化，普通账号由管理员创建。
 - Agent 是身份、角色、会话与数据源授权的权威方。Web 通过同源 BFF 使用 HttpOnly 会话 Cookie、Origin 和 CSRF 校验；浏览器不接触 Agent session token，也不直接请求 Python Agent。
 - `/api/settings/models` 及 Wren 数据源管理只供管理员使用；普通用户聊天时只会收到安全的模型选项和当前用户已获准的数据源。

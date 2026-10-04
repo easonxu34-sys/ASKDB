@@ -4,8 +4,9 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from application.conversation_memory import sanitize_turn_text
 from domain.memory_recall import RecallDocument, RecallKind
@@ -192,6 +193,7 @@ def load_semantic_recall_documents(
     wren_revision_id: str,
     connector_type: str,
     mdl_digest: str | None = None,
+    configured_rules: Iterable[Any] = (),
 ) -> tuple[RecallDocument, ...]:
     """Create immutable, metadata-only recall documents from one Wren revision."""
     project_root = project_dir.expanduser().resolve()
@@ -203,6 +205,31 @@ def load_semantic_recall_documents(
     if not isinstance(mdl, dict):
         raise ValueError("compiled Wren MDL must be an object")
     digest = mdl_digest or compute_semantic_digest(project_root, connector_type)
+
+    configured_names_by_content: dict[str, list[str]] = defaultdict(list)
+    for index, rule in enumerate(configured_rules):
+        if isinstance(rule, str):
+            configured_name, configured_content = f"rule_{index + 1}", rule
+        elif isinstance(rule, dict):
+            configured_name = str(rule.get("name") or f"rule_{index + 1}")
+            configured_content = str(rule.get("content", ""))
+        else:
+            continue
+        normalized_content = sanitize_turn_text(
+            configured_content, max_chars=20_000
+        ).strip()
+        safe_name = sanitize_turn_text(configured_name, max_chars=500)
+        safe_name = " ".join(safe_name.replace("\r", " ").replace("\n", " ").split())
+        if normalized_content and safe_name:
+            configured_title = _HEADING.search(normalized_content)
+            display_name = (
+                configured_title.group(1).strip()
+                if _BUSINESS_RULE_ID.fullmatch(configured_name) and configured_title
+                else safe_name
+            )
+            configured_names_by_content[normalized_content].extend(
+                (display_name, safe_name)
+            )
 
     documents: list[RecallDocument] = []
     models = mdl.get("models", [])
@@ -361,10 +388,24 @@ def load_semantic_recall_documents(
             if not content.strip():
                 continue
             heading = _HEADING.search(content)
-            title = sanitize_turn_text(
-                heading.group(1).strip() if heading else resolved.stem,
-                max_chars=500,
-            ) or "业务规则"
+            names_from_config = configured_names_by_content.get(content.strip(), [])
+            if not names_from_config and heading is not None:
+                legacy_body = re.sub(r"\A#{1,6}\s+[^\r\n]*(?:\r?\n){1,2}", "", content, count=1).strip()
+                names_from_config = configured_names_by_content.get(legacy_body, [])
+            heading_title = heading.group(1).strip() if heading else ""
+            config_title_is_better = bool(
+                names_from_config
+                and (
+                    not heading_title
+                    or _BUSINESS_RULE_ID.fullmatch(heading_title)
+                )
+            )
+            title_candidate = (
+                names_from_config[0]
+                if config_title_is_better
+                else heading_title or resolved.stem
+            )
+            title = sanitize_turn_text(title_candidate, max_chars=500) or "业务规则"
             safe_stem = sanitize_turn_text(resolved.stem, max_chars=500)
             match = _BUSINESS_RULE_ID.fullmatch(resolved.stem)
             rule_id = match.group(1).lower() if match else resolved.relative_to(rules_root).as_posix()
@@ -375,7 +416,13 @@ def load_semantic_recall_documents(
                     data_source_id=data_source_id,
                     kind=RecallKind.BUSINESS_RULE,
                     title=title[:500],
-                    terms=tuple(value for value in (safe_stem, title) if value),
+                    terms=tuple(
+                        dict.fromkeys(
+                            value
+                            for value in (safe_stem, title, *names_from_config)
+                            if value
+                        )
+                    ),
                     body=content,
                     connector_type=connector_type,
                     wren_revision_id=wren_revision_id,

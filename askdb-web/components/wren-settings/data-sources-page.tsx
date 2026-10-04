@@ -62,6 +62,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
+import { getDuplicateWrenRuleIndexes } from "@/lib/wren-rule-validation";
 
 const WREN_APPLY_FAILURE_FALLBACK = "Wren 配置应用失败，请修正配置后重试。";
 const semanticConfigKeys = new Set([
@@ -1004,6 +1005,10 @@ export function DataSourcesPage() {
     Boolean(displayName.trim()) &&
     (!detail || baseFingerprint(payload, sensitiveFieldNames) !== savedFingerprint || secretChanged);
   const selectedTables = semantic.tables;
+  const duplicateRuleIndexes = useMemo(
+    () => getDuplicateWrenRuleIndexes(semantic.rules),
+    [semantic.rules],
+  );
   const modelNames = semantic.models.map((model) => model.name);
   const tableOptions = useMemo(() => {
     if (schema.length) return schema;
@@ -1244,6 +1249,9 @@ export function DataSourcesPage() {
 
   async function persistForm() {
     if (!displayName.trim()) throw new Error("请填写数据源名称。");
+    if (duplicateRuleIndexes.size) {
+      throw new Error("规则名称不能重复，请修改标记的规则名称后再保存或应用。");
+    }
     const schemaBeforePersist = schema;
     const foreignKeysCompleteBeforePersist = schemaForeignKeysComplete;
     let saved: DataSourceDetail;
@@ -1650,6 +1658,7 @@ export function DataSourcesPage() {
   const disabled = Boolean(working || operation?.status === "running");
   const applyBlockReason =
     actionBlockReason ||
+    (duplicateRuleIndexes.size ? "规则名称不能重复，请修改标记的规则名称后再保存或应用。" : "") ||
     (!semantic.tables.length ? "请读取表结构并至少选择一张表后再应用配置。" : "");
   const revisionRows = detail?.revisions ?? [];
   const activeRevision = revisionRows.find(
@@ -2758,9 +2767,11 @@ export function DataSourcesPage() {
                   <div className="flex gap-2">
                     <input
                       aria-label="规则名称"
+                      aria-invalid={duplicateRuleIndexes.has(index)}
+                      aria-describedby={duplicateRuleIndexes.has(index) ? `wren-rule-name-error-${index}` : undefined}
                       value={rule.name}
                       onChange={(event) => updateRule(index, { name: event.target.value })}
-                      className="h-9 min-w-0 flex-1 rounded-lg border border-[#e7e2d8] bg-white px-2.5 text-xs outline-none focus:border-[#d8cbb9]"
+                      className={`h-9 min-w-0 flex-1 rounded-lg border bg-white px-2.5 text-xs outline-none ${duplicateRuleIndexes.has(index) ? "border-[#c45b4c] focus:border-[#c45b4c]" : "border-[#e7e2d8] focus:border-[#d8cbb9]"}`}
                     />
                     <button
                       type="button"
@@ -2776,6 +2787,14 @@ export function DataSourcesPage() {
                       <Trash2Icon className="size-3.5" />
                     </button>
                   </div>
+                  {duplicateRuleIndexes.has(index) && (
+                    <p
+                      id={`wren-rule-name-error-${index}`}
+                      className="mt-1.5 text-[11px] text-[#a44d40]"
+                    >
+                      规则名称重复，请为每条规则填写不同名称。
+                    </p>
+                  )}
                   <textarea
                     aria-label="规则内容"
                     value={rule.content}
@@ -2859,7 +2878,7 @@ export function DataSourcesPage() {
             <div className="ml-auto flex gap-2">
               <ActionButton
                 onClick={() => void saveDraft()}
-                disabled={disabled || !displayName.trim() || !connectionReady}
+                disabled={disabled || !displayName.trim() || !connectionReady || duplicateRuleIndexes.size > 0}
               >
                 <SaveIcon className="size-3.5" />
                 保存草稿
@@ -2867,7 +2886,7 @@ export function DataSourcesPage() {
               <ActionButton
                 onClick={() => void applyDraft()}
                 disabled={
-                  disabled || !displayName.trim() || !connectionReady || !semantic.tables.length
+                  disabled || !displayName.trim() || !connectionReady || !semantic.tables.length || duplicateRuleIndexes.size > 0
                 }
                 variant="primary"
               >

@@ -8,6 +8,8 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from api import create_app
+from api.routes.chat import _attach_turn_metadata
+from api.streaming import encode_sse
 from application.model_settings import ModelSettingsApplication
 from model_settings import ModelConfiguration, ModelSettingsStore
 from wren_settings import WrenSettingsStore
@@ -22,6 +24,22 @@ class FakeRuntime:
             "event": "on_chat_model_stream",
             "data": {"chunk": {"content": "答复"}},
         }
+
+
+def test_chart_sse_payload_keeps_thread_turn_and_sequence_metadata() -> None:
+    payload = _attach_turn_metadata(
+        {"artifact": {"kind": "echarts_chart", "schema_version": 1}},
+        thread_id="thread-1",
+        turn_id="turn-1",
+        user_sequence=4,
+    )
+
+    frame = encode_sse("chart", payload)
+
+    assert frame.startswith('event: chart\ndata: {"artifact":{"kind":"echarts_chart","schema_version":1}')
+    assert '"thread_id":"thread-1"' in frame
+    assert '"turn_id":"turn-1"' in frame
+    assert '"user_sequence":4' in frame
 
 
 def test_chat_endpoint_streams_model_tokens_as_sse() -> None:

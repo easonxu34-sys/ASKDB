@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Iterable
@@ -172,6 +173,7 @@ class WrenProjectBuilder:
             self._write_yaml(project_dir / "relationships.yml", {"relationships": relationships})
 
         self._write_yaml(project_dir / "knowledge" / "knowledge.yml", {"schema_version": 1})
+        used_rule_filenames: set[str] = set()
         for index, rule in enumerate(config.get("rules", [])):
             if isinstance(rule, str):
                 name, content = f"rule_{index + 1}", rule
@@ -180,8 +182,24 @@ class WrenProjectBuilder:
             else:
                 raise WrenConfigurationError("业务规则格式无效。")
             filename = self._filename(name)
+            if filename in used_rule_filenames:
+                filename = f"{filename[:64]}-{index + 1}"
+                suffix = 1
+                while filename in used_rule_filenames:
+                    suffix += 1
+                    filename = f"{filename[:60]}-{index + 1}-{suffix}"
+            used_rule_filenames.add(filename)
             if content.strip():
-                self._write_text(project_dir / "knowledge" / "rules" / f"{filename}.md", content[:20_000] + "\n")
+                title = " ".join(name.replace("\r", " ").replace("\n", " ").split())
+                managed_rule = re.fullmatch(r"askdb_br_[a-f0-9]{32}", name)
+                configured_title = re.search(r"(?m)^#{1,6}\s+(.+?)\s*#*\s*$", content)
+                if managed_rule and configured_title:
+                    title = configured_title.group(1).strip()
+                markdown = f"# {title}\n\n{content[:20_000].rstrip()}\n"
+                self._write_text(
+                    project_dir / "knowledge" / "rules" / f"{filename}.md",
+                    markdown,
+                )
 
         for view in config.get("views", []):
             if not isinstance(view, dict):
@@ -223,8 +241,14 @@ class WrenProjectBuilder:
 
     @staticmethod
     def _filename(value: str) -> str:
-        cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", value.strip()).strip("_")
-        return cleaned[:80] or "rule"
+        normalized = value.strip()
+        cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", normalized).strip("_")
+        if not cleaned:
+            cleaned = "rule"
+        if not normalized.isascii() or cleaned != normalized:
+            suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+            return f"{cleaned[:64]}-{suffix}"
+        return cleaned[:80]
 
     @staticmethod
     def _write_yaml(path: Path, value: Any) -> None:

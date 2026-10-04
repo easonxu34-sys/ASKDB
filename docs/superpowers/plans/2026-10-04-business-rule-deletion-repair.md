@@ -25,10 +25,10 @@
 - Modify: `askdb-agent/src/integrations/business_rule_store.py`
 - Test: `askdb-agent/tests/test_business_rule_deletion.py`
 
-- [ ] Add a failing test for deleting a source thread linked to an active published origin; assert candidate becomes `revoked/removal_pending` and rule text is redacted.
-- [ ] Run the focused test and confirm it fails because the current code only updates the origin.
-- [ ] Update the candidate row and append an audit event in the thread-delete participant transaction.
-- [ ] Run the focused test and confirm it passes.
+- [x] Add a failing test for deleting a source thread linked to an active published origin; assert candidate becomes `revoked/removal_pending` and rule text is redacted.
+- [x] Run the focused test and confirm it fails because the current code only updates the origin.
+- [x] Update the candidate row and append an audit event in the thread-delete participant transaction.
+- [x] Run the focused test and confirm it passes.
 
 ### Task 2: Recover verifiable orphaned Wren removals
 
@@ -36,11 +36,11 @@
 - Modify: `askdb-agent/src/integrations/business_rule_store.py`
 - Test: `askdb-agent/tests/test_business_rule_deletion.py`
 
-- [ ] Add a failing test with a durable thread-delete suppression, missing origin, and an active `askdb_br_<id>` rule; assert `list_pending_removals()` reconstructs the redacted origin.
-- [ ] Run the focused test and confirm it fails because current recovery requires a candidate row.
-- [ ] Recover only when the stable managed rule ID is verifiably present in the active Wren revision config or its rule file; never use the display label.
-- [ ] Add a passing test that an unrelated native Wren rule with the same label is not considered a managed match.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add a failing test with a durable thread-delete suppression, missing origin, and an active `askdb_br_<id>` rule; assert `list_pending_removals()` reconstructs the redacted origin.
+- [x] Run the focused test and confirm it fails because current recovery requires a candidate row.
+- [x] Recover only when the stable managed rule ID is verifiably present in the active Wren revision config or its rule file; never use the display label.
+- [x] Add a passing test that an unrelated native Wren rule with the same label is not considered a managed match.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 3: Complete deletion state after Wren activation
 
@@ -48,22 +48,23 @@
 - Modify: `askdb-agent/src/integrations/business_rule_store.py`
 - Test: `askdb-agent/tests/test_business_rule_deletion.py`
 
-- [ ] Add a failing test asserting a thread deletion stays `suppressed` while any event-linked rule is `removal_pending`.
-- [ ] Add a failing test asserting `mark_removed()` changes the operation to `completed_online` only after all rules in that event are no longer pending.
-- [ ] Implement the event-scoped status transition and run the focused tests.
+- [x] Add a failing test asserting a thread deletion stays `suppressed` while any event-linked rule is `removal_pending`.
+- [x] Add a regression test asserting completion is delayed until every rule in the journal event is no longer pending.
+- [x] Implement the event-scoped status transition, wire it to `mark_removed()`, and run the focused tests.
 
 ### Task 4: Explain the actual deletion relationship in the UI
 
 **Files:**
 - Modify: `askdb-web/components/threads/thread-delete-confirmation-dialog.tsx`
 
-- [ ] Update the copy to say the listed rules were submitted from this conversation and will be revoked; preserve the existing uncommitted edit in this file.
-- [ ] Review the diff to ensure no unrelated UI changes were lost.
+- [x] Update the copy to say the listed rules were submitted from this conversation and will be revoked; preserve the existing uncommitted edit in this file.
+- [x] Review the diff to ensure no unrelated UI changes were lost.
 
 ### Task 5: Verify and report
 
 **Files:** none
 
-- [ ] Run the focused Python regression file.
-- [ ] Run the Agent Python test suite and relevant Web typecheck only if the focused changes pass.
-- [ ] Run `git diff --check` and inspect `git status` to confirm pre-existing edits remain untouched.
+- [x] Run the focused Python regression file (`5 passed`).
+- [x] Run the Agent Python test suite; it reports 30 failures outside this focused regression, mainly auth/schema/runtime fixture mismatches. The conversation deletion subset also cannot reach the deletion assertions because its fixture lacks `wren_data_sources.display_name`.
+- [x] Attempt the Web typecheck; it is blocked because `pnpm` attempted to fetch missing packages and network requests failed with `EPERM`.
+- [x] Run `git diff --check` and inspect `git status`; existing unrelated edits remain untouched.

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import traceback
+import unicodedata
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -455,6 +456,20 @@ class WrenSettingsApplication:
         }
         if set(semantic) - allowed:
             raise WrenConfigurationError("语义模型配置包含不支持的字段。")
+        rules = semantic.get("rules", [])
+        if isinstance(rules, list):
+            normalized_names: set[str] = set()
+            for rule in rules:
+                if not isinstance(rule, dict) or not isinstance(rule.get("name"), str):
+                    continue
+                normalized_name = unicodedata.normalize(
+                    "NFKC", " ".join(rule["name"].split())
+                ).lower()
+                if not normalized_name:
+                    continue
+                if normalized_name in normalized_names:
+                    raise WrenConfigurationError("规则名称不能重复，请修改后再保存或应用。")
+                normalized_names.add(normalized_name)
         return semantic
 
     def create_source(
@@ -1493,6 +1508,7 @@ class WrenSettingsApplication:
             wren_revision_id=revision.id,
             connector_type=source.connector_type,
             mdl_digest=semantic_digest,
+            configured_rules=revision.config.get("rules", []),
         )
         query_memory_store = self.query_memory_store
         if query_corpus_revision is not None:

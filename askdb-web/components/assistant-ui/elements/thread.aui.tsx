@@ -5,6 +5,8 @@ import {
 } from "@/components/assistant-ui/elements/attachment.aui";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { ChartResult } from "@/components/assistant-ui/elements/chart-result";
+import { QueryProgress } from "@/components/assistant-ui/elements/query-progress";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { ComposerSelect } from "@/components/ui/composer-select";
@@ -693,6 +695,19 @@ const AssistantMessage: FC<{ user: AuthUser }> = ({ user }) => {
           {({ part }) => {
             if (part.type === "text") return <MarkdownText />;
             if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
+            if (part.type === "data" && part.name === "chart") {
+              const chart = part.data as {
+                artifact: import("@/lib/chat-output").EChartsChartArtifact;
+                queryArtifact: import("@/lib/chat-output").SuccessfulQueryArtifact;
+              };
+              return <ChartResult artifact={chart.artifact} queryArtifact={chart.queryArtifact} />;
+            }
+            if (part.type === "data" && part.name === "query-progress") {
+              const progress = part.data as {
+                steps: import("@/lib/query-progress").QueryProgressStep[];
+              };
+              return <QueryProgress steps={progress.steps} />;
+            }
             return null;
           }}
         </MessagePrimitive.Parts>

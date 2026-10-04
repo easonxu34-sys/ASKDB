@@ -6,13 +6,14 @@ import {
   useAui,
   type RemoteThreadListAdapter,
   type ThreadHistoryAdapter,
+  type ThreadMessage,
 } from "@assistant-ui/react";
 import { useMemo, type PropsWithChildren } from "react";
 import { authMutation, requestCsrfToken } from "@/lib/auth-api";
 import { fetchDataSourceCatalog } from "@/lib/data-sources";
 import { reconcileThreadModelSelection } from "@/lib/model-selection";
 import type { ModelSelectionCatalog } from "@/lib/model-selection";
-import { formatQueryResults } from "@/lib/chat-output";
+import { formatQueryResults, getChartMessageParts, getChartUnavailableMessages } from "@/lib/chat-output";
 import {
   archiveThread as archiveRemoteThread,
   fetchThreadStates,
@@ -1084,13 +1085,21 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
               (turn.role !== "user" && turn.role !== "assistant") ||
               typeof turn.content !== "string"
             ) return [];
+            const turnArtifacts = turn.role === "assistant" ? resultArtifacts[turn.turn_id] ?? [] : [];
             const artifact = turn.role === "assistant"
-              ? formatQueryResults(resultArtifacts[turn.turn_id] ?? [])
+              ? formatQueryResults(turnArtifacts)
               : "";
+            const chartNotices = turn.role === "assistant" ? getChartUnavailableMessages(turnArtifacts) : [];
+            const answerText = [...chartNotices, turn.content].filter(Boolean).join("\n\n");
+            const content = [
+              ...(artifact ? [{ type: "text" as const, text: artifact }] : []),
+              ...getChartMessageParts(turnArtifacts),
+              ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
+            ] as ThreadMessage["content"];
             return [{
               id: `server-${turn.turn_id}-${turn.sequence}`,
               role: turn.role as "user" | "assistant",
-              content: [artifact, turn.content].filter(Boolean).join("\n\n"),
+              content,
               createdAt: typeof turn.created_at === "string"
                 ? new Date(turn.created_at)
                 : new Date(),

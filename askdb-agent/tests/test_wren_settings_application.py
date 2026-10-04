@@ -9,9 +9,11 @@ import yaml
 from cryptography.fernet import Fernet
 
 from application.wren_settings import WrenSettingsApplication
+from application.lexical_recall import lexical_recall
 from config import Settings
 from integrations.mysql_schema import ForeignKeySchema, MysqlSchemaReader, TableSchema
 from integrations.wren_cli import WrenCli
+from integrations.wren_memory import load_semantic_recall_documents
 from integrations.wren_project import WrenProjectBuilder
 from wren_settings import WrenConfigurationError
 from wren_settings import WrenSettingsStore
@@ -49,6 +51,26 @@ def test_failed_cli_output_is_redacted(tmp_path):
         cli.build(tmp_path, secrets_to_redact=["secret-marker"])
 
     assert "secret-marker" not in str(error.value)
+
+
+def test_semantic_config_rejects_duplicate_rule_names_after_normalization():
+    with pytest.raises(WrenConfigurationError, match="规则名称不能重复"):
+        WrenSettingsApplication._clean_semantic({
+            "rules": [
+                {"name": "异常地区", "content": "definition one"},
+                {"name": "  异常地区  ", "content": "definition two"},
+            ],
+        })
+
+
+def test_semantic_config_rejects_compatibility_and_case_duplicates():
+    with pytest.raises(WrenConfigurationError, match="规则名称不能重复"):
+        WrenSettingsApplication._clean_semantic({
+            "rules": [
+                {"name": "Revenue Rule", "content": "definition one"},
+                {"name": "ＲＥＶＥＮＵＥ   rule", "content": "definition two"},
+            ],
+        })
 
 
 class FakeCursor:
@@ -176,6 +198,113 @@ def test_project_builder_creates_bound_project_without_secret(tmp_path):
     assert hidden_column["is_hidden"] is True
     assert (project / "models" / "Orders" / "metadata.yml").is_file()
     assert "secret-marker" not in "".join(path.read_text() for path in project.rglob("*.*"))
+
+
+def test_chinese_rule_names_survive_project_build_and_lexical_recall(tmp_path):
+    builder = WrenProjectBuilder(tmp_path)
+    project = builder.build(
+        "source-a",
+        "rev-rules",
+        "profile-a",
+        "mysql",
+        {
+            "database": "analytics",
+            "tables": ["orders"],
+            "rules": [
+                {"name": "异常地区", "content": "地区名称等于销售区域-02-地区-01"},
+                {"name": "异常省份", "content": "省份名称等于销售区域-02-省份-01"},
+            ],
+        },
+        [TableSchema(name="orders", columns=[], foreign_keys=[])],
+    )
+    (project / "target").mkdir(parents=True)
+    (project / "target" / "mdl.json").write_text("{}", encoding="utf-8")
+
+    rule_files = sorted((project / "knowledge" / "rules").glob("*.md"))
+    documents = load_semantic_recall_documents(
+        project,
+        data_source_id="source-a",
+        wren_revision_id="rev-rules",
+        connector_type="mysql",
+        mdl_digest="digest-rules",
+    )
+    hits = lexical_recall(
+        documents,
+        data_source_id="source-a",
+        connector_type="mysql",
+        wren_revision_id="rev-rules",
+        mdl_digest="digest-rules",
+        query="异常地区有哪些",
+    )
+
+    assert len(rule_files) == 2
+    assert {document.title for document in documents if document.kind.value == "business_rule"} == {
+        "异常地区",
+        "异常省份",
+    }
+    assert any(
+        hit.document.title == "异常地区" and "异常" in hit.matched_terms
+        for hit in hits
+    )
+
+
+def test_legacy_rule_file_uses_configured_chinese_name_for_recall(tmp_path):
+    project = tmp_path / "legacy-project"
+    rules_dir = project / "knowledge" / "rules"
+    rules_dir.mkdir(parents=True)
+    (project / "target").mkdir()
+    (project / "target" / "mdl.json").write_text("{}", encoding="utf-8")
+    (rules_dir / "rule.md").write_text(
+        "地区名称等于销售区域-02-地区-01\n", encoding="utf-8"
+    )
+
+    documents = load_semantic_recall_documents(
+        project,
+        data_source_id="source-a",
+        wren_revision_id="rev-legacy",
+        connector_type="mysql",
+        mdl_digest="digest-legacy",
+        configured_rules=[
+            {"name": "异常地区", "content": "地区名称等于销售区域-02-地区-01"}
+        ],
+    )
+    hits = lexical_recall(
+        documents,
+        data_source_id="source-a",
+        connector_type="mysql",
+        wren_revision_id="rev-legacy",
+        mdl_digest="digest-legacy",
+        query="异常地区有哪些",
+    )
+
+    assert len(documents) == 1
+    assert documents[0].title == "异常地区"
+    assert any("异常" in hit.matched_terms for hit in hits)
+
+
+def test_project_builder_keeps_managed_rule_filename_and_human_title(tmp_path):
+    managed_id = "a" * 32
+    project = WrenProjectBuilder(tmp_path).build(
+        "source-a",
+        "rev-managed",
+        "profile-a",
+        "mysql",
+        {
+            "database": "analytics",
+            "tables": ["orders"],
+            "rules": [
+                {
+                    "name": f"askdb_br_{managed_id}",
+                    "content": "# 异常地区\n地区名称等于销售区域-02-地区-01",
+                }
+            ],
+        },
+        [TableSchema(name="orders", columns=[], foreign_keys=[])],
+    )
+    rule_file = project / "knowledge" / "rules" / f"askdb_br_{managed_id}.md"
+
+    assert rule_file.is_file()
+    assert rule_file.read_text(encoding="utf-8").startswith("# 异常地区\n")
 
 
 class FakeMigrationCli:

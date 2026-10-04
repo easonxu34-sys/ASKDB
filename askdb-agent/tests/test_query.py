@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from application.chart_context import QueryArtifactContext
 from query import create_guarded_query_tool, validate_read_query
 
 
@@ -29,6 +30,7 @@ def test_read_query_accepts_select_and_cte() -> None:
 def test_query_tool_runs_wren_validation_before_execution() -> None:
     class FakeTable:
         column_names = ["total"]
+        schema = type("Schema", (), {"field": staticmethod(lambda name: type("Field", (), {"type": "int64"})())})()
         num_rows = 1
 
         @staticmethod
@@ -53,12 +55,15 @@ def test_query_tool_runs_wren_validation_before_execution() -> None:
             return FakeTable()
 
     toolkit = FakeToolkit()
-    tool = create_guarded_query_tool(toolkit)
+    context = QueryArtifactContext()
+    tool = create_guarded_query_tool(toolkit, context)
 
     result = tool.invoke({"sql": "SELECT 42 AS total", "limit": 10})
 
     assert toolkit.calls == ["dry_plan", "dry_run", "query"]
     assert result["data"]["rows"] == [{"total": 42}]
+    assert result["data"]["column_types"] == ["int64"]
+    assert context.get_query(result["data"]["result_id"]) is not None
 
 
 def test_query_tool_rejects_invalid_sql_before_wren_calls() -> None:

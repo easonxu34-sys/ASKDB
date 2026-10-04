@@ -4,7 +4,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from application.chart_context import QueryArtifactContext
 from application.chat import stream_chat_events
+from tools.chart import create_chart_tool
 
 
 class FakeAgent:
@@ -37,6 +39,11 @@ class FakeRuntime:
         self.agent = FakeAgent(events)
         self.query_gate = FakeQueryGate(gate_responses)
         self.query_context = "订单模型包含客户、商品与销售额字段。"
+        self.turn_contexts = []
+
+    def create_agent_for_turn(self, context, chart_request):
+        self.turn_contexts.append((context, chart_request))
+        return self.agent
 
 
 def chat_model_event(content):
@@ -94,6 +101,193 @@ def test_query_results_are_emitted_but_tool_messages_are_not_user_text() -> None
     assert len(results) == 1
     assert results[0]["data"]["sql"] == "SELECT SUM(amount) AS total FROM orders"
     assert len(runtime.query_gate.received) == 1
+
+
+def test_chart_event_follows_its_query_result_and_preserves_final_answer():
+    chart = {
+        "kind": "echarts_chart",
+        "schema_version": 1,
+        "source_result_id": "turn-result-1",
+        "chart_type": "line",
+        "x_field": "month",
+        "series_fields": ["revenue"],
+        "title": "revenue by month",
+    }
+    runtime = FakeRuntime(
+        [
+            tool_event("wren_query", {"data": {"sql": "SELECT 1", "result_id": "turn-result-1", "columns": [], "rows": []}}),
+            tool_event("render_chart", {"ok": True, "data": chart}),
+            chat_model_event("图表已生成。"),
+        ]
+    )
+
+    events = collect_events(runtime)
+
+    assert [event for event, _ in events] == ["result", "chart", "token"]
+    assert events[1][1]["artifact"] == chart
+    assert token_text(events) == "图表已生成。"
+    context, request = runtime.turn_contexts[0]
+    assert request.requested_chart_type is None
+    assert context.get_query("turn-result-1") is None
+
+
+def test_chart_request_emits_artifact_when_agent_skips_render_chart():
+    class RuntimeWithStoredQuery(FakeRuntime):
+        def create_agent_for_turn(self, context, chart_request):
+            self.turn_contexts.append((context, chart_request))
+            table = SimpleNamespace(
+                column_names=["warehouse", "vip_count"],
+                schema=SimpleNamespace(
+                    field=lambda index: SimpleNamespace(
+                        type="string" if index == 0 else "int64"
+                    )
+                ),
+                to_pylist=lambda: [{"warehouse": "East", "vip_count": 12}],
+                num_rows=1,
+            )
+            result = context.store_query(table, "SELECT warehouse, vip_count", 100)
+            self.agent.events = [
+                tool_event("wren_query", {"ok": True, "data": result.to_dict()}),
+                chat_model_event("柱状图已生成。"),
+            ]
+            return self.agent
+
+    runtime = RuntimeWithStoredQuery([])
+
+    events = collect_events(runtime, "按仓库绘制柱状图")
+
+    chart_events = [payload for event, payload in events if event == "chart"]
+    assert len(chart_events) == 1
+    assert chart_events[0]["artifact"]["chart_type"] == "bar"
+    assert chart_events[0]["artifact"]["source_result_id"] == events[0][1]["output"]["data"]["result_id"]
+    assert token_text(events) == "柱状图已生成。"
+
+
+def test_chart_revision_followup_is_still_treated_as_a_chart_request():
+    class RuntimeWithStoredQuery(FakeRuntime):
+        def create_agent_for_turn(self, context, chart_request):
+            self.turn_contexts.append((context, chart_request))
+            table = SimpleNamespace(
+                column_names=["warehouse_name", "vip_count"],
+                schema=SimpleNamespace(
+                    field=lambda index: SimpleNamespace(
+                        type="string" if index == 0 else "int64"
+                    )
+                ),
+                to_pylist=lambda: [{"warehouse_name": "East", "vip_count": 12}],
+                num_rows=1,
+            )
+            result = context.store_query(table, "SELECT warehouse_name, vip_count", 100)
+            self.agent.events = [
+                tool_event("wren_query", {"ok": True, "data": result.to_dict()}),
+                chat_model_event("柱状图已生成。"),
+            ]
+            return self.agent
+
+    runtime = RuntimeWithStoredQuery([])
+
+    async def collect():
+        messages = [
+            {"role": "user", "content": "按仓库统计 VIP 用户占比并画柱状图"},
+            {"role": "assistant", "content": "图表暂不可用，可以按仓库名称替代 ID 后重试。"},
+            {"role": "user", "content": "按仓库名称替代 ID"},
+        ]
+        return [
+            event
+            async for event in stream_chat_events(runtime, messages, "thread-1")
+        ]
+
+    events = asyncio.run(collect())
+
+    chart_events = [payload for event, payload in events if event == "chart"]
+    assert len(chart_events) == 1
+    assert chart_events[0]["artifact"]["x_field"] == "warehouse_name"
+    assert runtime.turn_contexts[0][1].should_render is True
+
+
+def test_agent_cannot_claim_chart_generation_without_a_current_query_result():
+    runtime = FakeRuntime([chat_model_event("柱状图已生成。")])
+
+    events = collect_events(runtime, "按仓库绘制柱状图")
+
+    assert not [payload for event, payload in events if event == "chart"]
+    assert "没有成功生成可显示的图表" in token_text(events)
+
+
+def test_failed_chart_tool_is_not_retried_as_a_duplicate_fallback():
+    class RuntimeWithStoredQuery(FakeRuntime):
+        def create_agent_for_turn(self, context, chart_request):
+            self.turn_contexts.append((context, chart_request))
+            table = SimpleNamespace(
+                column_names=["total"],
+                schema=SimpleNamespace(field=lambda index: SimpleNamespace(type="int64")),
+                to_pylist=lambda: [{"total": 12}],
+                num_rows=1,
+            )
+            result = context.store_query(table, "SELECT 12 AS total", 100)
+            self.agent.events = [
+                tool_event("wren_query", {"ok": True, "data": result.to_dict()}),
+                tool_event(
+                    "render_chart",
+                    {"ok": False, "data": {"kind": "chart_unavailable", "reason": "no dimension"}},
+                ),
+                chat_model_event("图表暂不可用。"),
+            ]
+            return self.agent
+
+    runtime = RuntimeWithStoredQuery([])
+
+    events = collect_events(runtime, "按仓库绘制柱状图")
+
+    chart_events = [payload for event, payload in events if event == "chart"]
+    assert len(chart_events) == 1
+
+
+def test_chart_unavailable_is_emitted_without_failing_the_turn():
+    runtime = FakeRuntime(
+        [
+            tool_event("render_chart", {"ok": False, "data": {"kind": "chart_unavailable", "reason": "unsupported"}}),
+            chat_model_event("查询结果已整理。"),
+        ]
+    )
+
+    events = collect_events(runtime)
+
+    assert events[0] == ("chart", {"unavailable": {"kind": "chart_unavailable", "reason": "unsupported"}})
+    assert token_text(events) == "查询结果已整理。"
+
+
+def test_concurrent_turns_receive_isolated_query_artifact_contexts():
+    runtime = FakeRuntime([])
+
+    async def collect(thread_id):
+        return [
+            event
+            async for event in stream_chat_events(
+                runtime,
+                [{"role": "user", "content": "订单总数？"}],
+                thread_id,
+            )
+        ]
+
+    async def run_both():
+        await asyncio.gather(collect("thread-a"), collect("thread-b"))
+
+    asyncio.run(run_both())
+    first_context, _ = runtime.turn_contexts[0]
+    second_context, _ = runtime.turn_contexts[1]
+    table = SimpleNamespace(
+        column_names=["region", "revenue"],
+        schema=SimpleNamespace(field=lambda name: SimpleNamespace(type="string" if name == "region" else "double")),
+        to_pylist=lambda: [{"region": "east", "revenue": 1.5}],
+        num_rows=1,
+    )
+    result = first_context.store_query(table, "SELECT ...", 100)
+
+    assert first_context is not second_context
+    assert second_context.get_query(result.result_id) is None
+    unavailable = create_chart_tool(second_context).invoke({"result_id": result.result_id})
+    assert unavailable["data"]["kind"] == "chart_unavailable"
 
 
 def test_business_answer_containing_internal_term_is_allowed_after_review() -> None:

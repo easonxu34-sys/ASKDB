@@ -58,6 +58,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _attach_turn_metadata(
+    payload: Any,
+    *,
+    thread_id: str,
+    turn_id: str | None,
+    user_sequence: int | None,
+) -> dict[str, Any]:
+    metadata = {
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "user_sequence": user_sequence,
+    }
+    return {**payload, **metadata} if isinstance(payload, dict) else {**metadata, "payload": payload}
+
+
 @router.post("/v1/chat")
 async def chat(
     request: ChatRequest,
@@ -621,15 +636,11 @@ async def chat(
                                 assistant_parts.append(str(payload.get("text", "")))
                             if is_error_event:
                                 stream_failed = True
-                            metadata = {
-                                "thread_id": request.thread_id,
-                                "turn_id": request.turn_id,
-                                "user_sequence": turn_start.user_sequence if turn_start else None,
-                            }
-                            payload = (
-                                {**payload, **metadata}
-                                if isinstance(payload, dict)
-                                else {**metadata, "payload": payload}
+                            payload = _attach_turn_metadata(
+                                payload,
+                                thread_id=request.thread_id,
+                                turn_id=request.turn_id,
+                                user_sequence=turn_start.user_sequence if turn_start else None,
                             )
                         yield encode_sse(event, payload)
                 finally:

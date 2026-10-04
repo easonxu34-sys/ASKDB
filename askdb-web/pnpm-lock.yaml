@@ -23,6 +23,9 @@ importers:
       cn:
         specifier: ^0.3.0
         version: 0.3.3
+      echarts:
+        specifier: 6.1.0
+        version: 6.1.0
       lucide-react:
         specifier: ^1.46.0
         version: 1.49.0(@types/react@19.3.0)(react@19.3.0)
@@ -1770,6 +1773,9 @@ packages:
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
 
+  echarts@6.1.0:
+    resolution: {integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==}
+
   enhanced-resolve@5.26.0:
     resolution: {integrity: sha512-9vhedylFonb2YGogzUKX6+Ja72gOJbN1QHAqdrvqLwhdl/QWbKopzoUC9EbQNVsAns/bx/4uyqalrQAoy1IByw==}
     engines: {node: '>=10.13.0'}
@@ -2377,6 +2383,9 @@ packages:
 
   zod@4.6.5:
     resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+
+  zrender@6.1.0:
+    resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
 
   zustand@5.0.15:
     resolution: {integrity: sha512-MpSEjRiBkA9crSYeOUH32rJC7SVqAbm0Fqcqge/bUi2PPoLcBWKOsG+C8mevmpr8TwXHBVkChbbJiyvkE+i/3A==}
@@ -3838,6 +3847,11 @@ snapshots:
     dependencies:
       dequal: 2.0.3
 
+  echarts@6.1.0:
+    dependencies:
+      tslib: 2.8.1
+      zrender: 6.1.0
+
   enhanced-resolve@5.26.0:
     dependencies:
       graceful-fs: 4.2.11
@@ -4767,6 +4781,10 @@ snapshots:
       vfile-message: 4.0.3
 
   zod@4.6.5: {}
+
+  zrender@6.1.0:
+    dependencies:
+      tslib: 2.8.1
 
   zustand@5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)):
     optionalDependencies:
