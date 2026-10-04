@@ -1,20 +1,34 @@
-import type { EChartsChartArtifact, SuccessfulQueryArtifact } from "@/lib/chat-output";
+import {
+  createRecommendedChartView,
+  validateChartView,
+  type ChartValueFormat,
+  type ChartViewConfiguration,
+  type EChartsChartArtifact,
+  type SuccessfulQueryArtifact,
+} from "./chat-output.ts";
 
 type QueryShape = SuccessfulQueryArtifact & {
   resultId: string;
   columnTypes: string[];
 };
 
+type IndexedRow = { row: Record<string, unknown>; index: number };
+
+const CNY_FACTORS = {
+  yuan: 1,
+  thousand_yuan: 1_000,
+  ten_thousand_yuan: 10_000,
+  hundred_million_yuan: 100_000_000,
+} as const;
+const CNY_LABELS = {
+  yuan: "元",
+  thousand_yuan: "千元",
+  ten_thousand_yuan: "万元",
+  hundred_million_yuan: "亿元",
+} as const;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function typeGroup(typeName: string) {
-  const normalized = typeName.toLowerCase();
-  if (/^(date|time|timestamp|duration)/.test(normalized)) return "temporal";
-  if (/^(u?int|float|double|decimal|numeric)/.test(normalized)) return "numeric";
-  if (/(struct|list<|map<|binary|null)/.test(normalized)) return "unsupported";
-  return "categorical";
 }
 
 function isChartArtifact(value: unknown): value is EChartsChartArtifact {
@@ -31,6 +45,7 @@ function isChartArtifact(value: unknown): value is EChartsChartArtifact {
     value.series_fields.length > 0 &&
     value.series_fields.length <= 4 &&
     value.series_fields.every((field) => typeof field === "string" && field.length > 0) &&
+    new Set(value.series_fields).size === value.series_fields.length &&
     typeof value.title === "string" &&
     value.title.length > 0
   );
@@ -57,122 +72,320 @@ function normalizeQuery(value: unknown): QueryShape | null {
     ...value,
     resultId: value.resultId ?? value.result_id,
     columnTypes: value.columnTypes ?? value.column_types,
+    rowCount: value.rowCount ?? value.row_count,
   };
   return isQueryShape(normalized) ? normalized : null;
 }
 
-function safeTitle(artifact: EChartsChartArtifact) {
-  return `${artifact.series_fields.join(", ")} by ${artifact.x_field}`;
-}
-
-function validRows(query: QueryShape) {
-  return query.rows.slice(0, 1000);
-}
-
 function safeLabel(value: unknown) {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return String(value);
+  return "（空值）";
 }
 
-function temporalOrder(rows: Record<string, unknown>[], field: string) {
-  return rows
-    .map((row, index) => ({ row, index, time: Date.parse(String(row[field] ?? "")) }))
-    .sort((left, right) => {
-      const leftValid = Number.isFinite(left.time);
-      const rightValid = Number.isFinite(right.time);
-      if (leftValid && rightValid) return left.time - right.time || left.index - right.index;
-      if (leftValid !== rightValid) return leftValid ? -1 : 1;
-      return left.index - right.index;
+function displayName(view: ChartViewConfiguration, field: string) {
+  return view.field_labels[field]?.trim() || field;
+}
+
+function numberText(value: number, decimalPlaces: "auto" | number) {
+  const places = decimalPlaces === "auto" ? 6 : decimalPlaces;
+  return new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: decimalPlaces === "auto" ? 0 : places,
+    maximumFractionDigits: places,
+  }).format(value);
+}
+
+export function formatChartValue(value: unknown, format: ChartValueFormat): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  let displayed = value;
+  if (format.mode === "unit_scale") {
+    displayed = (value * CNY_FACTORS[format.source_unit]) / CNY_FACTORS[format.display_unit];
+  } else if (format.mode === "percent" && format.encoding === "ratio_0_1") {
+    displayed = value * 100;
+  }
+  if (!Number.isFinite(displayed)) return "—";
+  const text = numberText(displayed, format.decimal_places);
+  if (format.mode === "percent") return `${text}%`;
+  if (format.mode === "suffix") return `${text}${format.suffix}`;
+  if (format.mode === "unit_scale") return `${text} ${CNY_LABELS[format.display_unit]}`;
+  return text;
+}
+
+function unitSignature(format: ChartValueFormat) {
+  if (format.mode === "unit_scale") return `${format.unit_family}:${format.display_unit}`;
+  if (format.mode === "suffix") return `suffix:${format.suffix.trim()}`;
+  if (format.mode === "percent") return "%";
+  return "raw";
+}
+
+function sharedAxisFormat(view: ChartViewConfiguration, metrics: string[]): ChartValueFormat {
+  const formats = metrics.map((field) => view.format_by_field[field]);
+  const signatures = new Set(formats.map(unitSignature));
+  return signatures.size <= 1 ? formats[0] : { mode: "raw", decimal_places: "auto" };
+}
+
+export function getChartUnitWarning(view: ChartViewConfiguration) {
+  const visibleMetrics = view.metric_fields.filter(
+    (field) => !view.hidden_metric_fields.includes(field),
+  );
+  const units = new Set(visibleMetrics.map((field) => unitSignature(view.format_by_field[field])));
+  return units.size > 1 ? "指标单位不同，数值不宜直接比较。" : "";
+}
+
+function compareNullable(left: unknown, right: unknown, temporal: boolean) {
+  const empty = (value: unknown) => value === null || value === undefined || value === "";
+  if (empty(left) !== empty(right)) return empty(left) ? 1 : -1;
+  if (empty(left)) return 0;
+  if (temporal) {
+    const leftTime = Date.parse(String(left));
+    const leftTimeOnly = timeOfDay(String(left));
+    const rightTime = Date.parse(String(right));
+    const rightTimeOnly = timeOfDay(String(right));
+    const leftValue = Number.isFinite(leftTimeOnly) ? leftTimeOnly : leftTime;
+    const rightValue = Number.isFinite(rightTimeOnly) ? rightTimeOnly : rightTime;
+    const leftValid = Number.isFinite(leftValue);
+    const rightValid = Number.isFinite(rightValue);
+    if (leftValid !== rightValid) return leftValid ? -1 : 1;
+    if (!leftValid) return 0;
+    return leftValue - rightValue;
+  }
+  if (typeof left === "number" && typeof right === "number") return left - right;
+  if (typeof left === "boolean" && typeof right === "boolean") return Number(left) - Number(right);
+  const leftText = safeLabel(left);
+  const rightText = safeLabel(right);
+  return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
+}
+
+function sortRows(query: QueryShape, view: ChartViewConfiguration): IndexedRow[] {
+  const rows = query.rows.slice(0, 1000).map((row, index) => ({ row, index }));
+  if (view.sort.mode === "original") return rows;
+  const direction = view.sort.direction === "asc" ? 1 : -1;
+  const dimensionSort = view.sort.mode === "dimension";
+  const dimensionType = dimensionSort
+    ? query.columnTypes[query.columns.indexOf(view.dimension_field)].toLowerCase()
+    : "";
+  const temporal = dimensionSort && /^(date|time|timestamp)/.test(dimensionType);
+  const sortField = view.sort.mode === "dimension" ? view.dimension_field : view.sort.field;
+  return rows.sort((left, right) => {
+    const a = left.row[sortField];
+    const b = right.row[sortField];
+    let result: number;
+    if (view.sort.mode === "metric") {
+      const aValid = typeof a === "number" && Number.isFinite(a);
+      const bValid = typeof b === "number" && Number.isFinite(b);
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      result = aValid && bValid ? (a as number) - (b as number) : 0;
+    } else {
+      result = compareNullable(a, b, temporal);
+      if (
+        (a === null || a === undefined || a === "") !== (b === null || b === undefined || b === "")
+      ) {
+        return result;
+      }
+    }
+    return result * direction || left.index - right.index;
+  });
+}
+
+function timeOfDay(value: string) {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/.exec(value);
+  if (!match) return Number.NaN;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] ?? "0");
+  if (hour > 23 || minute > 59 || second > 59) return Number.NaN;
+  return ((hour * 60 + minute) * 60 + second) * 1000 + Number(`0.${match[4] ?? "0"}`) * 1000;
+}
+
+function escapeTooltipText(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function tooltipHtml(
+  rows: IndexedRow[],
+  view: ChartViewConfiguration,
+  metrics: string[],
+  params: unknown,
+) {
+  const first = Array.isArray(params) ? params[0] : params;
+  if (!isRecord(first) || typeof first.dataIndex !== "number") return "";
+  const row = rows[first.dataIndex]?.row;
+  if (!row) return "";
+  const dimension = `<div>${escapeTooltipText(displayName(view, view.dimension_field))}: ${escapeTooltipText(safeLabel(row[view.dimension_field]))}</div>`;
+  const values = metrics
+    .map((field) => {
+      const text = formatChartValue(row[field], view.format_by_field[field]);
+      return `<div>${escapeTooltipText(displayName(view, field))}: ${escapeTooltipText(text)}</div>`;
     })
-    .map(({ row }) => row);
+    .join("");
+  return `${dimension}${values}`;
+}
+
+function isTruncated(query: QueryShape) {
+  return (
+    query.truncated === true ||
+    query.rows.length > 1000 ||
+    (typeof query.rowCount === "number" && query.rowCount > query.rows.length)
+  );
 }
 
 export function buildEChartsOption(
   chartArtifact: unknown,
   queryArtifact: unknown,
+  viewInput?: unknown,
 ): Record<string, unknown> | null {
   if (!isChartArtifact(chartArtifact)) return null;
   const query = normalizeQuery(queryArtifact);
-  if (!query) return null;
-  if (chartArtifact.source_result_id !== query.resultId) return null;
-  if (chartArtifact.title !== safeTitle(chartArtifact)) return null;
-
-  const fieldIndex = (field: string) => query.columns.indexOf(field);
-  const xIndex = fieldIndex(chartArtifact.x_field);
-  if (xIndex < 0 || query.columns.lastIndexOf(chartArtifact.x_field) !== xIndex) return null;
-  const xGroup = typeGroup(query.columnTypes[xIndex]);
-  if (xGroup !== "categorical" && xGroup !== "temporal") return null;
-
-  const seriesIndexes = chartArtifact.series_fields.map(fieldIndex);
+  if (!query || chartArtifact.source_result_id !== query.resultId) return null;
   if (
-    seriesIndexes.some(
-      (index) => index < 0 || query.columns.lastIndexOf(query.columns[index]) !== index,
-    ) ||
-    seriesIndexes.some((index) => typeGroup(query.columnTypes[index]) !== "numeric") ||
-    new Set(chartArtifact.series_fields).size !== chartArtifact.series_fields.length
+    chartArtifact.title !== `${chartArtifact.series_fields.join(", ")} by ${chartArtifact.x_field}`
   )
     return null;
-  if (chartArtifact.chart_type === "pie" && chartArtifact.series_fields.length !== 1) return null;
+  const recommended = createRecommendedChartView(chartArtifact, query);
+  if (!recommended) return null;
+  const validation = validateChartView(viewInput ?? recommended, query);
+  const view = validation.view;
+  if (!view) return null;
 
-  let rows = validRows(query);
-  if (chartArtifact.chart_type === "line" && xGroup === "temporal") {
-    rows = temporalOrder(rows, chartArtifact.x_field);
-  }
-  const labels = rows.map((row) => safeLabel(row[chartArtifact.x_field]));
-  const seriesValues = (field: string) =>
-    rows.map((row) => {
+  const rows = sortRows(query, view);
+  const labels = rows.map(({ row }) => safeLabel(row[view.dimension_field]));
+  const categoryPositions = rows.map((_, index) => index);
+  const visibleMetrics = view.metric_fields.filter(
+    (field) => !view.hidden_metric_fields.includes(field),
+  );
+  const axisFormat = sharedAxisFormat(view, visibleMetrics);
+  const series = visibleMetrics.map((field) => ({
+    name: displayName(view, field),
+    type: view.chart_type === "line" ? "line" : "bar",
+    data: rows.map(({ row }) => {
       const value = row[field];
       return typeof value === "number" && Number.isFinite(value) ? value : null;
-    });
+    }),
+    label: {
+      show: view.show_data_labels,
+      position:
+        view.chart_type === "bar" && view.bar_orientation === "horizontal" ? "right" : "top",
+      formatter: (params: unknown) => {
+        const value = isRecord(params) ? params.value : params;
+        return formatChartValue(value, view.format_by_field[field]);
+      },
+    },
+    ...(view.chart_type === "line" ? { showSymbol: rows.length <= 60, connectNulls: false } : {}),
+  }));
+  const tooltip = {
+    trigger: view.chart_type === "pie" ? "item" : "axis",
+    formatter: (params: unknown) => tooltipHtml(rows, view, visibleMetrics, params),
+  };
 
-  if (chartArtifact.chart_type === "pie") {
-    if (new Set(rows.map((row) => JSON.stringify(row[chartArtifact.x_field]))).size > 8) return null;
-    const data = rows.map((row) => ({
-      name: safeLabel(row[chartArtifact.x_field]),
-      value:
-        typeof row[chartArtifact.series_fields[0]] === "number" &&
-        Number.isFinite(row[chartArtifact.series_fields[0]] as number)
-          ? (row[chartArtifact.series_fields[0]] as number)
-          : null,
+  if (view.chart_type === "pie") {
+    const field = visibleMetrics[0];
+    const total = rows.reduce((sum, { row }) => sum + (row[field] as number), 0);
+    const data = rows.map(({ row }) => ({
+      name: safeLabel(row[view.dimension_field]),
+      value: row[field],
     }));
     return {
-      title: {
-        text: chartArtifact.title,
-        left: "center",
-        textStyle: { fontSize: 14, fontWeight: 500 },
+      title: { text: view.title, left: "center", textStyle: { fontSize: 14, fontWeight: 500 } },
+      tooltip: {
+        ...tooltip,
+        formatter: (params: unknown) => {
+          const first = Array.isArray(params) ? params[0] : params;
+          if (!isRecord(first) || typeof first.dataIndex !== "number") return "";
+          const row = rows[first.dataIndex]?.row;
+          if (!row) return "";
+          const value = row[field] as number;
+          const slice =
+            total > 0
+              ? new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(
+                  (value / total) * 100,
+                )
+              : "0";
+          return `${tooltipHtml(rows, view, [field], first)}<div>分类占比: ${slice}%</div>`;
+        },
       },
-      tooltip: { trigger: "item" },
-      legend: { show: data.length <= 8, type: "scroll", bottom: 0 },
+      legend: { show: view.show_legend, type: "scroll", bottom: 0 },
       series: [
-        { type: "pie", radius: ["0%", "68%"], center: ["50%", "54%"], label: { show: true }, data },
+        {
+          name: displayName(view, field),
+          type: "pie",
+          radius: ["0%", "68%"],
+          center: ["50%", "54%"],
+          label: {
+            show: view.show_data_labels,
+            formatter: (params: unknown) => {
+              if (!isRecord(params)) return "";
+              const name = typeof params.name === "string" ? params.name : "";
+              return `${name}: ${formatChartValue(params.value, view.format_by_field[field])}`;
+            },
+          },
+          data,
+        },
       ],
     };
   }
 
+  const dimensionName = displayName(view, view.dimension_field);
+  const metricName = visibleMetrics.map((field) => displayName(view, field)).join(" / ");
+  const commonAxisLabel = {
+    hideOverlap: true,
+    formatter: (_value: unknown, index: number) => labels[index] ?? "",
+  };
+  const axis =
+    view.chart_type === "bar" && view.bar_orientation === "horizontal"
+      ? {
+          xAxis: {
+            type: "value",
+            name: metricName,
+            scale: true,
+            axisLabel: {
+              formatter: (value: unknown) => formatChartValue(value, axisFormat),
+            },
+          },
+          yAxis: {
+            type: "category",
+            name: dimensionName,
+            data: categoryPositions,
+            inverse: true,
+            axisLabel: commonAxisLabel,
+          },
+        }
+      : {
+          xAxis: {
+            type: "category",
+            name: dimensionName,
+            data: categoryPositions,
+            axisLabel: commonAxisLabel,
+          },
+          yAxis: {
+            type: "value",
+            name: metricName,
+            scale: true,
+            axisLabel: {
+              formatter: (value: unknown) => formatChartValue(value, axisFormat),
+            },
+          },
+        };
   return {
-    title: {
-      text: chartArtifact.title,
-      left: "left",
-      textStyle: { fontSize: 14, fontWeight: 500 },
-    },
-    tooltip: { trigger: "axis" },
-    legend: { show: chartArtifact.series_fields.length > 1, type: "scroll", bottom: 0 },
+    title: { text: view.title, left: "left", textStyle: { fontSize: 14, fontWeight: 500 } },
+    tooltip,
+    legend: { show: view.show_legend, type: "scroll", bottom: 0 },
     grid: {
       left: 12,
       right: 16,
       top: 42,
-      bottom: chartArtifact.series_fields.length > 1 ? 50 : 28,
+      bottom: view.show_legend ? 50 : 28,
       containLabel: true,
     },
-    xAxis: { type: "category", data: labels, axisLabel: { hideOverlap: true } },
-    yAxis: { type: "value", scale: true },
-    series: chartArtifact.series_fields.map((name) => ({
-      name,
-      type: chartArtifact.chart_type,
-      data: seriesValues(name),
-      ...(chartArtifact.chart_type === "line"
-        ? { showSymbol: rows.length <= 60, connectNulls: false }
-        : {}),
-    })),
+    ...axis,
+    series,
+    ...(isTruncated(query)
+      ? { aria: { enabled: true, description: "图表仅展示部分查询结果" } }
+      : {}),
   };
 }

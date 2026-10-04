@@ -12,6 +12,7 @@ import {
   getChartUnavailableMessages,
   getChartMessageParts,
   getSuccessfulQueryArtifacts,
+  isChartViewOverrideCandidate,
   readChartArtifact,
 } from "@/lib/chat-output";
 import { readQueryProgressStep, type QueryProgressStep } from "@/lib/query-progress";
@@ -62,6 +63,7 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
       let chartNotice = "";
       let terminalReceived = false;
       let eofRetries = 0;
+      let readCurrentTurnArtifacts: (() => unknown[]) | undefined;
       const update = () => {
         const queryText = formatQueryResults(queryResults);
         const answerText = [chartNotice, answer].filter(Boolean).join("\n\n");
@@ -79,7 +81,11 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
           content: [
             ...currentProgress,
             ...(queryText ? [{ type: "text" as const, text: queryText }] : []),
-            ...getChartMessageParts([...queryResults, ...chartArtifacts]),
+            ...getChartMessageParts([
+              ...queryResults,
+              ...chartArtifacts,
+              ...(readCurrentTurnArtifacts?.() ?? []).filter(isChartViewOverrideCandidate),
+            ]),
             ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
           ] as ChatModelRunUpdate["content"],
         };
@@ -134,6 +140,8 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
         }
         turnId = await stableTurnId(serverThreadId, currentUserMessage.id);
         historyTurnId = await historyTurnKey(turnId);
+        readCurrentTurnArtifacts = () =>
+          getThreadResultArtifacts(userId, serverThreadId, historyTurnId, turnId);
         expectedSequence = stableExpectedSequence(
           userId,
           serverThreadId,
@@ -280,7 +288,10 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
               chartArtifacts.splice(
                 0,
                 chartArtifacts.length,
-                ...saved.filter((artifact) => readChartArtifact(artifact)),
+                ...saved.filter(
+                  (artifact) =>
+                    readChartArtifact(artifact) || isChartViewOverrideCandidate(artifact),
+                ),
               );
               chartNotice = getChartUnavailableMessages(saved).join("\n\n");
               yield update();
@@ -294,10 +305,18 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
                 chartArtifacts.push(event.data);
                 saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data);
                 yield update();
-              } else if (getChartUnavailableMessages([event.data]).length > 0) {
-                const unavailable = { unavailable: event.data.unavailable };
+              } else if (getChartUnavailableMessages([...queryResults, event.data]).length > 0) {
+                const messages = getChartUnavailableMessages([...queryResults, event.data]);
+                const unavailable = event.data.unavailable
+                  ? { unavailable: event.data.unavailable }
+                  : {
+                      unavailable: {
+                        kind: "chart_unavailable",
+                        reason: messages[0].replace(/^图表暂不可用：/, ""),
+                      },
+                    };
                 chartArtifacts.push(unavailable);
-                chartNotice = getChartUnavailableMessages([unavailable]).join("\n\n");
+                chartNotice = messages.join("\n\n");
                 saveThreadResultArtifact(userId, serverThreadId, historyTurnId, unavailable);
                 yield update();
               }
@@ -349,7 +368,8 @@ async function historyTurnKey(turnId: string) {
 }
 
 export async function deriveSourceTurnKey(threadId: string, messageId: string) {
-  const turnId = await stableTurnId(threadId, messageId);
+  const persistedTurnId = /^server-(turn_[a-f0-9]{64})-\d+$/.exec(messageId)?.[1];
+  const turnId = persistedTurnId ?? (await stableTurnId(threadId, messageId));
   return { turnId, sourceTurnKey: await historyTurnKey(turnId) };
 }
 

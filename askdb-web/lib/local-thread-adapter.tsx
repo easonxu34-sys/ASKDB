@@ -12,7 +12,15 @@ import { useMemo, type PropsWithChildren } from "react";
 import { requestCsrfToken } from "@/lib/auth-api";
 import { reconcileThreadModelSelection } from "@/lib/model-selection";
 import type { ModelSelectionCatalog } from "@/lib/model-selection";
-import { formatQueryResults, getChartMessageParts, getChartUnavailableMessages } from "@/lib/chat-output";
+import {
+  formatQueryResults,
+  getChartMessageParts,
+  getChartUnavailableMessages,
+  getSuccessfulQueryArtifacts,
+  isChartViewOverrideCandidate,
+  readChartArtifact,
+  type ChartViewConfiguration,
+} from "@/lib/chat-output";
 import {
   archiveThread as archiveRemoteThread,
   fetchThreadStates,
@@ -94,9 +102,11 @@ export function getRecentThreadPageState(userId: string, query: string) {
 function publishRecentThreadPageState(userId: string, query: string, hasMore: boolean) {
   const normalizedQuery = query.trim();
   recentThreadPageStates.set(userId, { query: normalizedQuery, hasMore });
-  window.dispatchEvent(new CustomEvent("askdb:thread-list-page-state", {
-    detail: { userId, query: normalizedQuery, hasMore },
-  }));
+  window.dispatchEvent(
+    new CustomEvent("askdb:thread-list-page-state", {
+      detail: { userId, query: normalizedQuery, hasMore },
+    }),
+  );
 }
 
 function threadSearchQuery(userId: string) {
@@ -137,7 +147,10 @@ function updateDraftThreadPreferences(
   });
 }
 
-export function getDraftThreadModelProfileId(userId: string, threadItemId: string): string | undefined {
+export function getDraftThreadModelProfileId(
+  userId: string,
+  threadItemId: string,
+): string | undefined {
   return draftThreadPreferences.get(draftThreadKey(userId, threadItemId))?.modelProfileId;
 }
 
@@ -200,7 +213,9 @@ function readThreads(userId: string) {
       ...(thread.historyImportPending === true ? { historyImportPending: true } : {}),
       ...(typeof thread.isPinned === "boolean" ? { isPinned: thread.isPinned } : {}),
       ...(typeof thread.archivedAt === "string" ? { archivedAt: thread.archivedAt } : {}),
-      ...(typeof thread.lastUserTurnAt === "string" ? { lastUserTurnAt: thread.lastUserTurnAt } : {}),
+      ...(typeof thread.lastUserTurnAt === "string"
+        ? { lastUserTurnAt: thread.lastUserTurnAt }
+        : {}),
       ...(thread.retentionPaused === true ? { retentionPaused: true } : {}),
       ...(Number.isSafeInteger(thread.retentionRemainingSeconds)
         ? { retentionRemainingSeconds: thread.retentionRemainingSeconds as number }
@@ -250,10 +265,10 @@ export function saveServerThreadMetadata(userId: string, metadata: ThreadMetadat
   const threads = readThreads(userId);
   const existing = threads.find((thread) => thread.remoteId === metadata.thread_id);
   const updated = storedThreadFromMetadata(metadata, existing);
-  writeThreads(
-    userId,
-    [updated, ...threads.filter((thread) => thread.remoteId !== metadata.thread_id)],
-  );
+  writeThreads(userId, [
+    updated,
+    ...threads.filter((thread) => thread.remoteId !== metadata.thread_id),
+  ]);
   window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
 }
 
@@ -325,11 +340,7 @@ export function requestThreadDeletionFromUI(
   });
 }
 
-export function removeDeletedThreadCache(
-  userId: string,
-  threadId: string,
-  originalId = threadId,
-) {
+export function removeDeletedThreadCache(userId: string, threadId: string, originalId = threadId) {
   removeLocalThread(userId, canonicalThreadId(threadId), originalId);
 }
 
@@ -376,6 +387,73 @@ export function saveThreadResultArtifact(
   }
 }
 
+export function saveThreadChartViewOverride(
+  userId: string,
+  threadId: string,
+  turnId: string,
+  sourceResultId: string,
+  view: ChartViewConfiguration,
+): boolean {
+  if (!turnId || !sourceResultId) return false;
+  const key = RESULT_ARTIFACTS_KEY(userId, canonicalThreadId(threadId));
+  let artifacts: Record<string, unknown[]>;
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    if (
+      typeof stored !== "object" ||
+      stored === null ||
+      Array.isArray(stored) ||
+      Object.values(stored).some((value) => !Array.isArray(value))
+    )
+      return false;
+    artifacts = stored as Record<string, unknown[]>;
+  } catch {
+    return false;
+  }
+
+  const override = {
+    kind: "chart_view_override",
+    schema_version: 1,
+    source_result_id: sourceResultId,
+    view,
+  } as const;
+  const existingTurnArtifacts = artifacts[turnId] ?? [];
+  const hasSourceQuery = existingTurnArtifacts.some((item) =>
+    getSuccessfulQueryArtifacts([item]).some((query) => query.resultId === sourceResultId),
+  );
+  const hasSourceChart = existingTurnArtifacts.some(
+    (item) => readChartArtifact(item)?.source_result_id === sourceResultId,
+  );
+  if (!hasSourceQuery || !hasSourceChart) return false;
+  const turnArtifacts = existingTurnArtifacts.filter((item) => {
+    if (!isChartViewOverrideCandidate(item) || typeof item !== "object" || item === null)
+      return true;
+    const wrapper = item as { artifact?: unknown; source_result_id?: unknown };
+    const candidate =
+      wrapper.artifact && typeof wrapper.artifact === "object"
+        ? (wrapper.artifact as { source_result_id?: unknown })
+        : wrapper;
+    return candidate.source_result_id !== sourceResultId;
+  });
+  const nextArtifacts: Record<string, unknown[]> = {
+    ...artifacts,
+    [turnId]: [...turnArtifacts, override],
+  };
+  let serialized = JSON.stringify(nextArtifacts);
+  while (new TextEncoder().encode(serialized).byteLength > MAX_RESULT_ARTIFACT_BYTES) {
+    const oldestOtherTurn = Object.keys(nextArtifacts).find((id) => id !== turnId);
+    if (!oldestOtherTurn) return false;
+    delete nextArtifacts[oldestOtherTurn];
+    serialized = JSON.stringify(nextArtifacts);
+  }
+  try {
+    window.localStorage.setItem(key, serialized);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getThreadResultArtifacts(
   userId: string,
   threadId: string,
@@ -389,7 +467,10 @@ export function getThreadResultArtifacts(
 function setThreadHistoryImportPending(userId: string, threadId: string, pending: boolean) {
   const threads = readThreads(userId).map((thread) =>
     thread.remoteId === threadId
-      ? { ...thread, ...(pending ? { historyImportPending: true } : { historyImportPending: false }) }
+      ? {
+          ...thread,
+          ...(pending ? { historyImportPending: true } : { historyImportPending: false }),
+        }
       : thread,
   );
   writeThreads(userId, threads);
@@ -424,7 +505,9 @@ export async function ensureServerThread(userId: string, threadId: string): Prom
 async function creationKey(userId: string, stableSourceId: string): Promise<string> {
   const input = new TextEncoder().encode(`${userId}\u0000${stableSourceId}`);
   const digest = await crypto.subtle.digest("SHA-256", input);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 async function buildHistoryImportPlan(
@@ -440,35 +523,53 @@ async function buildHistoryImportPlan(
     creation_key: creationId,
     initial_history: turns,
   };
-  if (new TextEncoder().encode(JSON.stringify(inlinePayload)).byteLength <= MAX_THREAD_REQUEST_BYTES) {
+  if (
+    new TextEncoder().encode(JSON.stringify(inlinePayload)).byteLength <= MAX_THREAD_REQUEST_BYTES
+  ) {
     return undefined;
   }
   const contentBytes = turns.reduce(
-    (size, turn) => size + new TextEncoder().encode(turn.user_content).byteLength +
+    (size, turn) =>
+      size +
+      new TextEncoder().encode(turn.user_content).byteLength +
       new TextEncoder().encode(turn.assistant_content).byteLength,
     0,
   );
   if (turns.length > MAX_IMPORTED_TURNS || contentBytes > MAX_IMPORTED_HISTORY_BYTES) {
-    throw new Error("旧会话超过 500 轮或 2 MiB 的安全导入上限；原始本地记录已保留。请先清理后重试。");
+    throw new Error(
+      "旧会话超过 500 轮或 2 MiB 的安全导入上限；原始本地记录已保留。请先清理后重试。",
+    );
   }
   const importId = `import_${await creationKey(userId, `history-import:${legacyId}`)}`;
   const chunks: ImportedTurn[][] = [];
   let current: ImportedTurn[] = [];
   for (const turn of turns) {
     const candidate = [...current, turn];
-    const candidateBody = JSON.stringify({ import_id: importId, chunk_index: chunks.length, turns: candidate });
+    const candidateBody = JSON.stringify({
+      import_id: importId,
+      chunk_index: chunks.length,
+      turns: candidate,
+    });
     if (new TextEncoder().encode(candidateBody).byteLength <= MAX_THREAD_REQUEST_BYTES) {
       current = candidate;
       continue;
     }
     if (current.length === 0) {
-      throw new Error("有一轮旧会话超过单次 64 KiB 安全导入上限；原始本地记录已保留，请先缩短该轮内容。");
+      throw new Error(
+        "有一轮旧会话超过单次 64 KiB 安全导入上限；原始本地记录已保留，请先缩短该轮内容。",
+      );
     }
     chunks.push(current);
     current = [turn];
-    const singleBody = JSON.stringify({ import_id: importId, chunk_index: chunks.length, turns: current });
+    const singleBody = JSON.stringify({
+      import_id: importId,
+      chunk_index: chunks.length,
+      turns: current,
+    });
     if (new TextEncoder().encode(singleBody).byteLength > MAX_THREAD_REQUEST_BYTES) {
-      throw new Error("有一轮旧会话超过单次 64 KiB 安全导入上限；原始本地记录已保留，请先缩短该轮内容。");
+      throw new Error(
+        "有一轮旧会话超过单次 64 KiB 安全导入上限；原始本地记录已保留，请先缩短该轮内容。",
+      );
     }
   }
   if (current.length) chunks.push(current);
@@ -488,7 +589,9 @@ async function buildHistoryImportPlan(
 async function hashImportChunk(turns: ImportedTurn[]) {
   const payload = JSON.stringify(turns);
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 async function sha256Hex(value: string) {
@@ -548,14 +651,16 @@ async function postThread(
     creation_key: creationId,
     ...(importPlan
       ? {
-        history_import: {
-          import_id: importPlan.importId,
-          chunk_hashes: importPlan.chunkHashes,
-          turn_count: importPlan.turnCount,
-          content_bytes: importPlan.contentBytes,
-        },
-      }
-      : initialHistory.length > 0 ? { initial_history: initialHistory } : {}),
+          history_import: {
+            import_id: importPlan.importId,
+            chunk_hashes: importPlan.chunkHashes,
+            turn_count: importPlan.turnCount,
+            content_bytes: importPlan.contentBytes,
+          },
+        }
+      : initialHistory.length > 0
+        ? { initial_history: initialHistory }
+        : {}),
   };
   const body = JSON.stringify(payload);
   if (new TextEncoder().encode(body).byteLength > MAX_THREAD_REQUEST_BYTES) {
@@ -569,59 +674,64 @@ async function postThread(
     cache: "no-store",
     credentials: "same-origin",
   });
-  const value = await response.json().catch(() => null) as
-    | {
-      thread_id?: unknown;
-      history_import_pending?: unknown;
-      title?: unknown;
-      data_source_id?: unknown;
-      data_source_name?: unknown;
-      is_pinned?: unknown;
-      archived_at?: unknown;
-      last_user_turn_at?: unknown;
-      expires_at?: unknown;
-      retention_paused?: unknown;
-      retention_remaining_seconds?: unknown;
-      metadata_revision?: unknown;
-      detail?: { message?: unknown };
-      message?: unknown;
-    }
-    | null;
-  if (!response.ok || !value || typeof value.thread_id !== "string" || !SERVER_THREAD_ID.test(value.thread_id)) {
-    const message = typeof value?.message === "string"
-      ? value.message
-      : typeof value?.detail?.message === "string"
-        ? value.detail.message
-        : "无法创建服务端会话，请重试。";
+  const value = (await response.json().catch(() => null)) as {
+    thread_id?: unknown;
+    history_import_pending?: unknown;
+    title?: unknown;
+    data_source_id?: unknown;
+    data_source_name?: unknown;
+    is_pinned?: unknown;
+    archived_at?: unknown;
+    last_user_turn_at?: unknown;
+    expires_at?: unknown;
+    retention_paused?: unknown;
+    retention_remaining_seconds?: unknown;
+    metadata_revision?: unknown;
+    detail?: { message?: unknown };
+    message?: unknown;
+  } | null;
+  if (
+    !response.ok ||
+    !value ||
+    typeof value.thread_id !== "string" ||
+    !SERVER_THREAD_ID.test(value.thread_id)
+  ) {
+    const message =
+      typeof value?.message === "string"
+        ? value.message
+        : typeof value?.detail?.message === "string"
+          ? value.detail.message
+          : "无法创建服务端会话，请重试。";
     throw new Error(message);
   }
   return {
     threadId: value.thread_id,
     historyImportPending: value.history_import_pending === true,
     ...(typeof value.data_source_id === "string" &&
-      typeof value.last_user_turn_at === "string" &&
-      typeof value.expires_at === "string" &&
-      typeof value.is_pinned === "boolean" &&
-      typeof value.retention_paused === "boolean" &&
-      typeof value.metadata_revision === "number"
+    typeof value.last_user_turn_at === "string" &&
+    typeof value.expires_at === "string" &&
+    typeof value.is_pinned === "boolean" &&
+    typeof value.retention_paused === "boolean" &&
+    typeof value.metadata_revision === "number"
       ? {
-        metadata: {
-          thread_id: value.thread_id,
-          title: typeof value.title === "string" ? value.title : null,
-          data_source_id: value.data_source_id,
-          data_source_name: typeof value.data_source_name === "string" ? value.data_source_name : null,
-          is_pinned: value.is_pinned,
-          archived_at: typeof value.archived_at === "string" ? value.archived_at : null,
-          last_user_turn_at: value.last_user_turn_at,
-          expires_at: value.expires_at,
-          retention_paused: value.retention_paused,
-          retention_remaining_seconds: Number.isSafeInteger(value.retention_remaining_seconds)
-            ? value.retention_remaining_seconds as number
-            : null,
-          metadata_revision: value.metadata_revision,
-          history_import_pending: value.history_import_pending === true,
-        } satisfies ThreadMetadata,
-      }
+          metadata: {
+            thread_id: value.thread_id,
+            title: typeof value.title === "string" ? value.title : null,
+            data_source_id: value.data_source_id,
+            data_source_name:
+              typeof value.data_source_name === "string" ? value.data_source_name : null,
+            is_pinned: value.is_pinned,
+            archived_at: typeof value.archived_at === "string" ? value.archived_at : null,
+            last_user_turn_at: value.last_user_turn_at,
+            expires_at: value.expires_at,
+            retention_paused: value.retention_paused,
+            retention_remaining_seconds: Number.isSafeInteger(value.retention_remaining_seconds)
+              ? (value.retention_remaining_seconds as number)
+              : null,
+            metadata_revision: value.metadata_revision,
+            history_import_pending: value.history_import_pending === true,
+          } satisfies ThreadMetadata,
+        }
       : {}),
   };
 }
@@ -630,27 +740,38 @@ function saveHistoryPlan(userId: string, threadId: string, plan: HistoryImportPl
   try {
     window.localStorage.setItem(HISTORY_IMPORT_KEY(userId, threadId), JSON.stringify(plan));
   } catch {
-    throw new Error("无法在浏览器中暂存旧会话导入进度；本地记录未迁移，请释放浏览器存储空间后重试。");
+    throw new Error(
+      "无法在浏览器中暂存旧会话导入进度；本地记录未迁移，请释放浏览器存储空间后重试。",
+    );
   }
 }
 
 function readHistoryPlan(userId: string, threadId: string): HistoryImportPlan | null {
   try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(HISTORY_IMPORT_KEY(userId, threadId)) ?? "null");
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(HISTORY_IMPORT_KEY(userId, threadId)) ?? "null",
+    );
     if (!value || typeof value !== "object") return null;
     const plan = value as Partial<HistoryImportPlan>;
     if (
-      typeof plan.importId !== "string" || !/^import_[A-Za-z0-9_-]{16,128}$/.test(plan.importId) ||
-      !Array.isArray(plan.chunks) || plan.chunks.length < 1 || plan.chunks.length > 64 ||
-      !Array.isArray(plan.chunkHashes) || plan.chunks.length !== plan.chunkHashes.length ||
+      typeof plan.importId !== "string" ||
+      !/^import_[A-Za-z0-9_-]{16,128}$/.test(plan.importId) ||
+      !Array.isArray(plan.chunks) ||
+      plan.chunks.length < 1 ||
+      plan.chunks.length > 64 ||
+      !Array.isArray(plan.chunkHashes) ||
+      plan.chunks.length !== plan.chunkHashes.length ||
       plan.chunkHashes.some((hash) => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
-      !Number.isSafeInteger(plan.turnCount) || (plan.turnCount as number) < 1 ||
+      !Number.isSafeInteger(plan.turnCount) ||
+      (plan.turnCount as number) < 1 ||
       (plan.turnCount as number) > MAX_IMPORTED_TURNS ||
-      !Number.isSafeInteger(plan.contentBytes) || (plan.contentBytes as number) < 1 ||
+      !Number.isSafeInteger(plan.contentBytes) ||
+      (plan.contentBytes as number) < 1 ||
       (plan.contentBytes as number) > MAX_IMPORTED_HISTORY_BYTES ||
       plan.chunks.some((chunk) => !Array.isArray(chunk) || chunk.length === 0) ||
       plan.chunks.reduce((count, chunk) => count + chunk.length, 0) !== plan.turnCount
-    ) return null;
+    )
+      return null;
     return plan as HistoryImportPlan;
   } catch {
     return null;
@@ -666,7 +787,11 @@ function moveHistoryPlan(userId: string, oldThreadId: string, newThreadId: strin
   try {
     window.localStorage.setItem(newKey, raw);
   } catch {
-    try { window.localStorage.setItem(oldKey, raw); } catch { /* Keep the original cache untouched. */ }
+    try {
+      window.localStorage.setItem(oldKey, raw);
+    } catch {
+      /* Keep the original cache untouched. */
+    }
     throw new Error("无法保存旧会话续传进度；本地记录仍保留，请释放浏览器存储空间后重试。");
   }
 }
@@ -676,7 +801,9 @@ async function resumeHistoryImportIfNeeded(userId: string, threadId: string) {
   const plan = readHistoryPlan(userId, threadId);
   if (!thread?.historyImportPending && !plan) return;
   if (!plan) {
-    throw new Error("此会话的旧记录导入仍未完成，但浏览器中没有续传清单。请删除此待导入会话后，从本地记录重新迁移。");
+    throw new Error(
+      "此会话的旧记录导入仍未完成，但浏览器中没有续传清单。请删除此待导入会话后，从本地记录重新迁移。",
+    );
   }
   const csrfToken = await requestCsrfToken();
   for (let chunkIndex = 0; chunkIndex < plan.chunks.length; chunkIndex += 1) {
@@ -685,8 +812,10 @@ async function resumeHistoryImportIfNeeded(userId: string, threadId: string) {
       chunk_index: chunkIndex,
       turns: plan.chunks[chunkIndex],
     };
-    if (await hashImportChunk(payload.turns) !== plan.chunkHashes[chunkIndex]) {
-      throw new Error("浏览器中的旧会话续传清单校验失败；原始本地记录仍保留，请从本地记录重新迁移。");
+    if ((await hashImportChunk(payload.turns)) !== plan.chunkHashes[chunkIndex]) {
+      throw new Error(
+        "浏览器中的旧会话续传清单校验失败；原始本地记录仍保留，请从本地记录重新迁移。",
+      );
     }
     const body = JSON.stringify(payload);
     if (new TextEncoder().encode(body).byteLength > MAX_THREAD_REQUEST_BYTES) {
@@ -705,22 +834,26 @@ async function resumeHistoryImportIfNeeded(userId: string, threadId: string) {
       throw new Error("登录状态已失效，请重新登录后继续导入。");
     }
     if (!response.ok) {
-      const bodyValue = await response.json().catch(() => null) as {
+      const bodyValue = (await response.json().catch(() => null)) as {
         detail?: { message?: unknown };
         message?: unknown;
       } | null;
       throw new Error(
-        typeof bodyValue?.message === "string" ? bodyValue.message :
-          typeof bodyValue?.detail?.message === "string" ? bodyValue.detail.message :
-            "旧会话导入中断；打开会话可安全续传，原始本地记录仍保留。",
-        );
+        typeof bodyValue?.message === "string"
+          ? bodyValue.message
+          : typeof bodyValue?.detail?.message === "string"
+            ? bodyValue.detail.message
+            : "旧会话导入中断；打开会话可安全续传，原始本地记录仍保留。",
+      );
     }
-    const result = await response.json().catch(() => null) as {
+    const result = (await response.json().catch(() => null)) as {
       import_id?: unknown;
       completed?: unknown;
     } | null;
-    if (result?.import_id !== plan.importId ||
-      (chunkIndex === plan.chunks.length - 1 && result.completed !== true)) {
+    if (
+      result?.import_id !== plan.importId ||
+      (chunkIndex === plan.chunks.length - 1 && result.completed !== true)
+    ) {
       throw new Error("服务端尚未确认旧会话导入完成；进度已保留，打开会话可继续续传。");
     }
   }
@@ -766,7 +899,9 @@ export function setThreadModelProfileId(userId: string, threadId: string, profil
 export function clearThreadModelProfileId(userId: string, threadId: string) {
   const canonicalId = canonicalThreadId(threadId);
   const threads = readThreads(userId);
-  const thread = threads.find((item) => item.remoteId === canonicalId || item.remoteId === threadId);
+  const thread = threads.find(
+    (item) => item.remoteId === canonicalId || item.remoteId === threadId,
+  );
   if (!thread || typeof thread.modelProfileId !== "string") return;
   delete thread.modelProfileId;
   writeThreads(userId, threads);
@@ -796,7 +931,12 @@ export function getThreadExpiresAt(userId: string, threadId: string): string | u
   return typeof expiresAt === "string" ? expiresAt : undefined;
 }
 
-export function setThreadDataSource(userId: string, threadId: string, sourceId: string, sourceName: string) {
+export function setThreadDataSource(
+  userId: string,
+  threadId: string,
+  sourceId: string,
+  sourceName: string,
+) {
   const canonicalId = canonicalThreadId(threadId);
   const threads = readThreads(userId);
   let thread = threads.find((item) => item.remoteId === canonicalId || item.remoteId === threadId);
@@ -810,7 +950,11 @@ export function setThreadDataSource(userId: string, threadId: string, sourceId: 
   window.dispatchEvent(new Event("askdb:thread-data-source-updated"));
 }
 
-export function migrateLegacyThreadSources(userId: string, defaultSourceId: string, defaultSourceName: string) {
+export function migrateLegacyThreadSources(
+  userId: string,
+  defaultSourceId: string,
+  defaultSourceName: string,
+) {
   if (!defaultSourceId || !defaultSourceName) return 0;
   const threads = readThreads(userId);
   let migrated = 0;
@@ -856,7 +1000,8 @@ export function reconcileLocalThreadModelSelection(
 }
 
 function readRepository(userId: string, threadId: string): StoredRepository {
-  const raw = window.localStorage.getItem(MESSAGES_KEY(userId, canonicalThreadId(threadId))) ??
+  const raw =
+    window.localStorage.getItem(MESSAGES_KEY(userId, canonicalThreadId(threadId))) ??
     window.localStorage.getItem(MESSAGES_KEY(userId, threadId));
   if (!raw) return { messages: [] };
   try {
@@ -877,7 +1022,11 @@ function readRepository(userId: string, threadId: string): StoredRepository {
   }
 }
 
-function upsertMessage(userId: string, threadId: string, item: StoredRepository["messages"][number]) {
+function upsertMessage(
+  userId: string,
+  threadId: string,
+  item: StoredRepository["messages"][number],
+) {
   const canonicalId = canonicalThreadId(threadId);
   const repository = readRepository(userId, canonicalId);
   const index = repository.messages.findIndex(({ message }) => message.id === item.message.id);
@@ -888,7 +1037,9 @@ function upsertMessage(userId: string, threadId: string, item: StoredRepository[
 
   if (item.message.role === "user") {
     const threads = readThreads(userId);
-    const thread = threads.find(({ remoteId }) => remoteId === canonicalId || remoteId === threadId);
+    const thread = threads.find(
+      ({ remoteId }) => remoteId === canonicalId || remoteId === threadId,
+    );
     if (thread && !thread.title) {
       const title = item.message.content
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
@@ -914,10 +1065,10 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
           throw new Error("此本地会话未迁入新版本；请从服务端会话列表选择记录或新建对话。");
         }
         try {
-          const response = await fetch(
-            `/api/threads/${encodeURIComponent(canonicalId)}/history`,
-            { cache: "no-store", credentials: "same-origin" },
-          );
+          const response = await fetch(`/api/threads/${encodeURIComponent(canonicalId)}/history`, {
+            cache: "no-store",
+            credentials: "same-origin",
+          });
           if (response.status === 401) {
             clearLocalThreadCache(userId);
             window.location.assign("/login");
@@ -927,7 +1078,7 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
             throw new Error("当前账号无法读取此数据源的会话历史；会话仍可在设置中管理或删除。");
           }
           if (response.status === 409) {
-            const problem = await response.json().catch(() => null) as {
+            const problem = (await response.json().catch(() => null)) as {
               code?: unknown;
               detail?: { code?: unknown };
             } | null;
@@ -936,9 +1087,11 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
             }
           }
           if (!response.ok) {
-            throw new Error("服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。");
+            throw new Error(
+              "服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。",
+            );
           }
-          const payload = await response.json() as {
+          const payload = (await response.json()) as {
             turns?: Array<{
               turn_id?: unknown;
               sequence?: unknown;
@@ -948,39 +1101,61 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
             }>;
           };
           const resultArtifacts = readThreadResultArtifacts(userId, canonicalId);
-          const turns = (payload.turns ?? []).flatMap((turn) => {
+          const turns: Array<{
+            id: string;
+            role: "user" | "assistant";
+            content: ThreadMessage["content"];
+            createdAt: Date;
+          }> = [];
+          for (const turn of payload.turns ?? []) {
             if (
-              typeof turn.turn_id !== "string" || !Number.isSafeInteger(turn.sequence) ||
+              typeof turn.turn_id !== "string" ||
+              !Number.isSafeInteger(turn.sequence) ||
               (turn.role !== "user" && turn.role !== "assistant") ||
               typeof turn.content !== "string"
-            ) return [];
-            const turnArtifacts = turn.role === "assistant" ? resultArtifacts[turn.turn_id] ?? [] : [];
-            const artifact = turn.role === "assistant"
-              ? formatQueryResults(turnArtifacts)
-              : "";
-            const chartNotices = turn.role === "assistant" ? getChartUnavailableMessages(turnArtifacts) : [];
+            )
+              continue;
+            let turnArtifacts: unknown[] = [];
+            if (turn.role === "assistant") {
+              turnArtifacts = resultArtifacts[turn.turn_id] ?? [];
+              if (turnArtifacts.length === 0) {
+                try {
+                  turnArtifacts = resultArtifacts[await resultArtifactTurnKey(turn.turn_id)] ?? [];
+                } catch {
+                  // A cache-key failure must not prevent the server transcript from loading.
+                }
+              }
+            }
+            const artifact = turn.role === "assistant" ? formatQueryResults(turnArtifacts) : "";
+            const chartNotices =
+              turn.role === "assistant" ? getChartUnavailableMessages(turnArtifacts) : [];
             const answerText = [...chartNotices, turn.content].filter(Boolean).join("\n\n");
             const content = [
               ...(artifact ? [{ type: "text" as const, text: artifact }] : []),
               ...getChartMessageParts(turnArtifacts),
               ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
             ] as ThreadMessage["content"];
-            return [{
+            turns.push({
               id: `server-${turn.turn_id}-${turn.sequence}`,
               role: turn.role as "user" | "assistant",
               content,
-              createdAt: typeof turn.created_at === "string"
-                ? new Date(turn.created_at)
-                : new Date(),
-            }];
-          });
+              createdAt:
+                typeof turn.created_at === "string" ? new Date(turn.created_at) : new Date(),
+            });
+          }
           const repository = ExportedMessageRepository.fromArray(turns);
           // Keep the local repository intact as a display/result-artifact cache, while
           // returning the server transcript as the authoritative natural-language history.
           return repository;
         } catch (error) {
-          if (error instanceof Error && /本地会话未迁入|无法读取此数据源|旧历史导入/.test(error.message)) throw error;
-          throw new Error("服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。");
+          if (
+            error instanceof Error &&
+            /本地会话未迁入|无法读取此数据源|旧历史导入/.test(error.message)
+          )
+            throw error;
+          throw new Error(
+            "服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。",
+          );
         }
       },
       async append(item) {
@@ -1014,13 +1189,23 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
   return <RuntimeAdapterProvider adapters={{ history }}>{children}</RuntimeAdapterProvider>;
 }
 
+async function resultArtifactTurnKey(turnId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(turnId));
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
 export function createLocalThreadListAdapter(userId: string): RemoteThreadListAdapter {
   const localToRemoteId = new Map<string, string>();
   function Provider({ children }: PropsWithChildren) {
     return <LocalHistoryProvider userId={userId}>{children}</LocalHistoryProvider>;
   }
 
-  async function reconcileMissingThreadCaches(cachedThreads: StoredThread[], visibleIds: Set<string>) {
+  async function reconcileMissingThreadCaches(
+    cachedThreads: StoredThread[],
+    visibleIds: Set<string>,
+  ) {
     const staleIds = cachedThreads
       .filter((thread) => isServerThreadId(thread.remoteId) && !visibleIds.has(thread.remoteId))
       .map((thread) => thread.remoteId);
@@ -1035,196 +1220,203 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
           }
         }
       } catch {
-        window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
-          detail: "会话状态核对失败，已保留本地缓存。请稍后重试。",
-        }));
+        window.dispatchEvent(
+          new CustomEvent("askdb:thread-list-error", {
+            detail: "会话状态核对失败，已保留本地缓存。请稍后重试。",
+          }),
+        );
         return;
       }
     }
   }
 
   return {
-  async list(params?: { after?: string }) {
-    initializeThreadCache(userId);
-    const query = threadSearchQuery(userId).trim();
-    if (!params?.after) {
-      recentGroupByUser.delete(userId);
-      publishRecentThreadPageState(userId, query, false);
-    }
-    let page: Awaited<ReturnType<typeof fetchThreadPage>>;
-    try {
-      page = await fetchThreadPage({
-        view: "recent",
-        q: query,
-        limit: 50,
-        ...(params?.after ? { cursor: params.after } : {}),
-      });
-    } catch (error) {
-      if (error instanceof ThreadApiError && error.status === 401) {
+    async list(params?: { after?: string }) {
+      initializeThreadCache(userId);
+      const query = threadSearchQuery(userId).trim();
+      if (!params?.after) {
+        recentGroupByUser.delete(userId);
         publishRecentThreadPageState(userId, query, false);
-        clearLocalThreadCache(userId);
-        window.location.assign("/login");
+      }
+      let page: Awaited<ReturnType<typeof fetchThreadPage>>;
+      try {
+        page = await fetchThreadPage({
+          view: "recent",
+          q: query,
+          limit: 50,
+          ...(params?.after ? { cursor: params.after } : {}),
+        });
+      } catch (error) {
+        if (error instanceof ThreadApiError && error.status === 401) {
+          publishRecentThreadPageState(userId, query, false);
+          clearLocalThreadCache(userId);
+          window.location.assign("/login");
+          return { threads: [] };
+        }
+        if (error instanceof ThreadApiError && error.code === "THREAD_CURSOR_STALE") {
+          publishRecentThreadPageState(userId, query, false);
+          window.dispatchEvent(
+            new CustomEvent("askdb:thread-list-error", {
+              detail: "会话列表已变化，请刷新后重新加载。",
+            }),
+          );
+          throw error;
+        }
+        publishRecentThreadPageState(userId, query, false);
+        window.dispatchEvent(
+          new CustomEvent("askdb:thread-list-error", {
+            detail: "读取会话列表失败。请检查连接后重试刷新。",
+          }),
+        );
         return { threads: [] };
       }
-      if (error instanceof ThreadApiError && error.code === "THREAD_CURSOR_STALE") {
-        publishRecentThreadPageState(userId, query, false);
-        window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
-          detail: "会话列表已变化，请刷新后重新加载。",
-        }));
+
+      publishRecentThreadPageState(userId, query, Boolean(page.next_cursor));
+
+      const cachedThreads = readThreads(userId);
+      const cachedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
+      const serverThreads = page.threads.map((metadata) =>
+        storedThreadFromMetadata(metadata, cachedById.get(metadata.thread_id)),
+      );
+      const groupStates = getThreadGroupPageState(
+        page.threads,
+        params?.after ? recentGroupByUser.get(userId) : undefined,
+      );
+      const lastGroupState = groupStates.at(-1);
+      if (lastGroupState) recentGroupByUser.set(userId, lastGroupState.groupKey);
+      const mergedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
+      for (const thread of serverThreads) mergedById.set(thread.remoteId, thread);
+      writeThreads(userId, [...mergedById.values()]);
+
+      if (!params?.after) loadedRecentIdsByUser.set(userId, new Set());
+      const visibleIds = loadedRecentIdsByUser.get(userId) ?? new Set<string>();
+      for (const thread of serverThreads) visibleIds.add(thread.remoteId);
+      if (page.next_cursor) {
+        loadedRecentIdsByUser.set(userId, visibleIds);
+      } else {
+        loadedRecentIdsByUser.delete(userId);
+        if (!query) void reconcileMissingThreadCaches(cachedThreads, visibleIds);
+      }
+      window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
+      return {
+        threads: serverThreads.map((thread, index) =>
+          toRemoteThread(thread, {
+            showHeading: groupStates[index]?.showHeading === true,
+            showDivider: groupStates[index]?.showDivider === true,
+          }),
+        ),
+        ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
+      };
+    },
+    async initialize(threadId) {
+      initializeThreadCache(userId);
+      const threads = readThreads(userId);
+      const persisted = threads.find(({ remoteId }) => remoteId === threadId);
+      if (persisted) {
+        if (!isServerThreadId(persisted.remoteId)) {
+          throw new Error("此版本不导入仅保存在浏览器中的旧会话，请新建对话继续使用。");
+        }
+        return { remoteId: persisted.remoteId };
+      }
+      const knownRemoteId = localToRemoteId.get(threadId);
+      if (knownRemoteId) return { remoteId: knownRemoteId };
+      const key = draftThreadKey(userId, threadId);
+      const preferences = draftThreadPreferences.get(key);
+      const sourceId = preferences?.dataSourceId;
+      if (!sourceId) throw new Error("请先为当前会话选择一个可用数据源。");
+      const creationId = await creationKey(userId, `new:${threadId}`);
+      const created = await postThread(sourceId, creationId, []);
+      const remoteId = created.threadId;
+      localToRemoteId.set(threadId, remoteId);
+      if (created.metadata) {
+        saveServerThreadMetadata(userId, created.metadata);
+        if (preferences?.modelProfileId) {
+          setThreadModelProfileId(userId, remoteId, preferences.modelProfileId);
+        }
+      } else {
+        threads.unshift({ remoteId, status: "regular", ...preferences });
+        writeThreads(userId, threads);
+      }
+      draftThreadPreferences.delete(key);
+      return { remoteId };
+    },
+    async fetch(threadId) {
+      const thread = getCachedThread(userId, threadId);
+      if (!thread) throw new Error("找不到这条会话，请刷新后重试。");
+      return toRemoteThread(thread);
+    },
+    async rename(remoteId, title) {
+      const canonicalId = canonicalThreadId(remoteId);
+      const thread = getCachedThread(userId, canonicalId);
+      if (!thread || !thread.metadataRevision) {
+        throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
+      }
+      try {
+        const updated = await patchThreadMetadata(canonicalId, thread.metadataRevision, {
+          title: title.trim() || null,
+        });
+        saveServerThreadMetadata(userId, updated);
+        window.dispatchEvent(new Event("askdb:thread-list-refresh-requested"));
+      } catch (error) {
+        if (error instanceof ThreadApiError && error.current) {
+          saveServerThreadMetadata(userId, error.current);
+        }
         throw error;
       }
-      publishRecentThreadPageState(userId, query, false);
-      window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
-        detail: "读取会话列表失败。请检查连接后重试刷新。",
-      }));
-      return { threads: [] };
-    }
-
-    publishRecentThreadPageState(userId, query, Boolean(page.next_cursor));
-
-    const cachedThreads = readThreads(userId);
-    const cachedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
-    const serverThreads = page.threads.map((metadata) =>
-      storedThreadFromMetadata(metadata, cachedById.get(metadata.thread_id)),
-    );
-    const groupStates = getThreadGroupPageState(
-      page.threads,
-      params?.after ? recentGroupByUser.get(userId) : undefined,
-    );
-    const lastGroupState = groupStates.at(-1);
-    if (lastGroupState) recentGroupByUser.set(userId, lastGroupState.groupKey);
-    const mergedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
-    for (const thread of serverThreads) mergedById.set(thread.remoteId, thread);
-    writeThreads(userId, [...mergedById.values()]);
-
-    if (!params?.after) loadedRecentIdsByUser.set(userId, new Set());
-    const visibleIds = loadedRecentIdsByUser.get(userId) ?? new Set<string>();
-    for (const thread of serverThreads) visibleIds.add(thread.remoteId);
-    if (page.next_cursor) {
-      loadedRecentIdsByUser.set(userId, visibleIds);
-    } else {
-      loadedRecentIdsByUser.delete(userId);
-      if (!query) void reconcileMissingThreadCaches(cachedThreads, visibleIds);
-    }
-    window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
-    return {
-      threads: serverThreads.map((thread, index) =>
-        toRemoteThread(thread, {
-          showHeading: groupStates[index]?.showHeading === true,
-          showDivider: groupStates[index]?.showDivider === true,
-        }),
-      ),
-      ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
-    };
-  },
-  async initialize(threadId) {
-    initializeThreadCache(userId);
-    const threads = readThreads(userId);
-    const persisted = threads.find(({ remoteId }) => remoteId === threadId);
-    if (persisted) {
-      if (!isServerThreadId(persisted.remoteId)) {
-        throw new Error("此版本不导入仅保存在浏览器中的旧会话，请新建对话继续使用。");
+    },
+    async archive(remoteId) {
+      const canonicalId = canonicalThreadId(remoteId);
+      const thread = getCachedThread(userId, canonicalId);
+      if (!thread || !thread.metadataRevision) {
+        throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
       }
-      return { remoteId: persisted.remoteId };
-    }
-    const knownRemoteId = localToRemoteId.get(threadId);
-    if (knownRemoteId) return { remoteId: knownRemoteId };
-    const key = draftThreadKey(userId, threadId);
-    const preferences = draftThreadPreferences.get(key);
-    const sourceId = preferences?.dataSourceId;
-    if (!sourceId) throw new Error("请先为当前会话选择一个可用数据源。");
-    const creationId = await creationKey(userId, `new:${threadId}`);
-    const created = await postThread(sourceId, creationId, []);
-    const remoteId = created.threadId;
-    localToRemoteId.set(threadId, remoteId);
-    if (created.metadata) {
-      saveServerThreadMetadata(userId, created.metadata);
-      if (preferences?.modelProfileId) {
-        setThreadModelProfileId(userId, remoteId, preferences.modelProfileId);
+      try {
+        const updated = await archiveRemoteThread(canonicalId, thread.metadataRevision);
+        saveServerThreadMetadata(userId, updated);
+      } catch (error) {
+        if (error instanceof ThreadApiError && error.current) {
+          saveServerThreadMetadata(userId, error.current);
+        }
+        throw error;
       }
-    }
-    else {
-      threads.unshift({ remoteId, status: "regular", ...preferences });
-      writeThreads(userId, threads);
-    }
-    draftThreadPreferences.delete(key);
-    return { remoteId };
-  },
-  async fetch(threadId) {
-    const thread = getCachedThread(userId, threadId);
-    if (!thread) throw new Error("找不到这条会话，请刷新后重试。");
-    return toRemoteThread(thread);
-  },
-  async rename(remoteId, title) {
-    const canonicalId = canonicalThreadId(remoteId);
-    const thread = getCachedThread(userId, canonicalId);
-    if (!thread || !thread.metadataRevision) {
-      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
-    }
-    try {
-      const updated = await patchThreadMetadata(canonicalId, thread.metadataRevision, {
-        title: title.trim() || null,
+    },
+    async unarchive(remoteId) {
+      const canonicalId = canonicalThreadId(remoteId);
+      const thread = getCachedThread(userId, canonicalId);
+      if (!thread || !thread.metadataRevision) {
+        throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
+      }
+      try {
+        const updated = await restoreRemoteThread(canonicalId, thread.metadataRevision);
+        saveServerThreadMetadata(userId, updated);
+      } catch (error) {
+        if (error instanceof ThreadApiError && error.current) {
+          saveServerThreadMetadata(userId, error.current);
+        }
+        throw error;
+      }
+    },
+    async delete(remoteId) {
+      const canonicalId = canonicalThreadId(remoteId);
+      await requestThreadDeletionFromUI(userId, canonicalId, remoteId);
+    },
+    async generateTitle() {
+      return new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
       });
-      saveServerThreadMetadata(userId, updated);
-      window.dispatchEvent(new Event("askdb:thread-list-refresh-requested"));
-    } catch (error) {
-      if (error instanceof ThreadApiError && error.current) {
-        saveServerThreadMetadata(userId, error.current);
-      }
-      throw error;
-    }
-  },
-  async archive(remoteId) {
-    const canonicalId = canonicalThreadId(remoteId);
-    const thread = getCachedThread(userId, canonicalId);
-    if (!thread || !thread.metadataRevision) {
-      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
-    }
-    try {
-      const updated = await archiveRemoteThread(canonicalId, thread.metadataRevision);
-      saveServerThreadMetadata(userId, updated);
-    } catch (error) {
-      if (error instanceof ThreadApiError && error.current) {
-        saveServerThreadMetadata(userId, error.current);
-      }
-      throw error;
-    }
-  },
-  async unarchive(remoteId) {
-    const canonicalId = canonicalThreadId(remoteId);
-    const thread = getCachedThread(userId, canonicalId);
-    if (!thread || !thread.metadataRevision) {
-      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
-    }
-    try {
-      const updated = await restoreRemoteThread(canonicalId, thread.metadataRevision);
-      saveServerThreadMetadata(userId, updated);
-    } catch (error) {
-      if (error instanceof ThreadApiError && error.current) {
-        saveServerThreadMetadata(userId, error.current);
-      }
-      throw error;
-    }
-  },
-  async delete(remoteId) {
-    const canonicalId = canonicalThreadId(remoteId);
-    await requestThreadDeletionFromUI(userId, canonicalId, remoteId);
-  },
-  async generateTitle() {
-    return new ReadableStream({
-      start(controller) {
-        controller.close();
-      },
-    });
-  },
-  unstable_Provider: Provider,
+    },
+    unstable_Provider: Provider,
   };
 }
 
 function updateThreadStatus(userId: string, remoteId: string, status: StoredThread["status"]) {
   const canonicalId = canonicalThreadId(remoteId);
   const threads = readThreads(userId);
-  const thread = threads.find((item) => item.remoteId === canonicalId || item.remoteId === remoteId);
+  const thread = threads.find(
+    (item) => item.remoteId === canonicalId || item.remoteId === remoteId,
+  );
   if (thread) {
     thread.status = status;
     writeThreads(userId, threads);
@@ -1242,8 +1434,10 @@ function removeLocalThread(userId: string, canonicalId: string, originalId: stri
   window.localStorage.removeItem(RESULT_ARTIFACTS_KEY(userId, canonicalId));
   window.localStorage.removeItem(HISTORY_IMPORT_KEY(userId, canonicalId));
   if (originalId !== canonicalId) window.localStorage.removeItem(MESSAGES_KEY(userId, originalId));
-  if (originalId !== canonicalId) window.localStorage.removeItem(RESULT_ARTIFACTS_KEY(userId, originalId));
-  if (originalId !== canonicalId) window.localStorage.removeItem(HISTORY_IMPORT_KEY(userId, originalId));
+  if (originalId !== canonicalId)
+    window.localStorage.removeItem(RESULT_ARTIFACTS_KEY(userId, originalId));
+  if (originalId !== canonicalId)
+    window.localStorage.removeItem(HISTORY_IMPORT_KEY(userId, originalId));
   legacyThreadRedirects.delete(originalId);
 }
 
