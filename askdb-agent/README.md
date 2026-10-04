@@ -118,7 +118,7 @@ Web 端默认通过 Next.js `/api/chat` 转发至 `http://127.0.0.1:8000/v1/chat
 
 ## Docker 测试部署
 
-本机 Docker 与 Cloudflare 命名隧道的完整首次配置见[根目录 README](../README.md#本机-docker--cloudflare-公网测试)：在 Cloudflare 创建命名隧道，将公开主机名的 DNS 指向隧道并发布路由 `http://web:3000`；复制根目录 `.env.docker.example` 为 `.env.docker`，填写模型凭证、Fernet 密钥、隧道 token 和 hostname，然后运行 `./scripts/start-test.sh`。Fernet 生成命令见本文“安装依赖”。Docker 镜像已包含 Python、uv 和 Wren 依赖，无需宿主机 Wren 项目；仓库中的 `wren-project/` 以只读方式挂载为 `/app/wren-template` 供参考，不会触发旧项目迁移；通过 UI 创建并持久化活动数据源项目。
+本机 Docker 与 Cloudflare 命名隧道的完整首次配置见[根目录 README](../README.md#本机-docker--cloudflare-公网测试)：在 Cloudflare 创建命名隧道，将公开主机名的 DNS 指向隧道并发布路由 `http://web:3000`；复制根目录 `.env.docker.example` 为 `.env.docker`，填写 Fernet 密钥、隧道 token 和 hostname，然后运行 `./scripts/start-test.sh`。首次登录后，在 Web 的模型设置页面新增模型与 API Key；模型凭证会加密保存在持久化 SQLite 配置中。Fernet 生成命令见本文“安装依赖”。Docker 镜像已包含 Python、uv 和 Wren 依赖，无需宿主机 Wren 项目；仓库中的 `wren-project/` 以只读方式挂载为 `/app/wren-template` 供参考，不会触发旧项目迁移；通过 UI 创建并持久化活动数据源项目。
 
 在仓库根目录的交互式终端中初始化管理员：
 

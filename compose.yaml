@@ -6,9 +6,6 @@ services:
       context: .
       dockerfile: askdb-agent/Dockerfile
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      ASKDB_MODEL: ${ASKDB_MODEL:-openai:gpt-4.1-mini}
       ASKDB_SETTINGS_ENCRYPTION_KEY: ${ASKDB_SETTINGS_ENCRYPTION_KEY:?Set ASKDB_SETTINGS_ENCRYPTION_KEY in .env.docker}
       ASKDB_SETTINGS_DB_PATH: /app/data/model-settings.sqlite3
       ASKDB_WREN_DATA_DIR: /app/data/wren

@@ -36,7 +36,8 @@ Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只
    chmod 600 .env.docker
    ```
 
-   编辑 `.env.docker`：填写 `OPENAI_API_KEY`、匹配的 `OPENAI_BASE_URL` 与 `ASKDB_MODEL`、`ASKDB_SETTINGS_ENCRYPTION_KEY`、`CLOUDFLARE_TUNNEL_TOKEN` 和 `CLOUDFLARE_TUNNEL_HOSTNAME`。hostname 只填写域名，不包含 `https://`、端口或路径。生成 Fernet 密钥的现有命令如下；请在已安装 cryptography 的 Python 环境执行，也可在安装了 Python/uv 的 Agent 开发环境中通过 `uv run python` 执行：
+   编辑 `.env.docker`：填写 `ASKDB_SETTINGS_ENCRYPTION_KEY`、`CLOUDFLARE_TUNNEL_TOKEN` 和 `CLOUDFLARE_TUNNEL_HOSTNAME`。模型不需要写入环境文件；管理员初始化后从 Web 的“模型设置”页面新增模型和 API Key。
+   hostname 只填写域名，不包含 `https://`、端口或路径。生成 Fernet 密钥的现有命令如下；请在已安装 cryptography 的 Python 环境执行，也可在安装了 Python/uv 的 Agent 开发环境中通过 `uv run python` 执行：
 
    ```bash
    python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
@@ -62,7 +63,7 @@ Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只
    ```
 
    输入自选用户名；系统生成的临时密码只显示一次，没有默认用户名或默认密码。此命令仅在没有账号时成功。通过内部渠道交付临时密码，在配置的 **HTTPS 地址**登录并立即更换密码。`http://localhost:3000` 用于本机页面/健康检查；当前 Web 的 `ASKDB_WEB_ORIGIN` 为公网 HTTPS，登录和其他受保护操作请使用该 HTTPS 地址。
-6. 管理员在 UI 中检查模型配置、创建数据源、设置连接凭证并构建语义模型，再为普通用户创建账号、分配启用的数据源。真实问数需要可用模型凭证、容器可连接的数据库地址，以及数据库端授予只读权限的账号。数据库位于宿主机时，Docker Desktop 可使用 `host.docker.internal`；容器中的 `localhost` 指向容器自身。仅连接获得授权的测试数据。
+6. 管理员先在 UI 的“模型设置”页面新增并测试一个模型，再创建数据源、设置连接凭证并构建语义模型，最后为普通用户创建账号、分配启用的数据源。模型 API Key 会加密保存在 Agent 的持久化 SQLite 配置中。真实问数需要可用模型凭证、容器可连接的数据库地址，以及数据库端授予只读权限的账号。数据库位于宿主机时，Docker Desktop 可使用 `host.docker.internal`；容器中的 `localhost` 指向容器自身。仅连接获得授权的测试数据。
 
 ### 公网边界与数据保留
 

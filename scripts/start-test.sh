@@ -9,28 +9,25 @@ COMPOSE=(docker compose --project-name askdb-local-test --project-directory "$RE
 fail() { printf '错误: %s\n' "$1" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || fail '未找到 Docker；请安装并启动 Docker Desktop。'
 docker compose version >/dev/null 2>&1 || fail 'Docker Compose 不可用；请安装 Docker Compose 插件。'
-[[ -f "$ENV_FILE" ]] || fail '缺少 .env.docker；请从 .env.docker.example 复制并填写模型、加密与隧道配置。'
+[[ -f "$ENV_FILE" ]] || fail '缺少 .env.docker；请从 .env.docker.example 复制并填写加密与隧道配置。'
 
 # Compose parses dotenv syntax and required substitutions; do not print secrets.
 "${COMPOSE[@]}" config --quiet || fail '.env.docker 或 compose.yaml 无效；请检查必填配置。'
 resolved_environment="$("${COMPOSE[@]}" config --environment)" || fail '无法读取 Compose 配置。'
-model_key=''
 encryption_key=''
 tunnel_token=''
 tunnel_hostname=''
 while IFS= read -r setting; do
   case "$setting" in
-    OPENAI_API_KEY=*) model_key="${setting#*=}" ;;
     ASKDB_SETTINGS_ENCRYPTION_KEY=*) encryption_key="${setting#*=}" ;;
     CLOUDFLARE_TUNNEL_TOKEN=*) tunnel_token="${setting#*=}" ;;
     CLOUDFLARE_TUNNEL_HOSTNAME=*) tunnel_hostname="${setting#*=}" ;;
   esac
 done <<< "$resolved_environment"
-[[ -n "${model_key//[[:space:]]/}" ]] || fail '请在 .env.docker 中填写 OPENAI_API_KEY。'
 [[ -n "${encryption_key//[[:space:]]/}" ]] || fail '请在 .env.docker 中填写 ASKDB_SETTINGS_ENCRYPTION_KEY。'
 [[ -n "${tunnel_token//[[:space:]]/}" ]] || fail '请在 .env.docker 中填写 CLOUDFLARE_TUNNEL_TOKEN。'
 [[ "$tunnel_hostname" =~ ^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]] || fail 'CLOUDFLARE_TUNNEL_HOSTNAME 必须是 DNS 主机名，不包含协议、端口或路径。'
-unset resolved_environment model_key encryption_key tunnel_token
+unset resolved_environment encryption_key tunnel_token
 
 docker info >/dev/null 2>&1 || fail 'Docker daemon 不可用；请启动 Docker Desktop 后重试。'
 printf '构建 askdb-local-test 镜像并准备隧道镜像…\n'
