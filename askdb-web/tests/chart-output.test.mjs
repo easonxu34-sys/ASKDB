@@ -83,7 +83,7 @@ test("builds pie options from the exact categorical and numeric rows", () => {
 test("rejects mismatched source IDs, unknown fields, and malformed values safely", () => {
   assert.equal(buildEChartsOption({ ...line, source_result_id: "other" }, query), null);
   assert.equal(buildEChartsOption({ ...line, x_field: "unknown" }, query), null);
-  const malformed = { ...query, rows: [{ month: "2026-01-01", revenue: "8", orders: 2 }] };
+  const malformed = { ...query, rows: [{ month: "2026-01-01", revenue: "not-a-number", orders: 2 }] };
   assert.deepEqual(buildEChartsOption(line, malformed)?.series[0].data, [null]);
 });
 
@@ -216,9 +216,162 @@ test("formats percentages and explicit CNY units only from user-selected encodin
     }),
     "1.23 万元",
   );
+  assert.equal(formatChartValue("1.235", { mode: "raw", decimal_places: 2 }), "1.24");
+  assert.equal(formatChartValue("-1.235", { mode: "raw", decimal_places: 2 }), "-1.24");
   assert.equal(
     formatChartValue(12345, { mode: "suffix", suffix: " 元", decimal_places: 0 }),
     "12,345 元",
   );
   assert.equal(formatChartValue(0.12, { mode: "raw", decimal_places: "auto" }), "0.12");
+});
+
+test("formats decimal strings without binary floating point loss", async () => {
+  const { formatChartValue } = await import("../lib/chart-output.ts");
+  assert.equal(
+    formatChartValue("0.0000001", { mode: "raw", decimal_places: "auto" }),
+    "0.0000001",
+  );
+  assert.equal(
+    formatChartValue("123456789012345678.12345678", {
+      mode: "unit_scale",
+      unit_family: "CNY",
+      source_unit: "yuan",
+      display_unit: "ten_thousand_yuan",
+      decimal_places: 2,
+    }),
+    "12,345,678,901,234.57 万元",
+  );
+});
+
+test("sorts decimal metric strings exactly and plots only exact finite numbers", () => {
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "decimal128(30, 8)"],
+    rows: [
+      { region: "smaller", revenue: "9007199254740993.02" },
+      { region: "larger", revenue: "9007199254740993.10" },
+      { region: "unrepresentable", revenue: "9007199254740993.11" },
+    ],
+  };
+  const option = buildEChartsOption(
+    { ...line, chart_type: "bar", x_field: "region", title: "revenue by region" },
+    result,
+    {
+      chart_type: "bar",
+      dimension_field: "region",
+      metric_fields: ["revenue"],
+      hidden_metric_fields: [],
+      bar_orientation: "horizontal",
+      title: "Revenue",
+      field_labels: {},
+      sort: { mode: "metric", field: "revenue", direction: "desc" },
+      format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+      show_data_labels: true,
+      show_legend: false,
+    },
+  );
+
+  assert.deepEqual(
+    option.yAxis.data.map((value, index) => option.yAxis.axisLabel.formatter(value, index)),
+    ["unrepresentable", "larger", "smaller"],
+  );
+  assert.deepEqual(option.series[0].data, [null, null, null]);
+  assert.equal(option.series[0].label.formatter({ value: null, dataIndex: 1 }), "9,007,199,254,740,993.1");
+});
+
+test("validates and displays exact decimal pie values and shares", () => {
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "decimal128(12, 4)"],
+    rows: [
+      { region: "east", revenue: "0.1" },
+      { region: "west", revenue: "0.2" },
+    ],
+  };
+  const option = buildEChartsOption(
+    { ...line, chart_type: "pie", x_field: "region", title: "revenue by region" },
+    result,
+  );
+
+  assert.deepEqual(option.series[0].data, [
+    { name: "east", value: 0.1 },
+    { name: "west", value: 0.2 },
+  ]);
+  assert.match(option.tooltip.formatter({ dataIndex: 0 }), /分类占比: 33\.33%/u);
+});
+
+test("warns when source scales differ and uses one automatic shared axis precision", async () => {
+  const { getChartUnitWarning } = await import("../lib/chart-output.ts");
+  const view = {
+    chart_type: "bar",
+    dimension_field: "region",
+    metric_fields: ["amount", "ratio"],
+    hidden_metric_fields: [],
+    bar_orientation: "vertical",
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "original" },
+    format_by_field: {
+      amount: {
+        mode: "unit_scale",
+        unit_family: "CNY",
+        source_unit: "yuan",
+        display_unit: "yuan",
+        decimal_places: 0,
+      },
+      ratio: { mode: "percent", encoding: "percent_0_100", decimal_places: 2 },
+    },
+    show_data_labels: false,
+    show_legend: true,
+  };
+  assert.match(getChartUnitWarning(view), /单位不同/u);
+  assert.match(
+    getChartUnitWarning({
+      ...view,
+      metric_fields: ["amount", "revenue"],
+      format_by_field: {
+        amount: {
+          mode: "unit_scale",
+          unit_family: "CNY",
+          source_unit: "yuan",
+          display_unit: "ten_thousand_yuan",
+          decimal_places: 2,
+        },
+        revenue: {
+          mode: "unit_scale",
+          unit_family: "CNY",
+          source_unit: "ten_thousand_yuan",
+          display_unit: "ten_thousand_yuan",
+          decimal_places: 2,
+        },
+      },
+    }),
+    /单位不同/u,
+  );
+
+  const option = buildEChartsOption(
+    {
+      ...line,
+      chart_type: "bar",
+      x_field: "region",
+      series_fields: ["amount", "ratio"],
+      title: "amount, ratio by region",
+    },
+    {
+      result_id: "result-1",
+      columns: ["region", "amount", "ratio"],
+      column_types: ["string", "double", "double"],
+      rows: [{ region: "east", amount: 1.234, ratio: 50 }],
+    },
+    {
+      ...view,
+      format_by_field: {
+        amount: { mode: "raw", decimal_places: 0 },
+        ratio: { mode: "raw", decimal_places: 2 },
+      },
+    },
+  );
+  assert.equal(option.yAxis.axisLabel.formatter(1.234), "1.234");
 });

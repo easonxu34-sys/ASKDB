@@ -1,3 +1,5 @@
+import { decimalParts, exactPlotNumber, sumDecimalValues } from "./chart-decimal.ts";
+
 export function formatQueryResults(outputs: unknown[]) {
   return outputs.map(formatQueryResult).filter(Boolean).join("\n\n---\n\n");
 }
@@ -76,6 +78,7 @@ export type ChartMessagePart = {
     recommendedView: ChartViewConfiguration;
     view: ChartViewConfiguration;
     hasOverride: boolean;
+    persistenceAvailable: boolean;
     overrideNotice?: string;
   };
 };
@@ -170,7 +173,7 @@ function validPieRows(query: SuccessfulQueryArtifact, dimension: string, metric:
     return false;
   }
   const seen = new Set<string>();
-  let total = 0;
+  const values: unknown[] = [];
   for (const row of query.rows) {
     const category = row[dimension];
     if (
@@ -189,11 +192,14 @@ function validPieRows(query: SuccessfulQueryArtifact, dimension: string, metric:
     seen.add(key);
     if (seen.size > 8) return false;
     const value = row[metric];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return false;
-    total += value;
-    if (!Number.isFinite(total)) return false;
+    const parsed = decimalParts(value);
+    if (!parsed || parsed.coefficient < BigInt("0") || exactPlotNumber(value) === undefined) {
+      return false;
+    }
+    values.push(value);
   }
-  return total > 0;
+  const total = sumDecimalValues(values);
+  return total !== undefined && total.coefficient > BigInt("0");
 }
 
 export function validateChartView(
@@ -432,7 +438,11 @@ export function getSuccessfulQueryArtifacts(outputs: unknown[]): SuccessfulQuery
     .filter((item): item is SuccessfulQueryArtifact => item !== undefined);
 }
 
-export function getChartMessageParts(outputs: unknown[]): ChartMessagePart[] {
+export function getChartMessageParts(
+  outputs: unknown[],
+  options: { persistenceAvailable?: boolean } = {},
+): ChartMessagePart[] {
+  const persistenceAvailable = options.persistenceAvailable ?? true;
   const queries = getSuccessfulQueryArtifacts(outputs).filter(
     (query) => typeof query.resultId === "string" && Array.isArray(query.columnTypes),
   );
@@ -475,6 +485,7 @@ export function getChartMessageParts(outputs: unknown[]): ChartMessagePart[] {
           recommendedView,
           view,
           hasOverride,
+          persistenceAvailable,
           ...(overrideNotice ? { overrideNotice } : {}),
         },
       },

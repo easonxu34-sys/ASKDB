@@ -61,6 +61,7 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
         { stepId: "startup", label: "准备查询", status: "running" },
       ];
       let chartNotice = "";
+      let persistenceAvailable = true;
       let terminalReceived = false;
       let eofRetries = 0;
       let readCurrentTurnArtifacts: (() => unknown[]) | undefined;
@@ -85,7 +86,7 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
               ...queryResults,
               ...chartArtifacts,
               ...(readCurrentTurnArtifacts?.() ?? []).filter(isChartViewOverrideCandidate),
-            ]),
+            ], { persistenceAvailable }),
             ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
           ] as ChatModelRunUpdate["content"],
         };
@@ -293,17 +294,22 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
                     readChartArtifact(artifact) || isChartViewOverrideCandidate(artifact),
                 ),
               );
+              persistenceAvailable = true;
               chartNotice = getChartUnavailableMessages(saved).join("\n\n");
               yield update();
             } else if (event.event === "result") {
               queryResults.push(event.data.output);
-              saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data.output);
+              persistenceAvailable =
+                saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data.output) &&
+                persistenceAvailable;
               if (formatQueryResults(queryResults)) yield update();
             } else if (event.event === "chart") {
               const artifact = readChartArtifact(event.data);
               if (artifact && getChartMessageParts([...queryResults, event.data]).length > 0) {
                 chartArtifacts.push(event.data);
-                saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data);
+                persistenceAvailable =
+                  saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data) &&
+                  persistenceAvailable;
                 yield update();
               } else if (getChartUnavailableMessages([...queryResults, event.data]).length > 0) {
                 const messages = getChartUnavailableMessages([...queryResults, event.data]);
@@ -317,7 +323,9 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
                     };
                 chartArtifacts.push(unavailable);
                 chartNotice = messages.join("\n\n");
-                saveThreadResultArtifact(userId, serverThreadId, historyTurnId, unavailable);
+                persistenceAvailable =
+                  saveThreadResultArtifact(userId, serverThreadId, historyTurnId, unavailable) &&
+                  persistenceAvailable;
                 yield update();
               }
             } else if (event.event === "error" && typeof event.data.message === "string") {

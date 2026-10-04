@@ -1,10 +1,40 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Literal
 
 
 ChartType = Literal["line", "bar", "pie"]
+_MAX_SAFE_JS_INTEGER = 2**53 - 1
+
+
+def _wire_value(value: object) -> object:
+    """Convert query cells to loss-aware values supported by JSON and browsers."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    if isinstance(value, Decimal):
+        return format(value, "f") if value.is_finite() else None
+    if isinstance(value, int):
+        return value if abs(value) <= _MAX_SAFE_JS_INTEGER else str(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, bytes):
+        return "hex:" + value.hex()
+    if isinstance(value, Mapping):
+        return {str(key): _wire_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_wire_value(item) for item in value]
+    raise TypeError(f"Unsupported query result value type: {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -23,7 +53,7 @@ class QueryResultArtifact:
             "sql": self.sql,
             "columns": list(self.columns),
             "column_types": list(self.column_types),
-            "rows": [dict(row) for row in self.rows],
+            "rows": [_wire_value(row) for row in self.rows],
             "row_count": self.row_count,
             "truncated": self.truncated,
         }
