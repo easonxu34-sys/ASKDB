@@ -41,7 +41,7 @@ export function DataSourceSelector({
       </label>
       <ComposerSelect
         id="askdb-data-source"
-        aria-label="选择当前会话的数据源"
+        ariaLabel="选择当前会话的数据源"
         value={selectedId}
         disabled={disabled}
         options={options}

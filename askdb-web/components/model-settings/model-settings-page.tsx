@@ -88,7 +88,7 @@ export function ModelSettingsPage() {
         form.name.trim() &&
         form.model.trim() &&
         form.base_url.trim() &&
-        (form.api_key.trim() || keyConfigured),
+        (form.api_key.trim() || keyConfigured) &&
         budgetPayload(form),
       ),
     [catalog, tested, working, form, keyConfigured],

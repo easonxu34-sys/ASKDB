@@ -36,20 +36,34 @@ export function ArchivedThreadsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [userId, setUserId] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
   const requestId = useRef(0);
 
   useEffect(() => {
     let active = true;
     void fetchCurrentUser().then((user) => {
-      if (active) setUserId(user.user_id);
+      if (!active) return;
+      if (!user) {
+        setUserId("");
+        setError("登录状态已失效，请重新登录后管理归档会话。");
+        return;
+      }
+      setUserId(user.user_id);
     }).catch(() => {
-      if (active) setError("登录状态已失效，请重新登录后管理归档会话。");
+      if (active) {
+        setUserId("");
+        setError("登录状态已失效，请重新登录后管理归档会话。");
+      }
     });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    if (userId === null) return;
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
     const currentRequest = ++requestId.current;
     let active = true;
     setLoading(true);
@@ -77,7 +91,7 @@ export function ArchivedThreadsPage() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [query, refreshKey]);
+  }, [query, refreshKey, userId]);
 
   const groups = useMemo(() => {
     const result: Array<{ id: string; name: string; threads: ThreadMetadata[] }> = [];
@@ -98,7 +112,7 @@ export function ArchivedThreadsPage() {
   }, [threads]);
 
   async function loadMore() {
-    if (!cursor || loadingMore) return;
+    if (!userId || !cursor || loadingMore) return;
     const currentRequest = requestId.current;
     setLoadingMore(true);
     setError("");
@@ -119,6 +133,7 @@ export function ArchivedThreadsPage() {
   }
 
   async function restore(item: ThreadMetadata) {
+    if (!userId) return;
     setBusyId(item.thread_id);
     setError("");
     try {
@@ -242,7 +257,7 @@ export function ArchivedThreadsPage() {
         threadId={deleteThreadId}
         onOpenChange={(open) => { if (!open) setDeleteThreadId(null); }}
         onDeleted={(threadId) => {
-          removeDeletedThreadCache(userId, threadId);
+          if (userId) removeDeletedThreadCache(userId, threadId);
           setDeleteThreadId(null);
           setRefreshKey((value) => value + 1);
         }}

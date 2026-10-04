@@ -504,7 +504,7 @@ const ModelProfileSelector: FC<{
     const draftProfileAvailable = catalog.profiles.some(
       (profile) => profile.id === draftProfileId && profile.available,
     );
-    const selectedProfileId = draftProfileAvailable ? draftProfileId : result.selectedId;
+    const selectedProfileId = (draftProfileAvailable ? draftProfileId : result.selectedId) ?? "";
     setSelectedId(selectedProfileId);
     setNotice(result.notice);
 
@@ -543,7 +543,7 @@ const ModelProfileSelector: FC<{
       </label>
       <ComposerSelect
         id="askdb-model-profile"
-        aria-label="选择当前会话使用的模型"
+        ariaLabel="选择当前会话使用的模型"
         value={selectedId}
         disabled={!catalog || availableProfiles.length === 0}
         options={profileOptions}

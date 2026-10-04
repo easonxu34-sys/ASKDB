@@ -101,6 +101,22 @@ type OperationFeedback = {
 
 type TableSelectionFilter = "all" | "selected" | "unselected";
 
+function connectionFromConfig(config: Record<string, unknown>): DataSourceConnection {
+  const connection: DataSourceConnection = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (isSemanticConfigKey(key)) continue;
+    if (
+      value === undefined ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      connection[key] = value;
+    }
+  }
+  return connection;
+}
+
 const phaseLabels: Record<string, string> = {
   queued: "等待开始",
   testing_connection: "测试数据库连接",
@@ -717,9 +733,7 @@ export function DataSourcesPage() {
     setConnectorType(next.data_source.connector_type);
     setConnection({
       ...defaultConnection(next.data_source.connector_type),
-      ...Object.fromEntries(
-        Object.entries(next.config).filter(([key]) => !isSemanticConfigKey(key)),
-      ),
+      ...connectionFromConfig(next.config),
     });
     setSecretValues({});
     setConfiguredSecretFields(next.connection.configured_secret_fields ?? []);
@@ -732,9 +746,7 @@ export function DataSourcesPage() {
       baseFingerprint({
         display_name: next.data_source.display_name,
         connector_type: next.data_source.connector_type,
-        connection: Object.fromEntries(
-          Object.entries(next.config).filter(([key]) => !isSemanticConfigKey(key)),
-        ),
+        connection: connectionFromConfig(next.config),
         semantic: nextSemantic,
       }, next.connection.configured_secret_fields ?? []),
     );
