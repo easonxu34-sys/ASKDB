@@ -74,7 +74,7 @@ Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只
 ./scripts/stop-test.sh
 ```
 
-脚本仅对本项目执行 Compose `down`，保留 `agent_data` 命名卷（实际卷名通常为 `askdb-local-test_agent_data`）。该卷保存 SQLite 账号/会话、模型与数据源配置、Wren 文件和持久记忆；重复启动继续使用这些数据。备份时同时保护数据卷与原 Fernet 密钥，不要在重启时重新生成密钥。
+脚本仅对本项目执行 Compose `down`，保留 `agent_data` 命名卷（实际卷名通常为 `askdb-local-test_agent_data`）。该卷保存 SQLite 账号/会话、模型与数据源配置、Wren 文件和持久记忆；重复启动继续使用这些数据。仓库中的 `wren-project/` 只读挂载到 Agent 的 `/app/wren-template` 作为参考模板，不会被用作活动项目或写入。备份时同时保护数据卷与原 Fernet 密钥，不要在重启时重新生成密钥。
 
 以下命令是**破坏性重置**，会删除本项目命名卷，丢失账号、配置和持久记忆，仅在确定不再需要这些测试数据时执行：
 
