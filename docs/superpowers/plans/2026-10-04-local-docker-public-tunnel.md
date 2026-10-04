@@ -105,6 +105,6 @@ Explain how to create a named tunnel and publish its route to `http://web:3000` 
 
 Explain that stop retains the Docker volume; `docker compose down --volumes` is a destructive reset. Explain that public hostname visitors can reach the login page, so this is for authorized test data only. Note that real querying requires configured model credentials and a database account with read-only privileges.
 
-- [x] **Step 4: Validate the deployment artifacts**
+- [ ] **Step 4: Validate the deployment artifacts**
 
 Run `docker compose --env-file .env.docker config` after creating a local non-secret env file. This static config validation passed. Once Docker Desktop is running, run `scripts/start-test.sh`, inspect health/logs and confirm only Web is host-published. Image, container, and tunnel verification remains pending because the Docker daemon is unavailable.
