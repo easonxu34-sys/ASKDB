@@ -117,9 +117,15 @@ export function agentUrl(path: string): string {
   const isIpv4Loopback = ipv4Parts.length === 4 && ipv4Parts[0] === "127" &&
     ipv4Parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
   const isLoopback = hostname === "localhost" || hostname === "::1" || isIpv4Loopback;
+  const internalHttpHosts = new Set(
+    (process.env.ASKDB_AGENT_INTERNAL_HTTP_HOSTS ?? "")
+      .split(",")
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean),
+  );
   if (url.username || url.password || !["http:", "https:"].includes(url.protocol) ||
-    (url.protocol === "http:" && !isLoopback)) {
-    throw new Error("ASKDB_AGENT_URL must use HTTPS except for loopback development.");
+    (url.protocol === "http:" && !isLoopback && !internalHttpHosts.has(hostname))) {
+    throw new Error("ASKDB_AGENT_URL must use HTTPS except for loopback or explicitly allowed internal hosts, without credentials.");
   }
   return `${base}${path}`;
 }
