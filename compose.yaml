@@ -1,0 +1,68 @@
+name: askdb-local-test
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: askdb-agent/Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ASKDB_MODEL: ${ASKDB_MODEL:-openai:gpt-4.1-mini}
+      ASKDB_SETTINGS_ENCRYPTION_KEY: ${ASKDB_SETTINGS_ENCRYPTION_KEY:?Set ASKDB_SETTINGS_ENCRYPTION_KEY in .env.docker}
+      ASKDB_SETTINGS_DB_PATH: /app/data/model-settings.sqlite3
+      ASKDB_WREN_DATA_DIR: /app/data/wren
+      WREN_HOME: /app/data/wren-home
+    volumes:
+      - agent_data:/app/data
+      - ./wren-project:/app/wren-template:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: askdb-web/Dockerfile
+    environment:
+      ASKDB_AGENT_URL: http://agent:8000
+      ASKDB_AGENT_INTERNAL_HTTP_HOSTS: agent
+      ASKDB_WEB_ORIGIN: https://${CLOUDFLARE_TUNNEL_HOSTNAME:?Set CLOUDFLARE_TUNNEL_HOSTNAME in .env.docker}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      agent:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/', { signal: AbortSignal.timeout(5000) }).then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env.docker}
+    # Configure this named tunnel's published route in Cloudflare to http://web:3000.
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  agent_data:
