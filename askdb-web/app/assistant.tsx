@@ -2,11 +2,13 @@
 
 import {
   AssistantRuntimeProvider,
+  useAui,
+  useAuiState,
   useLocalRuntime,
   useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { MenuIcon, SparklesIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ThreadListSidebar } from "@/components/assistant-ui/elements/thread-list-sidebar.aui";
@@ -83,6 +85,83 @@ export const Assistant = () => {
   return <SignedInAssistant key={user.user_id} user={user} onLogout={() => void logout()} />;
 };
 
+function activeThreadStorageKey(userId: string) {
+  return `askdb:user:${encodeURIComponent(userId)}:chat:active-thread`;
+}
+
+function ActiveThreadSession({ userId }: { userId: string }) {
+  const aui = useAui();
+  const threadItemId = useAuiState((state) => state.optional.threadListItem?.id);
+  const remoteId = useAuiState((state) => state.optional.threadListItem?.remoteId);
+  const [ready, setReady] = useState(false);
+  const previousItemId = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const restore = async () => {
+      await aui.threads.getLoadThreadsPromise();
+      let savedThreadId: string | null = null;
+      try {
+        const value = window.sessionStorage.getItem(activeThreadStorageKey(userId));
+        if (value && /^[a-f0-9]{32}$/.test(value)) savedThreadId = value;
+      } catch {
+        // The current conversation remains usable when session storage is unavailable.
+      }
+
+      if (savedThreadId) {
+        const savedThreadIsAvailable = Object.values(
+          aui.threads.getState().threadItems,
+        ).some((thread) => thread.remoteId === savedThreadId);
+        if (savedThreadIsAvailable) {
+          try {
+            await aui.threads.switchToThread(savedThreadId);
+          } catch {
+            try {
+              window.sessionStorage.removeItem(activeThreadStorageKey(userId));
+            } catch {
+              // Ignore unavailable session storage.
+            }
+          }
+        } else {
+          try {
+            window.sessionStorage.removeItem(activeThreadStorageKey(userId));
+          } catch {
+            // Ignore unavailable session storage.
+          }
+        }
+      }
+      if (!active) return;
+      previousItemId.current = aui.threadListItem.getState().id;
+      setReady(true);
+    };
+    void restore();
+    return () => {
+      active = false;
+    };
+  }, [aui, userId]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const key = activeThreadStorageKey(userId);
+    try {
+      if (remoteId) {
+        window.sessionStorage.setItem(key, remoteId);
+      } else if (
+        threadItemId &&
+        previousItemId.current &&
+        threadItemId !== previousItemId.current
+      ) {
+        window.sessionStorage.removeItem(key);
+      }
+    } catch {
+      // The current conversation remains usable when session storage is unavailable.
+    }
+    previousItemId.current = threadItemId ?? null;
+  }, [ready, remoteId, threadItemId, userId]);
+
+  return null;
+}
+
 function SignedInAssistant({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const chatAdapter = useMemo(() => createAgentChatAdapter(user.user_id), [user.user_id]);
@@ -94,6 +173,7 @@ function SignedInAssistant({ user, onLogout }: { user: AuthUser; onLogout: () =>
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ActiveThreadSession userId={user.user_id} />
       <div className="relative flex h-dvh overflow-hidden bg-[#f7f5f0] text-[#30302e]">
         {mobileSidebarOpen && (
           <button
