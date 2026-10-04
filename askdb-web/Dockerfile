@@ -15,4 +15,4 @@ ENV NODE_ENV=production
 
 EXPOSE 3000
 
-CMD ["corepack", "pnpm", "start", "--", "--hostname", "0.0.0.0"]
+CMD ["corepack", "pnpm", "start", "--hostname", "0.0.0.0"]
