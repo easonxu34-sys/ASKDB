@@ -110,6 +110,28 @@ npm run dev
 
 Web 端默认通过 Next.js `/api/chat` 转发至 `http://127.0.0.1:8000/v1/chat`。若端口不同，在 `askdb-web/.env.local` 设置 `ASKDB_AGENT_URL`。
 
+## Docker 测试部署
+
+本机 Docker 与 Cloudflare 命名隧道的完整首次配置见[根目录 README](../README.md#本机-docker--cloudflare-公网测试)：在 Cloudflare 创建命名隧道，将公开主机名的 DNS 指向隧道并发布路由 `http://web:3000`；复制根目录 `.env.docker.example` 为 `.env.docker`，填写模型凭证、Fernet 密钥、隧道 token 和 hostname，然后运行 `./scripts/start-test.sh`。Fernet 生成命令见本文“安装依赖”。Docker 镜像已包含 Python、uv 和 Wren 依赖，无需宿主机 Wren 项目；通过 UI 创建数据源。
+
+在仓库根目录的交互式终端中初始化管理员：
+
+```bash
+docker compose --env-file .env.docker exec agent askdb-agent auth init-admin
+```
+
+不要添加 `-T`；此命令要求 TTY。用户名由操作者输入，临时密码由系统生成、仅显示一次，没有默认账号或密码。仅在尚无账号时可初始化。通过配置的 HTTPS 主机名登录并立即改密，再在模型设置/数据源页面配置服务及只读数据库账号，构建语义模型并分配用户数据源权限。容器必须能够访问模型与数据库；Docker Desktop 中访问宿主机数据库可用 `host.docker.internal`。公开主机名的访问者能到达登录页，仅使用获得授权的测试数据。localhost 页面用于本机检查，当前 Compose 的登录及受保护操作使用公网 HTTPS origin。
+
+如需受控恢复现有管理员，在同样的本机交互终端执行并按提示确认：
+
+```bash
+docker compose --env-file .env.docker exec agent askdb-agent auth recover-admin
+```
+
+Compose 的 Agent API 仅在容器内网 `http://agent:8000` 提供服务，不发布到宿主机或公网。Web 是唯一宿主机端口映射，绑定 `127.0.0.1:3000`，隧道连接 Web。Web 的内部 HTTP hostname allowlist 仅允许 `agent`，不可据此扩大公网 API 访问范围。
+
+`agent_data` 命名卷挂载到 `/app/data`，保存 `model-settings.sqlite3`、Wren 项目/配置及持久记忆。`./scripts/stop-test.sh` 只停止本项目并保留卷；重启沿用原卷和原 Fernet 密钥。备份需同时保护数据卷及密钥。`docker compose --env-file .env.docker down --volumes` 是破坏性重置，会删除这些数据，包括本地账号和会话；不要用它做日常停止。
+
 ## 当前进度
 
 API 和 LangGraph runtime 已实现。用户登录、会话、角色授权和用户数据源授权的部署及运行说明见本节；完整开发顺序、SSE 契约和端到端验收条件见 [`docs/开发文档.md`](../docs/开发文档.md)。
