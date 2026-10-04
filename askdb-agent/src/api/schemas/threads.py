@@ -86,6 +86,43 @@ class ThreadDeleteInput(BaseModel):
     )
 
 
+class ThreadMetadataPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=120)
+    is_pinned: bool | None = None
+    expected_metadata_revision: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> ThreadMetadataPatch:
+        supplied = self.model_fields_set - {"expected_metadata_revision"}
+        if not supplied:
+            raise ValueError("thread metadata patch is empty")
+        if "is_pinned" in supplied and self.is_pinned is None:
+            raise ValueError("thread pin state cannot be null")
+        if self.title is not None and not self.title.strip():
+            self.title = None
+        return self
+
+
+class ThreadLifecycleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_metadata_revision: int = Field(ge=1)
+
+
+class ThreadStatesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_ids: list[str] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_thread_ids(self) -> ThreadStatesInput:
+        if any(not re.fullmatch(r"[a-f0-9]{32}", item) for item in self.thread_ids):
+            raise ValueError("thread IDs must be canonical server IDs")
+        return self
+
+
 class ThreadTurnOutput(BaseModel):
     turn_id: str
     sequence: int

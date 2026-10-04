@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ActivityIcon,
   AlertCircleIcon,
+  ChevronDownIcon,
   CheckCircle2Icon,
   CirclePlusIcon,
   DatabaseIcon,
   LoaderCircleIcon,
   RefreshCwIcon,
   SaveIcon,
+  SearchIcon,
   ServerIcon,
   ShieldCheckIcon,
   Trash2Icon,
@@ -23,6 +25,7 @@ import {
   enableDataSource,
   fetchDataSource,
   fetchDataSourceCatalog,
+  fetchDataSourceRuntimeDiagnostics,
   fetchDataSources,
   fetchDataSourceRevision,
   fetchWrenConnectors,
@@ -36,6 +39,7 @@ import {
   type DataSourceDetail,
   type DataSourceForeignKey,
   type DataSourceRevisionDetail,
+  type DataSourceRuntimeDiagnostics,
   type DataSourceTable,
   type SourceFormPayload,
   type WrenModel,
@@ -49,6 +53,14 @@ import {
   type WrenView,
 } from "@/lib/data-sources";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 
 const WREN_APPLY_FAILURE_FALLBACK = "Wren 配置应用失败，请修正配置后重试。";
@@ -69,6 +81,24 @@ const emptySemantic = (): WrenSemanticConfig => ({
   rules: [],
   views: [],
 });
+
+const runtimeReasonLabels: Record<string, string> = {
+  SOURCE_DISABLED: "数据源已停用",
+  NO_ACTIVE_REVISION: "尚无活动版本",
+  SOURCE_RUNTIME_NOT_READY: "数据源运行环境未就绪",
+  ACTIVE_REVISION_NOT_READY: "活动版本尚未完成构建",
+  NO_ACTIVE_RULES: "活动版本没有有效业务规则",
+  ONLINE_RECALL_DISABLED: "在线召回未启用，查询前置判断拿不到这些规则",
+  RECALL_DISABLED: "服务端在线召回开关已关闭",
+};
+
+type OperationFeedback = {
+  status: "success" | "error";
+  title: string;
+  message: string;
+};
+
+type TableSelectionFilter = "all" | "selected" | "unselected";
 
 function defaultConnection(connectorType: string): DataSourceConnection {
   return connectorType === "mysql" ? { port: "3306" } : {};
@@ -473,18 +503,63 @@ function Section({
   title,
   description,
   children,
+  id,
+  collapsible = false,
+  initiallyOpen = true,
 }: {
   title: string;
   description?: string;
   children: React.ReactNode;
+  id?: string;
+  collapsible?: boolean;
+  initiallyOpen?: boolean;
 }) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const isOpen = open ?? initiallyOpen;
+  const contentId = useId();
+
   return (
-    <section className="rounded-2xl border border-[#e7e2d8] bg-[#fbfaf7] p-4 shadow-[0_1px_2px_rgba(59,48,35,0.03)] sm:p-5">
-      <div className="mb-4">
-        <h2 className="text-sm font-semibold text-[#393630]">{title}</h2>
-        {description && <p className="mt-1 text-xs leading-5 text-[#89847a]">{description}</p>}
-      </div>
-      {children}
+    <section
+      id={id}
+      onClickCapture={collapsible ? () => setOpen((current) => current ?? initiallyOpen) : undefined}
+      onFocusCapture={collapsible ? () => setOpen((current) => current ?? initiallyOpen) : undefined}
+      className="scroll-mt-20 rounded-2xl border border-[#e7e2d8] bg-[#fbfaf7] p-4 shadow-[0_1px_2px_rgba(59,48,35,0.03)] md:scroll-mt-36 sm:p-5"
+    >
+      {collapsible ? (
+        <>
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-[#393630]">
+                <button
+                  type="button"
+                  aria-expanded={isOpen}
+                  aria-controls={contentId}
+                  onClick={() => setOpen((current) => !(current ?? initiallyOpen))}
+                  className="flex w-full items-center justify-between gap-3 text-left focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
+                >
+                  <span>{title}</span>
+                  <ChevronDownIcon
+                    aria-hidden="true"
+                    className={`size-4 shrink-0 text-[#89847a] transition-transform ${isOpen ? "rotate-180" : ""}`}
+                  />
+                </button>
+              </h2>
+              {description && <p className="mt-1 text-xs leading-5 text-[#89847a]">{description}</p>}
+            </div>
+          </div>
+          <div id={contentId} className="mt-4" hidden={!isOpen}>
+            {children}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-4">
+            <h2 className="text-sm font-semibold text-[#393630]">{title}</h2>
+            {description && <p className="mt-1 text-xs leading-5 text-[#89847a]">{description}</p>}
+          </div>
+          {children}
+        </>
+      )}
     </section>
   );
 }
@@ -841,14 +916,25 @@ export function DataSourcesPage() {
   const [configuredSecretFields, setConfiguredSecretFields] = useState<string[]>([]);
   const [secretChanged, setSecretChanged] = useState(false);
   const [semantic, setSemantic] = useState<WrenSemanticConfig>(emptySemantic);
+  const [tableSearch, setTableSearch] = useState("");
+  const [tableFilter, setTableFilter] = useState<TableSelectionFilter>("all");
+  const [modelSearch, setModelSearch] = useState("");
+  const [fieldSearch, setFieldSearch] = useState("");
+  const [activeModelTable, setActiveModelTable] = useState("");
   const [schema, setSchema] = useState<DataSourceTable[]>([]);
   const [schemaForeignKeysComplete, setSchemaForeignKeysComplete] = useState(false);
   const [savedFingerprint, setSavedFingerprint] = useState("");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState("");
   const [operation, setOperation] = useState<WrenOperation | null>(null);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] =
+    useState<DataSourceRuntimeDiagnostics | null>(null);
+  const [runtimeDiagnosticsLoading, setRuntimeDiagnosticsLoading] = useState(false);
+  const [runtimeDiagnosticsError, setRuntimeDiagnosticsError] = useState("");
+  const [runtimeDiagnosticsRefresh, setRuntimeDiagnosticsRefresh] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [operationFeedback, setOperationFeedback] = useState<OperationFeedback | null>(null);
 
   const connectorDefinition = useMemo(
     () => connectors.find((item) => item.type === connectorType) ?? null,
@@ -923,6 +1009,45 @@ export function DataSourcesPage() {
     if (schema.length) return schema;
     return sourceTables(semantic);
   }, [schema, semantic]);
+  const filteredTableOptions = useMemo(() => {
+    const query = tableSearch.trim().toLocaleLowerCase();
+    const selected = new Set(selectedTables);
+    return tableOptions.filter((table) => {
+      const tableId = table.id || table.name;
+      const isSelected = selected.has(tableId);
+      const matchesFilter =
+        tableFilter === "all" ||
+        (tableFilter === "selected" && isSelected) ||
+        (tableFilter === "unselected" && !isSelected);
+      const matchesSearch = `${table.schema ?? ""} ${table.name}`
+        .toLocaleLowerCase()
+        .includes(query);
+      return matchesFilter && matchesSearch;
+    });
+  }, [selectedTables, tableFilter, tableOptions, tableSearch]);
+  const visibleModels = useMemo(() => {
+    const query = modelSearch.trim().toLocaleLowerCase();
+    return semantic.models.filter((model) =>
+      `${model.name} ${model.table}`.toLocaleLowerCase().includes(query),
+    );
+  }, [modelSearch, semantic.models]);
+  const activeModel =
+    semantic.models.find((model) => model.table === activeModelTable) ??
+    semantic.models[0] ??
+    null;
+  const activeModelIndex = activeModel
+    ? semantic.models.findIndex((model) => model.table === activeModel.table)
+    : -1;
+  const visibleModelColumns = useMemo(() => {
+    if (!activeModel) return [];
+    const query = fieldSearch.trim().toLocaleLowerCase();
+    return activeModel.columns
+      .map((column, columnIndex) => ({ column, columnIndex }))
+      .filter(({ column }) => `${column.name} ${column.description}`.toLocaleLowerCase().includes(query));
+  }, [activeModel, fieldSearch]);
+  const selectedVisibleTableCount = filteredTableOptions.filter((table) =>
+    selectedTables.includes(table.id || table.name),
+  ).length;
 
   const emitCatalogUpdated = useCallback(() => {
     window.dispatchEvent(new Event("askdb:data-source-catalog-updated"));
@@ -1004,6 +1129,7 @@ export function DataSourcesPage() {
     setConfiguredSecretFields([]);
     setSecretChanged(false);
     setSemantic(emptySemantic());
+    resetConfigurationNavigation();
     setSchema([]);
     setSchemaForeignKeysComplete(false);
     setSavedFingerprint("");
@@ -1040,6 +1166,45 @@ export function DataSourcesPage() {
     };
   }, [hydrateDetail]);
 
+  useEffect(() => {
+    let active = true;
+    if (!selectedId || !detail || selectedRevisionId) {
+      setRuntimeDiagnostics(null);
+      setRuntimeDiagnosticsError("");
+      setRuntimeDiagnosticsLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    setRuntimeDiagnosticsLoading(true);
+    setRuntimeDiagnosticsError("");
+    void fetchDataSourceRuntimeDiagnostics(selectedId)
+      .then((diagnostics) => {
+        if (active) setRuntimeDiagnostics(diagnostics);
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setRuntimeDiagnostics(null);
+          setRuntimeDiagnosticsError(
+            cause instanceof Error ? cause.message : "读取查询召回状态失败。",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setRuntimeDiagnosticsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    selectedId,
+    detail?.data_source.active_revision_id,
+    detail?.data_source.enabled,
+    detail?.data_source.runtime_status,
+    selectedRevisionId,
+    runtimeDiagnosticsRefresh,
+  ]);
+
   function setConnectionField(key: string, value: DataSourceConnection[string]) {
     setConnection((current) => ({ ...current, [key]: value }));
     setSchema([]);
@@ -1071,6 +1236,7 @@ export function DataSourcesPage() {
     setConfiguredSecretFields([]);
     setSecretChanged(false);
     setSemantic(emptySemantic());
+    resetConfigurationNavigation();
     setSchema([]);
     setSchemaForeignKeysComplete(false);
     setNotice("填写连接信息后保存，即可测试连接并读取表结构。");
@@ -1103,41 +1269,71 @@ export function DataSourcesPage() {
     return saved;
   }
 
-  async function withWorking(kind: string, action: () => Promise<void>) {
+  async function withWorking(
+    kind: string,
+    action: () => Promise<void>,
+    feedback?: { failureTitle: string },
+  ) {
     setWorking(kind);
     setError("");
     setNotice("");
+    if (feedback) setOperationFeedback(null);
     try {
       await action();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "操作失败，请稍后重试。");
+      const message = cause instanceof Error ? cause.message : "操作失败，请稍后重试。";
+      if (feedback) {
+        setOperationFeedback({
+          status: "error",
+          title: feedback.failureTitle,
+          message,
+        });
+      } else {
+        setError(message);
+      }
     } finally {
       setWorking("");
     }
   }
 
   async function saveDraft() {
-    await withWorking("save", async () => {
-      const saved = await persistForm();
-      setNotice(`“${saved.data_source.display_name}”的草稿已保存。`);
-    });
+    await withWorking(
+      "save",
+      async () => {
+        const saved = await persistForm();
+        setOperationFeedback({
+          status: "success",
+          title: "草稿已保存",
+          message: `“${saved.data_source.display_name}”的草稿已保存，当前生效版本未变；点击“应用配置”并等待成功后，新会话才会使用更新后的规则。`,
+        });
+      },
+      { failureTitle: "保存失败" },
+    );
   }
 
   async function refreshOperationStatus() {
     if (!operation) return;
-    await withWorking("operation", async () => {
-      const next = await fetchWrenOperation(operation.id);
-      setOperation(next);
-      if (next.status === "active") {
-        const refreshed = await fetchDataSource(next.data_source_id);
-        hydrateDetail(refreshed);
-        await loadSources(next.data_source_id);
-        setNotice("新版本已验证并生效。现有会话继续使用原绑定，新会话可选择此数据源。");
-        emitCatalogUpdated();
-      } else if (next.status === "failed") {
-        setError(next.message || WREN_APPLY_FAILURE_FALLBACK);
-      }
-    });
+    await withWorking(
+      "operation",
+      async () => {
+        const next = await fetchWrenOperation(operation.id);
+        setOperation(next);
+        if (next.status === "active") {
+          const refreshed = await fetchDataSource(next.data_source_id);
+          hydrateDetail(refreshed);
+          await loadSources(next.data_source_id);
+          setOperationFeedback({
+            status: "success",
+            title: "配置已应用",
+            message: "新版本已验证并生效。新会话选择此数据源后使用该版本；现有会话继续使用原绑定。",
+          });
+          emitCatalogUpdated();
+        } else if (next.status === "failed") {
+          throw new Error(next.message || WREN_APPLY_FAILURE_FALLBACK);
+        }
+      },
+      { failureTitle: "应用失败" },
+    );
   }
 
   async function testConnection() {
@@ -1184,29 +1380,37 @@ export function DataSourcesPage() {
   }
 
   async function applyDraft() {
-    await withWorking("apply", async () => {
-      if (!semantic.tables.length) throw new Error("请至少选择一张数据表，再应用配置。");
-      const saved = await persistForm();
-      if (!saved.data_source.enabled) throw new Error("请先启用数据源，再应用配置。");
-      let current = await applyDataSource(saved.data_source.id);
-      setOperation(current);
-      const deadline = Date.now() + 180_000;
-      while (current.status === "running" && Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        current = await fetchWrenOperation(current.id);
+    await withWorking(
+      "apply",
+      async () => {
+        if (!semantic.tables.length) throw new Error("请至少选择一张数据表，再应用配置。");
+        const saved = await persistForm();
+        if (!saved.data_source.enabled) throw new Error("请先启用数据源，再应用配置。");
+        let current = await applyDataSource(saved.data_source.id);
         setOperation(current);
-      }
-      if (current.status === "running")
-        throw new Error("Wren 仍在构建。可稍后刷新页面查看应用状态。");
-      if (current.status === "failed") {
-        throw new Error(current.message || WREN_APPLY_FAILURE_FALLBACK);
-      }
-      const refreshed = await fetchDataSource(saved.data_source.id);
-      hydrateDetail(refreshed);
-      await loadSources(saved.data_source.id);
-      setNotice("新版本已验证并生效。现有会话继续使用原绑定，新会话可选择此数据源。 ");
-      emitCatalogUpdated();
-    });
+        const deadline = Date.now() + 180_000;
+        while (current.status === "running" && Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          current = await fetchWrenOperation(current.id);
+          setOperation(current);
+        }
+        if (current.status === "running")
+          throw new Error("Wren 仍在构建。可稍后刷新页面查看应用状态。");
+        if (current.status === "failed") {
+          throw new Error(current.message || WREN_APPLY_FAILURE_FALLBACK);
+        }
+        const refreshed = await fetchDataSource(saved.data_source.id);
+        hydrateDetail(refreshed);
+        await loadSources(saved.data_source.id);
+        setOperationFeedback({
+          status: "success",
+          title: "配置已应用",
+          message: "新版本已验证并生效。新会话选择此数据源后使用该版本；现有会话继续使用原绑定。",
+        });
+        emitCatalogUpdated();
+      },
+      { failureTitle: "应用失败" },
+    );
   }
 
   async function changeDefault() {
@@ -1282,10 +1486,24 @@ export function DataSourcesPage() {
   }
 
   function toggleTable(tableName: string) {
+    updateTableSelection((current) =>
+      current.includes(tableName)
+        ? current.filter((name) => name !== tableName)
+        : [...current, tableName],
+    );
+  }
+
+  function resetConfigurationNavigation() {
+    setTableSearch("");
+    setTableFilter("all");
+    setModelSearch("");
+    setFieldSearch("");
+    setActiveModelTable("");
+  }
+
+  function updateTableSelection(updateSelection: (current: string[]) => string[]) {
     setSemantic((current) => {
-      const selected = current.tables.includes(tableName)
-        ? current.tables.filter((name) => name !== tableName)
-        : [...current.tables, tableName];
+      const selected = updateSelection(current.tables);
       const models = createModelsForSelection(selected, tableOptions, current.models);
       return {
         ...mergeForeignKeyRelationships(
@@ -1299,6 +1517,16 @@ export function DataSourcesPage() {
         models,
       };
     });
+  }
+
+  function setVisibleTablesSelected(shouldSelect: boolean) {
+    const visibleTableIds = filteredTableOptions.map((table) => table.id || table.name);
+    const visibleTableIdSet = new Set(visibleTableIds);
+    updateTableSelection((current) =>
+      shouldSelect
+        ? [...current, ...visibleTableIds.filter((tableId) => !current.includes(tableId))]
+        : current.filter((tableId) => !visibleTableIdSet.has(tableId)),
+    );
   }
 
   function updateModel(index: number, update: Partial<WrenModel>) {
@@ -1501,11 +1729,12 @@ export function DataSourcesPage() {
                   <button
                     key={source.data_source.id}
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      resetConfigurationNavigation();
                       void withWorking("load", async () =>
                         hydrateDetail(await fetchDataSource(source.data_source.id)),
-                      )
-                    }
+                      );
+                    }}
                     className={`min-w-44 flex-1 rounded-xl border-l-2 px-3 py-3 text-left transition focus-visible:ring-2 focus-visible:ring-[#c57650] lg:min-w-0 ${
                       hasActiveRevision ? "border-l-[#6a8a5b]" : "border-l-transparent"
                     } ${
@@ -1722,6 +1951,102 @@ export function DataSourcesPage() {
             </div>
           )}
 
+          {detail && (
+            <Section
+              title="活动规则与在线召回"
+              description="仅统计当前活动版本。保存草稿不会更新这里的状态；应用成功后会自动读取新版本。"
+            >
+              {runtimeDiagnosticsLoading ? (
+                <div role="status" className="flex items-center gap-2 text-xs text-[#89847a]">
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                  正在读取服务端运行状态…
+                </div>
+              ) : runtimeDiagnosticsError ? (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p role="alert" className="text-xs text-[#9c4037]">
+                    {runtimeDiagnosticsError}
+                  </p>
+                  <ActionButton
+                    onClick={() => setRuntimeDiagnosticsRefresh((current) => current + 1)}
+                  >
+                    <RefreshCwIcon className="size-3.5" />
+                    重试
+                  </ActionButton>
+                </div>
+              ) : runtimeDiagnostics ? (
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-[#e7e2d8] bg-white/70 px-3.5 py-3">
+                      <p className="text-[10px] text-[#89847a]">活动版本</p>
+                      <p className="mt-1 text-xs font-medium text-[#514b42]">
+                        {runtimeDiagnostics.active_revision_id ?? "尚未应用"}
+                      </p>
+                      <p className="mt-1 text-[10px] text-[#89847a]">
+                        {runtimeDiagnostics.active_revision_ready ? "运行就绪" : "当前不可用于查询"}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-[#e7e2d8] bg-white/70 px-3.5 py-3">
+                      <p className="text-[10px] text-[#89847a]">活动业务规则</p>
+                      <p className="mt-1 text-xs font-medium text-[#514b42]">
+                        {runtimeDiagnostics.semantic_rules.configured_count} 条有效规则
+                      </p>
+                      <p className="mt-1 text-[10px] text-[#89847a]">
+                        统计当前活动版本，不含未应用草稿
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-[#e7e2d8] bg-white/70 px-3.5 py-3">
+                      <p className="text-[10px] text-[#89847a]">在线召回</p>
+                      <p
+                        className={`mt-1 text-xs font-medium ${runtimeDiagnostics.online_recall.enabled ? "text-[#54734d]" : "text-[#9c4037]"}`}
+                      >
+                        {runtimeDiagnostics.online_recall.enabled ? "已启用" : "未启用"}
+                      </p>
+                      {runtimeDiagnostics.online_recall.reason_codes.map((code) => (
+                        <p key={code} className="mt-1 text-[10px] text-[#89847a]">
+                          {runtimeReasonLabels[code] ?? code}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                  <div
+                    className={`rounded-xl px-3.5 py-3 text-xs leading-5 ${runtimeDiagnostics.semantic_rules.available_to_query_gate ? "border border-[#dce7d7] bg-[#f4f8f0] text-[#54734d]" : "border border-[#efd5cd] bg-[#fff8f5] text-[#8c5145]"}`}
+                  >
+                    <p className="font-medium">
+                      {runtimeDiagnostics.semantic_rules.available_to_query_gate
+                        ? "活动规则已具备进入查询判断上下文的条件。"
+                        : "活动规则当前不会进入查询判断上下文。"}
+                    </p>
+                    {runtimeDiagnostics.semantic_rules.available_to_query_gate ? (
+                      <p className="mt-1 text-[11px]">
+                        实际是否命中仍取决于问题与规则的相关度，以及上下文预算。
+                      </p>
+                    ) : (
+                      <ul className="mt-1 list-inside list-disc text-[11px]">
+                        {runtimeDiagnostics.semantic_rules.reason_codes.map((code) => (
+                          <li key={code}>{runtimeReasonLabels[code] ?? code}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-[10px] leading-4 text-[#89847a]">
+                      {runtimeDiagnostics.online_recall.enabled
+                        ? "在线召回已开启；此状态不保证每个问题都会命中规则，实际召回仍受问题相关度和上下文预算影响。"
+                        : "在线召回关闭时，查询前置判断拿不到召回规则；因此“VIP”这类业务说法仍可能被要求澄清。"}
+                    </p>
+                    <ActionButton
+                      onClick={() => setRuntimeDiagnosticsRefresh((current) => current + 1)}
+                      disabled={runtimeDiagnosticsLoading}
+                    >
+                      <RefreshCwIcon className="size-3.5" />
+                      刷新状态
+                    </ActionButton>
+                  </div>
+                </div>
+              ) : null}
+            </Section>
+          )}
+
           {detail &&
             detail.data_source.active_revision_id &&
             detail.data_source.draft_revision_id && (
@@ -1784,7 +2109,36 @@ export function DataSourcesPage() {
               </Section>
             )}
 
+          <nav
+            aria-label="数据源配置区段"
+            className="sticky top-0 z-20 -mx-1 flex gap-1 overflow-x-auto rounded-xl border border-[#e7e2d8] bg-[#f8f6f1]/95 p-1.5 shadow-[0_4px_14px_rgba(59,48,35,0.06)] backdrop-blur md:top-16"
+          >
+            {[
+              { id: "source-connection", label: "连接" },
+              { id: "database-tables", label: `表 ${selectedTables.length}/${tableOptions.length}` },
+              { id: "semantic-models", label: `模型 ${semantic.models.length}` },
+              { id: "model-relationships", label: `关系 ${semantic.relationships.length}` },
+              { id: "business-rules", label: `规则 ${semantic.rules.length}` },
+              { id: "custom-views", label: `视图 ${semantic.views.length}` },
+            ].map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() =>
+                  document.getElementById(item.id)?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start",
+                  })
+                }
+                className="shrink-0 rounded-lg px-3 py-2 text-[11px] font-medium text-[#686257] transition hover:bg-white hover:text-[#393630] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
           <Section
+            id="source-connection"
             title={`${connectorDefinition?.label ?? "数据库/数仓"} 连接`}
           >
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -1970,6 +2324,7 @@ export function DataSourcesPage() {
           </Section>
 
           <Section
+            id="database-tables"
             title="选择数据库表"
             description="先读取数据库或数仓的元数据，再勾选要交给 Wren 查询的表。这里只读取表和字段定义，不扫描业务数据。"
           >
@@ -1986,130 +2341,303 @@ export function DataSourcesPage() {
                 </button>
               </div>
             ) : (
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {tableOptions.map((table) => (
-                  <label
-                    key={table.id || table.name}
-                    className={`flex min-w-0 cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition ${selectedTables.includes(table.id || table.name) ? "border-[#d8c5af] bg-[#f5f0e7]" : "border-[#ebe6dd] bg-white/70 hover:bg-white"}`}
-                  >
+              <>
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                  <label className="relative block min-w-0">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[#989186]" />
                     <input
-                      type="checkbox"
-                      checked={selectedTables.includes(table.id || table.name)}
-                      onChange={() => toggleTable(table.id || table.name)}
-                      className="mt-0.5 accent-[#c57650]"
+                      aria-label="搜索数据库表或 Schema"
+                      value={tableSearch}
+                      onChange={(event) => setTableSearch(event.target.value)}
+                      placeholder="搜索表名或 Schema"
+                      className="h-9 w-full rounded-lg border border-[#e7e2d8] bg-white pl-9 pr-3 text-xs outline-none transition focus:border-[#d8cbb9] focus:ring-2 focus:ring-[#c57650]/20"
                     />
-                    <span className="min-w-0">
-                      <span className="block truncate text-xs font-medium text-[#514b42]">
-                        {table.schema ? `${table.schema}.${table.name}` : table.name}
-                      </span>
-                      <span className="mt-1 block text-[10px] text-[#989186]">
-                        {table.columns.length} 个字段
-                      </span>
-                    </span>
                   </label>
-                ))}
-              </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex rounded-lg border border-[#e7e2d8] bg-white p-0.5" role="group" aria-label="筛选数据库表">
+                      {([
+                        { value: "all", label: "全部" },
+                        { value: "selected", label: "已选" },
+                        { value: "unselected", label: "未选" },
+                      ] as const).map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          aria-pressed={tableFilter === filter.value}
+                          onClick={() => setTableFilter(filter.value)}
+                          className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium transition ${tableFilter === filter.value ? "bg-[#eee8dc] text-[#514b42]" : "text-[#89847a] hover:text-[#514b42]"}`}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-[#89847a]">
+                      已选 {selectedTables.length} / {tableOptions.length} 张
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[10px] text-[#89847a]">
+                    当前显示 {filteredTableOptions.length} 张表
+                  </p>
+                  <div className="flex gap-2">
+                    <ActionButton
+                      onClick={() => setVisibleTablesSelected(true)}
+                      disabled={disabled || selectedVisibleTableCount === filteredTableOptions.length}
+                    >
+                      选择当前结果
+                    </ActionButton>
+                    <ActionButton
+                      onClick={() => setVisibleTablesSelected(false)}
+                      disabled={disabled || selectedVisibleTableCount === 0}
+                      variant="quiet"
+                    >
+                      清除当前结果
+                    </ActionButton>
+                  </div>
+                </div>
+                <div className="mt-2 max-h-[min(52vh,34rem)] overflow-y-auto rounded-xl border border-[#ebe6dd] bg-white/50 p-2">
+                  {filteredTableOptions.length ? (
+                    <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                      {filteredTableOptions.map((table) => {
+                        const tableId = table.id || table.name;
+                        const isSelected = selectedTables.includes(tableId);
+                        return (
+                          <label
+                            key={tableId}
+                            className={`flex min-w-0 cursor-pointer items-center gap-2.5 rounded-lg border px-2.5 py-2 transition ${isSelected ? "border-[#d8c5af] bg-[#f5f0e7]" : "border-[#ebe6dd] bg-white/80 hover:bg-white"}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleTable(tableId)}
+                              className="shrink-0 accent-[#c57650]"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium text-[#514b42]">
+                                {table.schema ? `${table.schema}.${table.name}` : table.name}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-[10px] text-[#989186]">
+                              {table.columns.length} 字段
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="px-3 py-8 text-center text-xs text-[#89847a]">
+                      没有符合搜索和筛选条件的数据表。
+                    </p>
+                  )}
+                </div>
+              </>
             )}
           </Section>
 
           <Section
+            id="semantic-models"
             title="语义模型"
             description="为表设置对用户友好的名称、说明和字段可见性；字段说明可帮助自然语言问题准确映射到数据。"
           >
             {semantic.models.length === 0 ? (
               <p className="text-xs text-[#89847a]">请先选择至少一张表。</p>
             ) : (
-              <div className="space-y-3">
-                {semantic.models.map((model, modelIndex) => (
-                  <details
-                    key={model.table}
-                    open
-                    className="rounded-xl border border-[#ebe6dd] bg-white/65"
+              <>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <label className="relative block min-w-0 flex-1">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[#989186]" />
+                    <input
+                      aria-label="搜索语义模型"
+                      value={modelSearch}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const query = value.trim().toLocaleLowerCase();
+                        setModelSearch(value);
+                        setFieldSearch("");
+                        const firstMatch = semantic.models.find((model) =>
+                          `${model.name} ${model.table}`.toLocaleLowerCase().includes(query),
+                        );
+                        if (firstMatch) setActiveModelTable(firstMatch.table);
+                      }}
+                      placeholder="搜索模型名或表名"
+                      className="h-9 w-full rounded-lg border border-[#e7e2d8] bg-white pl-9 pr-3 text-xs outline-none transition focus:border-[#d8cbb9] focus:ring-2 focus:ring-[#c57650]/20"
+                    />
+                  </label>
+                  <span className="text-[10px] text-[#89847a]">
+                    显示 {visibleModels.length} / {semantic.models.length} 个模型
+                  </span>
+                </div>
+                <div className="grid items-start gap-3 lg:grid-cols-[minmax(12rem,0.8fr)_minmax(0,2.2fr)]">
+                  <nav
+                    aria-label="语义模型列表"
+                    className="hidden max-h-[min(52vh,32rem)] space-y-1 overflow-y-auto rounded-xl border border-[#ebe6dd] bg-white/50 p-1.5 lg:block"
                   >
-                    <summary className="flex cursor-pointer items-center gap-2 px-3 py-3 text-xs font-medium text-[#514b42]">
-                      <DatabaseIcon className="size-3.5 text-[#a66a4c]" />
-                      <span>{model.name || model.table}</span>
-                      <span className="font-normal text-[#989186]">
-                        {model.table} · {model.columns.length} 个字段
-                      </span>
-                    </summary>
-                    <div className="space-y-3 border-t border-[#eee9df] px-3 py-3">
+                    {visibleModels.map((model) => (
+                      <button
+                        key={model.table}
+                        type="button"
+                        aria-pressed={activeModel?.table === model.table}
+                        onClick={() => {
+                          setActiveModelTable(model.table);
+                          setFieldSearch("");
+                        }}
+                        className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2.5 text-left transition focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none ${activeModel?.table === model.table ? "bg-[#eee8dc] text-[#393630]" : "text-[#514b42] hover:bg-white"}`}
+                      >
+                        <DatabaseIcon className="mt-0.5 size-3.5 shrink-0 text-[#a66a4c]" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium">
+                            {model.name || model.table}
+                          </span>
+                          <span className="mt-1 block truncate text-[10px] text-[#989186]">
+                            {model.table} · {model.columns.length} 个字段
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                    {visibleModels.length === 0 && (
+                      <p className="px-2.5 py-5 text-center text-[11px] text-[#89847a]">
+                        没有匹配的模型。
+                      </p>
+                    )}
+                  </nav>
+                  <label className="grid gap-1.5 text-[10px] font-medium text-[#89847a] lg:hidden">
+                    当前模型
+                    <select
+                      aria-label="选择要编辑的语义模型"
+                      value={activeModel?.table ?? ""}
+                      onChange={(event) => {
+                        setActiveModelTable(event.target.value);
+                        setFieldSearch("");
+                      }}
+                      className="h-9 rounded-lg border border-[#e7e2d8] bg-white px-2.5 text-xs font-normal text-[#514b42] outline-none focus:border-[#d8cbb9]"
+                    >
+                      {activeModel &&
+                        !visibleModels.some((model) => model.table === activeModel.table) && (
+                          <option value={activeModel.table}>
+                            {activeModel.name || activeModel.table} · 当前编辑
+                          </option>
+                        )}
+                      {visibleModels.map((model) => (
+                        <option key={model.table} value={model.table}>
+                          {model.name || model.table} · {model.columns.length} 个字段
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {activeModel ? (
+                    <div className="min-w-0 rounded-xl border border-[#ebe6dd] bg-white/65 p-3">
+                      {!visibleModels.some((model) => model.table === activeModel.table) && (
+                        <p role="status" className="mb-3 text-[10px] text-[#89847a]">
+                          当前仍在编辑「{activeModel.table}」；它不符合当前搜索条件。
+                        </p>
+                      )}
                       <div className="grid gap-3 sm:grid-cols-2">
                         <Field
                           label="模型名称"
-                          value={model.name}
-                          onChange={(value) => updateModel(modelIndex, { name: value })}
+                          value={activeModel.name}
+                          onChange={(value) => updateModel(activeModelIndex, { name: value })}
                         />
                         <Field
                           label="模型说明"
-                          value={model.description}
+                          value={activeModel.description}
                           placeholder="描述这张表代表的业务对象"
-                          onChange={(value) => updateModel(modelIndex, { description: value })}
+                          onChange={(value) => updateModel(activeModelIndex, { description: value })}
                         />
                       </div>
-                      <div className="overflow-x-auto rounded-lg border border-[#eee9df]">
-                        <div className="grid min-w-[560px] grid-cols-[minmax(100px,0.8fr)_minmax(180px,1.4fr)_70px_70px] gap-2 bg-[#f5f2eb] px-3 py-2 text-[10px] font-medium text-[#89847a]">
-                          <span>字段</span>
-                          <span>字段说明</span>
-                          <span>隐藏</span>
-                          <span>主键</span>
-                        </div>
-                        {model.columns.map((column, columnIndex) => (
-                          <div
-                            key={column.name}
-                            className="grid min-w-[560px] grid-cols-[minmax(100px,0.8fr)_minmax(180px,1.4fr)_70px_70px] items-center gap-2 border-t border-[#f0ece4] px-3 py-2"
-                          >
-                            <span
-                              className="truncate font-mono text-[10px] text-[#615b51]"
-                              title={column.name}
-                            >
-                              {column.name}
-                            </span>
-                            <input
-                              aria-label={`${column.name} 字段说明`}
-                              value={column.description}
-                              onChange={(event) =>
-                                updateModelColumn(modelIndex, columnIndex, {
-                                  description: event.target.value,
-                                })
-                              }
-                              className="h-8 rounded-md border border-[#e7e2d8] bg-white px-2 text-[11px] outline-none focus:border-[#d8cbb9]"
-                            />
-                            <input
-                              aria-label={`隐藏 ${column.name}`}
-                              type="checkbox"
-                              checked={column.hidden}
-                              onChange={(event) =>
-                                updateModelColumn(modelIndex, columnIndex, {
-                                  hidden: event.target.checked,
-                                })
-                              }
-                              className="size-3.5 accent-[#c57650]"
-                            />
-                            <input
-                              aria-label={`${column.name} 为主键`}
-                              type="checkbox"
-                              checked={column.primary_key}
-                              onChange={(event) =>
-                                updateModelColumn(modelIndex, columnIndex, {
-                                  primary_key: event.target.checked,
-                                })
-                              }
-                              className="size-3.5 accent-[#c57650]"
-                            />
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <label className="relative block min-w-0 flex-1">
+                          <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[#989186]" />
+                          <input
+                            aria-label="搜索当前模型字段"
+                            value={fieldSearch}
+                            onChange={(event) => setFieldSearch(event.target.value)}
+                            placeholder="搜索字段名或说明"
+                            className="h-9 w-full rounded-lg border border-[#e7e2d8] bg-white pl-9 pr-3 text-xs outline-none transition focus:border-[#d8cbb9] focus:ring-2 focus:ring-[#c57650]/20"
+                          />
+                        </label>
+                        <span className="text-[10px] text-[#89847a]">
+                          显示 {visibleModelColumns.length} / {activeModel.columns.length} 个字段
+                        </span>
+                      </div>
+                      <div className="mt-2 max-h-[min(52vh,30rem)] overflow-auto rounded-lg border border-[#eee9df]">
+                        <div className="min-w-[560px]">
+                          <div className="sticky top-0 z-10 grid grid-cols-[minmax(100px,0.8fr)_minmax(180px,1.4fr)_70px_70px] gap-2 border-b border-[#e7e2d8] bg-[#f5f2eb] px-3 py-2 text-[10px] font-medium text-[#89847a]">
+                            <span>字段</span>
+                            <span>字段说明</span>
+                            <span>隐藏</span>
+                            <span>主键</span>
                           </div>
-                        ))}
+                          {visibleModelColumns.length ? (
+                            visibleModelColumns.map(({ column, columnIndex }) => (
+                              <div
+                                key={column.name}
+                                className="grid grid-cols-[minmax(100px,0.8fr)_minmax(180px,1.4fr)_70px_70px] items-center gap-2 border-t border-[#f0ece4] px-3 py-2"
+                              >
+                                <span
+                                  className="truncate font-mono text-[10px] text-[#615b51]"
+                                  title={column.name}
+                                >
+                                  {column.name}
+                                </span>
+                                <input
+                                  aria-label={`${column.name} 字段说明`}
+                                  value={column.description}
+                                  onChange={(event) =>
+                                    updateModelColumn(activeModelIndex, columnIndex, {
+                                      description: event.target.value,
+                                    })
+                                  }
+                                  className="h-8 rounded-md border border-[#e7e2d8] bg-white px-2 text-[11px] outline-none focus:border-[#d8cbb9]"
+                                />
+                                <input
+                                  aria-label={`隐藏 ${column.name}`}
+                                  type="checkbox"
+                                  checked={column.hidden}
+                                  onChange={(event) =>
+                                    updateModelColumn(activeModelIndex, columnIndex, {
+                                      hidden: event.target.checked,
+                                    })
+                                  }
+                                  className="size-3.5 accent-[#c57650]"
+                                />
+                                <input
+                                  aria-label={`${column.name} 为主键`}
+                                  type="checkbox"
+                                  checked={column.primary_key}
+                                  onChange={(event) =>
+                                    updateModelColumn(activeModelIndex, columnIndex, {
+                                      primary_key: event.target.checked,
+                                    })
+                                  }
+                                  className="size-3.5 accent-[#c57650]"
+                                />
+                              </div>
+                            ))
+                          ) : (
+                            <p className="px-3 py-8 text-center text-xs text-[#89847a]">
+                              没有匹配的字段。
+                            </p>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </details>
-                ))}
-              </div>
+                  ) : (
+                    <p className="rounded-xl border border-dashed border-[#ddd5c8] px-4 py-8 text-center text-xs text-[#89847a]">
+                      没有匹配的语义模型。
+                    </p>
+                  )}
+                </div>
+              </>
             )}
           </Section>
 
           <Section
-            title="模型关系"
+            id="model-relationships"
+            title={`模型关系 · ${semantic.relationships.length}`}
             description="读取表结构时会保留已选表，并自动补齐与其直接关联的外键表、生成数据库关系；可取消不需要的表，也可手动添加数据库未声明的关系。"
+            collapsible
+            initiallyOpen={semantic.relationships.length === 0}
           >
             <div className="space-y-3">
               {semantic.relationships.length === 0 && (
@@ -2215,8 +2743,11 @@ export function DataSourcesPage() {
           </Section>
 
           <Section
-            title="业务规则"
+            id="business-rules"
+            title={`业务规则 · ${semantic.rules.length}`}
             description="补充业务口径、指标定义或查询注意事项，作为 Wren 的语义上下文。"
+            collapsible
+            initiallyOpen={semantic.rules.length === 0}
           >
             <div className="space-y-3">
               {semantic.rules.map((rule, index) => (
@@ -2263,8 +2794,11 @@ export function DataSourcesPage() {
           </Section>
 
           <Section
-            title="自定义视图"
+            id="custom-views"
+            title={`自定义视图 · ${semantic.views.length}`}
             description="可添加 SQL 视图，并为视图写明业务含义。SQL 需符合当前数据源的方言。"
+            collapsible
+            initiallyOpen={semantic.views.length === 0}
           >
             <div className="space-y-3">
               {semantic.views.map((view, index) => (
@@ -2320,9 +2854,7 @@ export function DataSourcesPage() {
             <p className="hidden text-[11px] text-[#89847a] sm:block">
               {dirty
                 ? "有未保存的修改"
-                : detail?.data_source.active_revision_id
-                  ? "草稿与当前生效版本分开保存"
-                  : "保存并应用后即可开始查询"}
+                : "保存草稿只暂存；应用配置会保存草稿、构建并切换活动版本"}
             </p>
             <div className="ml-auto flex gap-2">
               <ActionButton
@@ -2353,6 +2885,33 @@ export function DataSourcesPage() {
           )}
         </div>
       </div>
+      <Dialog
+        open={Boolean(operationFeedback)}
+        onOpenChange={(open) => {
+          if (!open) setOperationFeedback(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              {operationFeedback?.status === "success" ? (
+                <CheckCircle2Icon className="size-5 shrink-0 text-[#638252]" />
+              ) : (
+                <AlertCircleIcon className="size-5 shrink-0 text-[#9c4037]" />
+              )}
+              <DialogTitle>{operationFeedback?.title ?? "操作结果"}</DialogTitle>
+            </div>
+            <DialogDescription className="break-words leading-5">
+              {operationFeedback?.message ?? ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <ActionButton onClick={() => setOperationFeedback(null)}>
+              {operationFeedback?.status === "error" ? "关闭" : "知道了"}
+            </ActionButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ConfirmDialog
         open={Boolean(revisionToActivate)}
         title="切换到此版本？"

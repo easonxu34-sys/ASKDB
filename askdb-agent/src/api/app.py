@@ -128,19 +128,10 @@ def create_app(
             await asyncio.to_thread(store.list_data_sources)
             await wren_settings.initialize()
             memory_enabled = os.environ.get("ASKDB_AGENT_MEMORY_ENABLED", "0").strip() == "1"
-            recall_requested = os.environ.get("ASKDB_AGENT_RECALL_ENABLED", "0").strip() == "1"
-            recall_gold_accepted = (
-                os.environ.get("ASKDB_AGENT_RECALL_GOLD_ACCEPTED", "0").strip() == "1"
-            )
-            recall_runtime_ready = (
-                os.environ.get("ASKDB_AGENT_RECALL_RUNTIME_READY", "0").strip() == "1"
-            )
-            if recall_requested and not (recall_gold_accepted and recall_runtime_ready):
-                raise RuntimeError(
-                    "online recall requires an accepted gold set and completed runtime activation"
-                )
-            recall_enabled = recall_requested and recall_gold_accepted and recall_runtime_ready
-            if recall_enabled and not memory_enabled:
+            recall_setting = os.environ.get("ASKDB_AGENT_RECALL_ENABLED")
+            recall_requested = recall_setting is None or recall_setting.strip() == "1"
+            recall_enabled = recall_requested and memory_enabled
+            if recall_setting is not None and recall_setting.strip() == "1" and not memory_enabled:
                 raise RuntimeError(
                     "online recall requires ASKDB_AGENT_MEMORY_ENABLED and its journal"
                 )

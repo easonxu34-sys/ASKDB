@@ -6,10 +6,15 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.presentation import QUERY_GATE_SYSTEM_PROMPT
+from agent.presentation import (
+    QUERY_GATE_SYSTEM_PROMPT,
+    RESPONSE_SAFETY_REVIEW_PROMPT,
+)
 
 
-_INTERNAL_MARKERS = (
+# These are review triggers only. A semantic reviewer decides whether the
+# candidate actually describes private implementation or is ordinary content.
+_RESPONSE_REVIEW_CANDIDATES = (
     "wren",
     "mcp",
     "langchain",
@@ -24,49 +29,31 @@ _INTERNAL_MARKERS = (
     "postgresql",
     "clickhouse",
     "duckdb",
-)
-_INTERNAL_QUESTION_MARKERS = (
-    "底层",
-    "内部实现",
-    "实现细节",
-    "技术栈",
-    "技术架构",
-    "系统架构",
-    "开发框架",
-    "使用什么技术",
-    "用了什么技术",
-    "基于什么",
-    "怎么搭建",
-    "使用什么模型",
-    "用了什么模型",
-    "哪个模型",
-    "什么引擎",
-    "什么数据库",
-    "数据库类型",
-    "数据引擎",
-    "工具链",
-    "系统提示词",
-    "提示词",
-    "under the hood",
-    "implementation details",
-    "how are you built",
-    "architecture",
-    "tech stack",
-    "technology stack",
-    "which model",
-    "what model",
-    "which engine",
-    "what engine",
-    "which database",
-    "what database",
-    "which framework",
-    "what framework",
-    "what tools do you use",
     "system prompt",
+    "internal implementation",
+    "internal architecture",
+    "tool call",
+    "tool trace",
     "backend",
     "server-side",
     "provider",
-    "internals",
+    "api key",
+    "access token",
+    "credential",
+    "private key",
+    "secret",
+    "内部实现",
+    "系统提示词",
+    "内部提示词",
+    "内部架构",
+    "工具调用",
+    "调用轨迹",
+    "服务端实现",
+    "服务商",
+    "访问令牌",
+    "凭据",
+    "私钥",
+    "密码",
 )
 _REFUSAL_ZH = "这个问题我无法回答，但可以帮你查询数据或生成图表。"
 _REFUSAL_EN = "I can't help with that request, but I can help with a data query or chart."
@@ -84,11 +71,6 @@ async def stream_chat_events(
 ) -> AsyncIterator[tuple[str, Any]]:
     """Run the query agent and expose its completed user-facing answer."""
     latest_user_text = _latest_user_text(messages)
-    if _asks_about_internal_implementation(latest_user_text):
-        text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
-        yield "token", {"text": text}
-        return
-
     agent = getattr(runtime, "agent", None)
     query_gate = getattr(runtime, "query_gate", None)
     query_context = getattr(runtime, "query_context", "")
@@ -116,11 +98,21 @@ async def stream_chat_events(
             ),
         ]
     )
-    clarification = _clarification_from_gate(
-        _content_text(_message_value(readiness, "content")), latest_user_text
-    )
+    gate_decision = _content_text(_message_value(readiness, "content")).strip()
+    if gate_decision == "INTERNAL":
+        text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
+        yield "token", {"text": text}
+        return
+
+    clarification = _clarification_from_gate(gate_decision, latest_user_text)
     if clarification is not None:
-        yield "token", {"text": clarification}
+        if await _is_safe_user_facing_text(
+            query_gate, clarification, messages, purpose="clarification"
+        ):
+            text = clarification
+        else:
+            text = _CLARIFY_ZH if _contains_chinese(latest_user_text) else _CLARIFY_EN
+        yield "token", {"text": text}
         return
 
     final_answer: str | None = None
@@ -146,7 +138,9 @@ async def stream_chat_events(
         yield "result", {"output": output}
 
     if final_answer:
-        if _contains_internal_marker(final_answer):
+        if not await _is_safe_user_facing_text(
+            query_gate, final_answer, messages, purpose="answer"
+        ):
             text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
         else:
             text = final_answer
@@ -177,8 +171,6 @@ def _visible_conversation(messages: Sequence[Mapping[str, str]]) -> list[dict[st
         if role not in {"user", "assistant"}:
             continue
         content = str(message.get("content", ""))
-        if role == "assistant" and _contains_internal_marker(content):
-            content = "[此前回复已省略内部信息]"
         conversation.append({"role": role, "content": content})
     return conversation
 
@@ -256,14 +248,40 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _contains_internal_marker(value: str) -> bool:
+def _needs_response_safety_review(value: str) -> bool:
     normalized = value.casefold()
-    return any(marker in normalized for marker in _INTERNAL_MARKERS)
+    return any(marker in normalized for marker in _RESPONSE_REVIEW_CANDIDATES)
 
 
-def _asks_about_internal_implementation(value: str) -> bool:
-    normalized = value.casefold()
-    return any(marker in normalized for marker in _INTERNAL_QUESTION_MARKERS)
+async def _is_safe_user_facing_text(
+    reviewer: Any,
+    text: str,
+    messages: Sequence[Mapping[str, str]],
+    *,
+    purpose: str,
+) -> bool:
+    """Use candidate terms only to invoke semantic review, never to reject by themselves."""
+    if not _needs_response_safety_review(text):
+        return True
+    try:
+        review = await reviewer.ainvoke(
+            [
+                SystemMessage(content=RESPONSE_SAFETY_REVIEW_PROMPT),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "purpose": purpose,
+                            "conversation": _visible_conversation(messages),
+                            "draft_response": text,
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
+            ]
+        )
+    except Exception:
+        return False
+    return _content_text(_message_value(review, "content")).strip() == "SAFE"
 
 
 def _latest_user_text(messages: Sequence[Mapping[str, str]]) -> str:
@@ -290,7 +308,6 @@ def _clarification_from_gate(content: str, user_text: str) -> str | None:
     question = normalized[len(prefix) :].strip()
     if (
         not question
-        or _contains_internal_marker(question)
         or "```" in question
         or "select " in question.casefold()
         or " from " in question.casefold()

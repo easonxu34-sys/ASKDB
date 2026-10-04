@@ -175,6 +175,24 @@ export type DataSourceRevisionDetail = {
   config: WrenSourceConfig;
 };
 
+export type DataSourceRuntimeDiagnostics = {
+  data_source_id: string;
+  source_enabled: boolean;
+  source_runtime_status: string;
+  active_revision_id: string | null;
+  active_revision_status: string | null;
+  active_revision_ready: boolean;
+  semantic_rules: {
+    configured_count: number;
+    available_to_query_gate: boolean;
+    reason_codes: string[];
+  };
+  online_recall: {
+    enabled: boolean;
+    reason_codes: string[];
+  };
+};
+
 export type SourceFormPayload = {
   display_name: string;
   connector_type: string;
@@ -274,6 +292,12 @@ export function fetchWrenConnectors(): Promise<{ connectors: WrenConnectorDefini
 
 export function fetchDataSource(sourceId: string): Promise<DataSourceDetail> {
   return settingsRequest(["data-sources", sourceId]);
+}
+
+export function fetchDataSourceRuntimeDiagnostics(
+  sourceId: string,
+): Promise<DataSourceRuntimeDiagnostics> {
+  return settingsRequest(["data-sources", sourceId, "runtime-status"]);
 }
 
 export function fetchDataSourceRevision(

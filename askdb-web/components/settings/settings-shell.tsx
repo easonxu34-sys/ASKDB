@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BookOpenIcon,
+  ArchiveIcon,
   BrainIcon,
   CpuIcon,
   DatabaseIcon,
@@ -23,6 +24,7 @@ type SettingsItem = {
 
 const personalItems: SettingsItem[] = [
   { href: "/settings", label: "我的提交", icon: BookOpenIcon, aliases: ["/memories"] },
+  { href: "/settings/archived-threads", label: "归档会话", icon: ArchiveIcon },
   { href: "/settings/password", label: "修改密码", icon: KeyRoundIcon },
 ];
 

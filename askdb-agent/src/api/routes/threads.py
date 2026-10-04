@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from api.dependencies import require_current_user
@@ -10,10 +10,14 @@ from api.schemas.threads import (
     ThreadCreateInput,
     ThreadDeleteInput,
     ThreadHistoryImportChunkInput,
+    ThreadLifecycleInput,
+    ThreadMetadataPatch,
+    ThreadStatesInput,
 )
 from domain.auth import Principal
 from domain.conversation_memory import (
     ThreadCreateIdempotencyConflict,
+    ThreadCursorStale,
     ThreadDeletionConflict,
     ThreadDeletionJournalRequired,
     ThreadDeletionParticipantUnavailable,
@@ -21,7 +25,10 @@ from domain.conversation_memory import (
     ThreadHistoryImportConflict,
     ThreadHistoryImportIncomplete,
     LegacyHistoryImportDescriptor,
+    ConversationThread,
     ThreadNotFound,
+    ThreadMetadataConflict,
+    ThreadStateConflict,
     TurnAlreadyRunning,
     TurnIdempotencyConflict,
     TurnSequenceConflict,
@@ -49,6 +56,23 @@ def _memory(request: Request) -> ConversationMemoryStore:
     )
 
 
+def _thread_payload(thread: ConversationThread) -> dict[str, Any]:
+    return {
+        "thread_id": thread.thread_id,
+        "title": thread.title,
+        "data_source_id": thread.source_id,
+        "data_source_name": thread.source_name,
+        "is_pinned": thread.is_pinned,
+        "archived_at": thread.archived_at,
+        "last_user_turn_at": thread.last_user_turn_at,
+        "expires_at": thread.expires_at,
+        "retention_paused": thread.retention_paused,
+        "retention_remaining_seconds": thread.retention_remaining_seconds,
+        "metadata_revision": thread.metadata_revision,
+        "history_import_pending": thread.history_import_pending,
+    }
+
+
 def _raise_safe(exc: Exception) -> None:
     if isinstance(exc, HTTPException):
         raise exc
@@ -56,6 +80,32 @@ def _raise_safe(exc: Exception) -> None:
         raise HTTPException(
             status_code=404,
             detail={"code": "THREAD_NOT_FOUND", "message": "找不到此会话或当前账号无权查看。"},
+            headers={"Cache-Control": "no-store"},
+        ) from None
+    if isinstance(exc, ThreadCursorStale):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "THREAD_CURSOR_STALE", "message": "会话列表已变化，请刷新后重试。"},
+            headers={"Cache-Control": "no-store"},
+        ) from None
+    if isinstance(exc, ThreadMetadataConflict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "THREAD_METADATA_CONFLICT",
+                "message": "会话信息已在其他窗口修改，请刷新后重试。",
+                "current": _thread_payload(exc.current),
+            },
+            headers={"Cache-Control": "no-store"},
+        ) from None
+    if isinstance(exc, ThreadStateConflict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "THREAD_STATE_CONFLICT",
+                "message": "会话状态已变化，请刷新后重试。",
+                "current": _thread_payload(exc.current),
+            },
             headers={"Cache-Control": "no-store"},
         ) from None
     if isinstance(exc, ThreadDeletionConflict):
@@ -142,11 +192,8 @@ async def create_thread(
             ),
         )
         return {
-            "thread_id": thread.thread_id,
-            "data_source_id": thread.source_id,
+            **_thread_payload(thread),
             "created_at": thread.created_at,
-            "expires_at": thread.expires_at,
-            "history_import_pending": thread.history_import_pending,
         }
     except Exception as exc:
         _raise_safe(exc)
@@ -156,26 +203,139 @@ async def create_thread(
 async def list_threads(
     request: Request,
     response: Response,
+    view: Literal["recent", "archived"],
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=4096),
     principal: Principal = Depends(require_current_user),
 ) -> dict[str, Any]:
     _no_store(response)
     try:
-        threads = await run_in_threadpool(
-            _memory(request).list_threads, owner_user_id=principal.user_id
+        page = await run_in_threadpool(
+            _memory(request).list_thread_page,
+            owner_user_id=principal.user_id,
+            view=view,
+            q=q,
+            limit=limit,
+            cursor=cursor,
         )
         return {
-            "threads": [
-                {
-                    "thread_id": thread.thread_id,
-                    "data_source_id": thread.source_id,
-                    "created_at": thread.created_at,
-                    "last_used_at": thread.last_user_turn_at,
-                    "expires_at": thread.expires_at,
-                    "history_import_pending": thread.history_import_pending,
-                }
-                for thread in threads
-            ]
+            "threads": [_thread_payload(thread) for thread in page.threads],
+            "next_cursor": page.next_cursor,
+            "thread_list_revision": page.snapshot_revision,
         }
+    except Exception as exc:
+        _raise_safe(exc)
+
+
+@router.post("/v1/threads/states")
+async def thread_states(
+    body: ThreadStatesInput,
+    request: Request,
+    response: Response,
+    principal: Principal = Depends(require_current_user),
+) -> dict[str, Any]:
+    _no_store(response)
+    if len(await request.body()) > 8 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "THREAD_REQUEST_TOO_LARGE", "message": "会话状态请求不能超过 8 KiB。"},
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        states = await run_in_threadpool(
+            _memory(request).get_thread_states,
+            owner_user_id=principal.user_id,
+            thread_ids=tuple(body.thread_ids),
+        )
+        return {"states": [{"thread_id": item.thread_id, "status": item.status} for item in states]}
+    except Exception as exc:
+        _raise_safe(exc)
+
+
+@router.patch("/v1/threads/{thread_id}")
+async def update_thread_metadata(
+    thread_id: str,
+    body: ThreadMetadataPatch,
+    request: Request,
+    response: Response,
+    principal: Principal = Depends(require_current_user),
+) -> dict[str, Any]:
+    _no_store(response)
+    if len(await request.body()) > 8 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "THREAD_REQUEST_TOO_LARGE", "message": "会话信息请求不能超过 8 KiB。"},
+            headers={"Cache-Control": "no-store"},
+        )
+    patch: dict[str, Any] = {}
+    if "title" in body.model_fields_set:
+        patch["title"] = body.title
+    if "is_pinned" in body.model_fields_set:
+        patch["is_pinned"] = body.is_pinned
+    try:
+        thread = await run_in_threadpool(
+            _memory(request).update_thread_metadata,
+            thread_id=thread_id,
+            owner_user_id=principal.user_id,
+            expected_metadata_revision=body.expected_metadata_revision,
+            **patch,
+        )
+        return _thread_payload(thread)
+    except Exception as exc:
+        _raise_safe(exc)
+
+
+@router.post("/v1/threads/{thread_id}/archive")
+async def archive_thread(
+    thread_id: str,
+    body: ThreadLifecycleInput,
+    request: Request,
+    response: Response,
+    principal: Principal = Depends(require_current_user),
+) -> dict[str, Any]:
+    _no_store(response)
+    if len(await request.body()) > 8 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "THREAD_REQUEST_TOO_LARGE", "message": "会话操作请求不能超过 8 KiB。"},
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        thread = await run_in_threadpool(
+            _memory(request).archive_thread,
+            thread_id=thread_id,
+            owner_user_id=principal.user_id,
+            expected_metadata_revision=body.expected_metadata_revision,
+        )
+        return _thread_payload(thread)
+    except Exception as exc:
+        _raise_safe(exc)
+
+
+@router.post("/v1/threads/{thread_id}/restore")
+async def restore_thread(
+    thread_id: str,
+    body: ThreadLifecycleInput,
+    request: Request,
+    response: Response,
+    principal: Principal = Depends(require_current_user),
+) -> dict[str, Any]:
+    _no_store(response)
+    if len(await request.body()) > 8 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "THREAD_REQUEST_TOO_LARGE", "message": "会话操作请求不能超过 8 KiB。"},
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        thread = await run_in_threadpool(
+            _memory(request).restore_thread,
+            thread_id=thread_id,
+            owner_user_id=principal.user_id,
+            expected_metadata_revision=body.expected_metadata_revision,
+        )
+        return _thread_payload(thread)
     except Exception as exc:
         _raise_safe(exc)
 

@@ -13,8 +13,20 @@ import { fetchDataSourceCatalog } from "@/lib/data-sources";
 import { reconcileThreadModelSelection } from "@/lib/model-selection";
 import type { ModelSelectionCatalog } from "@/lib/model-selection";
 import { formatQueryResults } from "@/lib/chat-output";
+import {
+  archiveThread as archiveRemoteThread,
+  fetchThreadStates,
+  listThreads as fetchThreadPage,
+  patchThreadMetadata,
+  restoreThread as restoreRemoteThread,
+  ThreadApiError,
+  type ThreadMetadata,
+} from "@/lib/thread-api";
 
 const THREADS_KEY = (userId: string) => `askdb:user:${encodeURIComponent(userId)}:chat:threads`;
+const THREAD_CACHE_VERSION_KEY = (userId: string) =>
+  `askdb:user:${encodeURIComponent(userId)}:chat-cache-version`;
+const THREAD_CACHE_VERSION = "2";
 const MESSAGES_KEY = (userId: string, threadId: string) =>
   `askdb:user:${encodeURIComponent(userId)}:chat:messages:${threadId}`;
 const RESULT_ARTIFACTS_KEY = (userId: string, threadId: string) =>
@@ -37,6 +49,12 @@ type StoredThread = {
   dataSourceNameSnapshot?: string;
   expiresAt?: string;
   historyImportPending?: boolean;
+  isPinned?: boolean;
+  archivedAt?: string;
+  lastUserTurnAt?: string;
+  retentionPaused?: boolean;
+  retentionRemainingSeconds?: number;
+  metadataRevision?: number;
 };
 
 type ImportedTurn = { user_content: string; assistant_content: string };
@@ -60,6 +78,49 @@ type DraftThreadPreferences = Pick<
 >;
 
 const draftThreadPreferences = new Map<string, DraftThreadPreferences>();
+const threadSearchQueries = new Map<string, string>();
+const loadedRecentIdsByUser = new Map<string, Set<string>>();
+const recentThreadPageStates = new Map<string, { query: string; hasMore: boolean }>();
+const cacheVersionCheckedByUser = new Set<string>();
+
+export function setThreadSearchQuery(userId: string, query: string) {
+  threadSearchQueries.set(userId, query);
+}
+
+export function getRecentThreadPageState(userId: string, query: string) {
+  const state = recentThreadPageStates.get(userId);
+  return state?.query === query.trim() ? state.hasMore : false;
+}
+
+function publishRecentThreadPageState(userId: string, query: string, hasMore: boolean) {
+  const normalizedQuery = query.trim();
+  recentThreadPageStates.set(userId, { query: normalizedQuery, hasMore });
+  window.dispatchEvent(new CustomEvent("askdb:thread-list-page-state", {
+    detail: { userId, query: normalizedQuery, hasMore },
+  }));
+}
+
+function threadSearchQuery(userId: string) {
+  return threadSearchQueries.get(userId) ?? "";
+}
+
+function initializeThreadCache(userId: string) {
+  if (cacheVersionCheckedByUser.has(userId)) return;
+  cacheVersionCheckedByUser.add(userId);
+  const versionKey = THREAD_CACHE_VERSION_KEY(userId);
+  if (window.localStorage.getItem(versionKey) === THREAD_CACHE_VERSION) return;
+  const oldPrefix = `askdb:user:${encodeURIComponent(userId)}:chat:`;
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith(oldPrefix)) window.localStorage.removeItem(key);
+  }
+  const turnPrefix = `askdb:user:${encodeURIComponent(userId)}:chat:turn:`;
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith(turnPrefix)) window.localStorage.removeItem(key);
+  }
+  window.localStorage.setItem(versionKey, THREAD_CACHE_VERSION);
+}
 
 function draftThreadKey(userId: string, threadItemId: string) {
   return `${userId}\u0000${threadItemId}`;
@@ -138,6 +199,16 @@ function readThreads(userId: string) {
         : {}),
       ...(typeof thread.expiresAt === "string" ? { expiresAt: thread.expiresAt } : {}),
       ...(thread.historyImportPending === true ? { historyImportPending: true } : {}),
+      ...(typeof thread.isPinned === "boolean" ? { isPinned: thread.isPinned } : {}),
+      ...(typeof thread.archivedAt === "string" ? { archivedAt: thread.archivedAt } : {}),
+      ...(typeof thread.lastUserTurnAt === "string" ? { lastUserTurnAt: thread.lastUserTurnAt } : {}),
+      ...(thread.retentionPaused === true ? { retentionPaused: true } : {}),
+      ...(Number.isSafeInteger(thread.retentionRemainingSeconds)
+        ? { retentionRemainingSeconds: thread.retentionRemainingSeconds as number }
+        : {}),
+      ...(Number.isSafeInteger(thread.metadataRevision)
+        ? { metadataRevision: thread.metadataRevision as number }
+        : {}),
     }));
   } catch {
     return [];
@@ -146,6 +217,65 @@ function readThreads(userId: string) {
 
 function writeThreads(userId: string, threads: StoredThread[]) {
   window.localStorage.setItem(THREADS_KEY(userId), JSON.stringify(threads));
+}
+
+function storedThreadFromMetadata(metadata: ThreadMetadata, existing?: StoredThread): StoredThread {
+  return {
+    remoteId: metadata.thread_id,
+    status: metadata.archived_at ? "archived" : "regular",
+    ...(metadata.title ? { title: metadata.title } : {}),
+    ...(existing?.modelProfileId ? { modelProfileId: existing.modelProfileId } : {}),
+    dataSourceId: metadata.data_source_id,
+    ...(metadata.data_source_name ? { dataSourceNameSnapshot: metadata.data_source_name } : {}),
+    expiresAt: metadata.expires_at,
+    historyImportPending: metadata.history_import_pending,
+    isPinned: metadata.is_pinned,
+    ...(metadata.archived_at ? { archivedAt: metadata.archived_at } : {}),
+    lastUserTurnAt: metadata.last_user_turn_at,
+    retentionPaused: metadata.retention_paused,
+    ...(metadata.retention_remaining_seconds !== null
+      ? { retentionRemainingSeconds: metadata.retention_remaining_seconds }
+      : {}),
+    metadataRevision: metadata.metadata_revision,
+  };
+}
+
+export function getCachedThread(userId: string, threadId: string): StoredThread | undefined {
+  const canonicalId = canonicalThreadId(threadId);
+  return readThreads(userId).find(
+    (thread) => thread.remoteId === canonicalId || thread.remoteId === threadId,
+  );
+}
+
+export function saveServerThreadMetadata(userId: string, metadata: ThreadMetadata) {
+  const threads = readThreads(userId);
+  const existing = threads.find((thread) => thread.remoteId === metadata.thread_id);
+  const updated = storedThreadFromMetadata(metadata, existing);
+  writeThreads(
+    userId,
+    [updated, ...threads.filter((thread) => thread.remoteId !== metadata.thread_id)],
+  );
+  window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
+}
+
+function toRemoteThread(thread: StoredThread) {
+  return {
+    remoteId: thread.remoteId,
+    status: thread.status,
+    ...(thread.title ? { title: thread.title } : {}),
+    custom: {
+      dataSourceId: thread.dataSourceId,
+      dataSourceName: thread.dataSourceNameSnapshot,
+      isPinned: thread.isPinned === true,
+      expiresAt: thread.expiresAt,
+      lastUserTurnAt: thread.lastUserTurnAt,
+      archivedAt: thread.archivedAt,
+      retentionPaused: thread.retentionPaused === true,
+      retentionRemainingSeconds: thread.retentionRemainingSeconds,
+      metadataRevision: thread.metadataRevision,
+      historyImportPending: thread.historyImportPending === true,
+    },
+  };
 }
 
 function canonicalThreadId(threadId: string): string {
@@ -160,6 +290,40 @@ function canonicalThreadId(threadId: string): string {
 
 export function isServerThreadId(threadId: string | undefined): threadId is string {
   return Boolean(threadId && SERVER_THREAD_ID.test(threadId));
+}
+
+type ThreadDeleteRequestDetail = {
+  userId: string;
+  threadId: string;
+  originalId: string;
+  resolve: (deleted: boolean) => void;
+};
+
+export function requestThreadDeletionFromUI(
+  userId: string,
+  threadId: string,
+  originalId = threadId,
+): Promise<boolean> {
+  const canonicalId = canonicalThreadId(threadId);
+  if (!isServerThreadId(canonicalId)) {
+    removeLocalThread(userId, canonicalId, originalId);
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const event = new CustomEvent<ThreadDeleteRequestDetail>("askdb:thread-delete-requested", {
+      cancelable: true,
+      detail: { userId, threadId: canonicalId, originalId, resolve },
+    });
+    if (window.dispatchEvent(event)) resolve(false);
+  });
+}
+
+export function removeDeletedThreadCache(
+  userId: string,
+  threadId: string,
+  originalId = threadId,
+) {
+  removeLocalThread(userId, canonicalThreadId(threadId), originalId);
 }
 
 export function isThreadHistoryImportPending(userId: string, threadId: string | undefined) {
@@ -226,68 +390,28 @@ function setThreadHistoryImportPending(userId: string, threadId: string, pending
 }
 
 export async function ensureServerThread(userId: string, threadId: string): Promise<string> {
+  initializeThreadCache(userId);
   const canonicalId = canonicalThreadId(threadId);
-  if (isServerThreadId(canonicalId)) {
-    await resumeHistoryImportIfNeeded(userId, canonicalId);
-    return canonicalId;
+  if (isServerThreadId(canonicalId)) return canonicalId;
+  if (readThreads(userId).some((thread) => thread.remoteId === threadId)) {
+    throw new Error("此版本不导入仅保存在浏览器中的旧会话，请新建对话继续使用。");
   }
-
-  const threads = readThreads(userId);
-  const thread = threads.find(
-    (item) => item.remoteId === threadId || item.remoteId === canonicalId,
-  );
-  if (!thread) throw new Error("找不到此本地会话，无法迁移到服务端。");
-
-  if (!thread.dataSourceId) {
-    const catalog = await fetchDataSourceCatalog();
-    const defaultSource = catalog.data_sources.find(
-      (source) => source.id === catalog.default_data_source_id && source.enabled,
-    );
-    if (!defaultSource) throw new Error("旧会话没有数据源绑定，请先选择一个可用数据源。");
-    thread.dataSourceId = defaultSource.id;
-    thread.dataSourceNameSnapshot = defaultSource.display_name;
+  const preferences = draftThreadPreferences.get(draftThreadKey(userId, threadId));
+  if (!preferences?.dataSourceId) throw new Error("请先为当前会话选择一个可用数据源。");
+  const key = await creationKey(userId, "new:" + threadId);
+  const created = await postThread(preferences.dataSourceId, key, []);
+  if (created.metadata) {
+    saveServerThreadMetadata(userId, created.metadata);
+    if (preferences.modelProfileId) {
+      setThreadModelProfileId(userId, created.threadId, preferences.modelProfileId);
+    }
+  } else {
+    writeThreads(userId, [
+      { remoteId: created.threadId, status: "regular", ...preferences },
+      ...readThreads(userId),
+    ]);
   }
-
-  const legacyId = thread.remoteId;
-  const oldRepository = readRepository(userId, legacyId);
-  const imported = importableHistory(oldRepository);
-  const history = imported.turns;
-  const key = await creationKey(userId, `legacy:${legacyId}`);
-  const importPlan = await buildHistoryImportPlan(userId, legacyId, thread.dataSourceId, key, history);
-  const destinationTurnIds = importPlan
-    ? await chunkedImportTurnIds(importPlan)
-    : await inlineImportTurnIds(key, history.length);
-  if (importPlan) saveHistoryPlan(userId, legacyId, importPlan);
-  const created = await postThread(thread.dataSourceId, key, history, importPlan);
-  const serverId = created.threadId;
-  if (importPlan) moveHistoryPlan(userId, legacyId, serverId);
-  legacyThreadRedirects.set(legacyId, serverId);
-  thread.remoteId = serverId;
-  thread.historyImportPending = created.historyImportPending;
-  writeThreads(userId, threads);
-  if (oldRepository.messages.length > 0) {
-    window.localStorage.setItem(
-      MESSAGES_KEY(userId, serverId),
-      JSON.stringify(oldRepository),
-    );
-    window.localStorage.removeItem(MESSAGES_KEY(userId, legacyId));
-  }
-  transferLegacyResultArtifacts(
-    userId,
-    serverId,
-    oldRepository,
-    imported.assistantMessageIds,
-    destinationTurnIds,
-    history,
-  );
-  window.dispatchEvent(new Event("askdb:thread-data-source-updated"));
-  if (imported.sanitizedTurns || imported.omittedTurns) {
-    window.dispatchEvent(new CustomEvent("askdb:thread-import-notice", {
-      detail: `旧会话安全迁移：已脱敏 ${imported.sanitizedTurns} 轮，未导入 ${imported.omittedTurns} 轮；原始本地记录仍保留。`,
-    }));
-  }
-  if (importPlan) await resumeHistoryImportIfNeeded(userId, serverId);
-  return serverId;
+  return created.threadId;
 }
 
 async function creationKey(userId: string, stableSourceId: string): Promise<string> {
@@ -442,6 +566,16 @@ async function postThread(
     | {
       thread_id?: unknown;
       history_import_pending?: unknown;
+      title?: unknown;
+      data_source_id?: unknown;
+      data_source_name?: unknown;
+      is_pinned?: unknown;
+      archived_at?: unknown;
+      last_user_turn_at?: unknown;
+      expires_at?: unknown;
+      retention_paused?: unknown;
+      retention_remaining_seconds?: unknown;
+      metadata_revision?: unknown;
       detail?: { message?: unknown };
       message?: unknown;
     }
@@ -457,6 +591,31 @@ async function postThread(
   return {
     threadId: value.thread_id,
     historyImportPending: value.history_import_pending === true,
+    ...(typeof value.data_source_id === "string" &&
+      typeof value.last_user_turn_at === "string" &&
+      typeof value.expires_at === "string" &&
+      typeof value.is_pinned === "boolean" &&
+      typeof value.retention_paused === "boolean" &&
+      typeof value.metadata_revision === "number"
+      ? {
+        metadata: {
+          thread_id: value.thread_id,
+          title: typeof value.title === "string" ? value.title : null,
+          data_source_id: value.data_source_id,
+          data_source_name: typeof value.data_source_name === "string" ? value.data_source_name : null,
+          is_pinned: value.is_pinned,
+          archived_at: typeof value.archived_at === "string" ? value.archived_at : null,
+          last_user_turn_at: value.last_user_turn_at,
+          expires_at: value.expires_at,
+          retention_paused: value.retention_paused,
+          retention_remaining_seconds: Number.isSafeInteger(value.retention_remaining_seconds)
+            ? value.retention_remaining_seconds as number
+            : null,
+          metadata_revision: value.metadata_revision,
+          history_import_pending: value.history_import_pending === true,
+        } satisfies ThreadMetadata,
+      }
+      : {}),
   };
 }
 
@@ -872,34 +1031,29 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
         if (!remoteId) return { messages: [] };
         const canonicalId = canonicalThreadId(remoteId);
         if (!isServerThreadId(canonicalId)) {
-          return readRepository(userId, canonicalId);
+          throw new Error("此本地会话未迁入新版本；请从服务端会话列表选择记录或新建对话。");
         }
         try {
-          await resumeHistoryImportIfNeeded(userId, canonicalId);
-          const requestHistory = () => fetch(
+          const response = await fetch(
             `/api/threads/${encodeURIComponent(canonicalId)}/history`,
             { cache: "no-store", credentials: "same-origin" },
           );
-          let response = await requestHistory();
-          if (response.status === 409) {
-            const problem = await response.clone().json().catch(() => null) as {
-              code?: unknown;
-              detail?: { code?: unknown };
-            } | null;
-            if ((problem?.code ?? problem?.detail?.code) === "THREAD_HISTORY_IMPORT_INCOMPLETE") {
-              setThreadHistoryImportPending(userId, canonicalId, true);
-              await resumeHistoryImportIfNeeded(userId, canonicalId);
-              response = await requestHistory();
-            }
-          }
-          if (response.status === 404) {
-            removeLocalThread(userId, canonicalId, canonicalId);
-            return { messages: [] };
-          }
           if (response.status === 401) {
             clearLocalThreadCache(userId);
             window.location.assign("/login");
             return { messages: [] };
+          }
+          if (response.status === 404) {
+            throw new Error("当前账号无法读取此数据源的会话历史；会话仍可在设置中管理或删除。");
+          }
+          if (response.status === 409) {
+            const problem = await response.json().catch(() => null) as {
+              code?: unknown;
+              detail?: { code?: unknown };
+            } | null;
+            if ((problem?.code ?? problem?.detail?.code) === "THREAD_HISTORY_IMPORT_INCOMPLETE") {
+              throw new Error("此会话的旧历史导入尚未完成，无法读取对话内容。请联系管理员处理。 ");
+            }
           }
           if (!response.ok) {
             throw new Error("服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。");
@@ -937,7 +1091,7 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
           // returning the server transcript as the authoritative natural-language history.
           return repository;
         } catch (error) {
-          if (error instanceof Error && /旧会话导入|旧记录导入|登录状态已失效/.test(error.message)) throw error;
+          if (error instanceof Error && /本地会话未迁入|无法读取此数据源|旧历史导入/.test(error.message)) throw error;
           throw new Error("服务端会话暂不可用；为避免展示过期记录，已隐藏本地会话缓存。请重试读取。");
         }
       },
@@ -978,73 +1132,98 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
     return <LocalHistoryProvider userId={userId}>{children}</LocalHistoryProvider>;
   }
 
+  async function reconcileMissingThreadCaches(cachedThreads: StoredThread[], visibleIds: Set<string>) {
+    const staleIds = cachedThreads
+      .filter((thread) => isServerThreadId(thread.remoteId) && !visibleIds.has(thread.remoteId))
+      .map((thread) => thread.remoteId);
+    for (let offset = 0; offset < staleIds.length; offset += 200) {
+      try {
+        const states = await fetchThreadStates(staleIds.slice(offset, offset + 200));
+        for (const state of states) {
+          if (state.status === "deleted" || state.status === "expired") {
+            removeLocalThread(userId, state.thread_id, state.thread_id);
+          } else if (state.status === "archived") {
+            updateThreadStatus(userId, state.thread_id, "archived");
+          }
+        }
+      } catch {
+        window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
+          detail: "会话状态核对失败，已保留本地缓存。请稍后重试。",
+        }));
+        return;
+      }
+    }
+  }
+
   return {
-  async list() {
-    const localThreads = readThreads(userId);
+  async list(params?: { after?: string }) {
+    initializeThreadCache(userId);
+    const query = threadSearchQuery(userId).trim();
+    if (!params?.after) publishRecentThreadPageState(userId, query, false);
+    let page: Awaited<ReturnType<typeof fetchThreadPage>>;
     try {
-      const response = await fetch("/api/threads", {
-        cache: "no-store",
-        credentials: "same-origin",
+      page = await fetchThreadPage({
+        view: "recent",
+        q: query,
+        limit: 50,
+        ...(params?.after ? { cursor: params.after } : {}),
       });
-      if (response.status === 401) {
+    } catch (error) {
+      if (error instanceof ThreadApiError && error.status === 401) {
+        publishRecentThreadPageState(userId, query, false);
         clearLocalThreadCache(userId);
         window.location.assign("/login");
         return { threads: [] };
       }
-      if (!response.ok) return { threads: localThreads };
-      const payload = await response.json() as {
-        threads?: Array<{
-          thread_id?: unknown;
-          data_source_id?: unknown;
-          last_used_at?: unknown;
-          expires_at?: unknown;
-          history_import_pending?: unknown;
-        }>;
-      };
-      if (!Array.isArray(payload.threads)) return { threads: localThreads };
-      const localById = new Map(localThreads.map((thread) => [thread.remoteId, thread]));
-      const serverThreads = payload.threads.flatMap((item): StoredThread[] => {
-        if (typeof item.thread_id !== "string" || !isServerThreadId(item.thread_id)) return [];
-        if (typeof item.expires_at === "string" && Date.parse(item.expires_at) <= Date.now()) return [];
-        const existing = localById.get(item.thread_id);
-        return [{
-          remoteId: item.thread_id,
-          status: existing?.status ?? "regular",
-          ...(existing?.title ? { title: existing.title } : {}),
-          ...(existing?.modelProfileId ? { modelProfileId: existing.modelProfileId } : {}),
-          ...(typeof item.data_source_id === "string"
-            ? { dataSourceId: item.data_source_id }
-            : existing?.dataSourceId ? { dataSourceId: existing.dataSourceId } : {}),
-          ...(existing?.dataSourceNameSnapshot
-            ? { dataSourceNameSnapshot: existing.dataSourceNameSnapshot }
-            : {}),
-          ...(typeof item.expires_at === "string" ? { expiresAt: item.expires_at } : {}),
-          ...(item.history_import_pending === true ? { historyImportPending: true } : {}),
-        }];
-      });
-      const serverIds = new Set(serverThreads.map((thread) => thread.remoteId));
-      for (const thread of localThreads) {
-        if (isServerThreadId(thread.remoteId) && !serverIds.has(thread.remoteId)) {
-          window.localStorage.removeItem(MESSAGES_KEY(userId, thread.remoteId));
-          window.localStorage.removeItem(RESULT_ARTIFACTS_KEY(userId, thread.remoteId));
-          window.localStorage.removeItem(HISTORY_IMPORT_KEY(userId, thread.remoteId));
-        }
+      if (error instanceof ThreadApiError && error.code === "THREAD_CURSOR_STALE") {
+        publishRecentThreadPageState(userId, query, false);
+        window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
+          detail: "会话列表已变化，请刷新后重新加载。",
+        }));
+        throw error;
       }
-      const unimportedLocalThreads = localThreads.filter(
-        (thread) => !isServerThreadId(thread.remoteId) && !serverIds.has(canonicalThreadId(thread.remoteId)),
-      );
-      const merged = [...serverThreads, ...unimportedLocalThreads];
-      writeThreads(userId, merged);
-      return { threads: merged };
-    } catch {
-      return { threads: localThreads };
+      publishRecentThreadPageState(userId, query, false);
+      window.dispatchEvent(new CustomEvent("askdb:thread-list-error", {
+        detail: "读取会话列表失败。请检查连接后重试刷新。",
+      }));
+      return { threads: [] };
     }
+
+    publishRecentThreadPageState(userId, query, Boolean(page.next_cursor));
+
+    const cachedThreads = readThreads(userId);
+    const cachedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
+    const serverThreads = page.threads.map((metadata) =>
+      storedThreadFromMetadata(metadata, cachedById.get(metadata.thread_id)),
+    );
+    const mergedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
+    for (const thread of serverThreads) mergedById.set(thread.remoteId, thread);
+    writeThreads(userId, [...mergedById.values()]);
+
+    if (!params?.after) loadedRecentIdsByUser.set(userId, new Set());
+    const visibleIds = loadedRecentIdsByUser.get(userId) ?? new Set<string>();
+    for (const thread of serverThreads) visibleIds.add(thread.remoteId);
+    if (page.next_cursor) {
+      loadedRecentIdsByUser.set(userId, visibleIds);
+    } else {
+      loadedRecentIdsByUser.delete(userId);
+      if (!query) void reconcileMissingThreadCaches(cachedThreads, visibleIds);
+    }
+    window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
+    return {
+      threads: serverThreads.map(toRemoteThread),
+      ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
+    };
   },
   async initialize(threadId) {
+    initializeThreadCache(userId);
     const threads = readThreads(userId);
     const persisted = threads.find(({ remoteId }) => remoteId === threadId);
     if (persisted) {
-      return { remoteId: await ensureServerThread(userId, persisted.remoteId) };
+      if (!isServerThreadId(persisted.remoteId)) {
+        throw new Error("此版本不导入仅保存在浏览器中的旧会话，请新建对话继续使用。");
+      }
+      return { remoteId: persisted.remoteId };
     }
     const knownRemoteId = localToRemoteId.get(threadId);
     if (knownRemoteId) return { remoteId: knownRemoteId };
@@ -1056,142 +1235,78 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
     const created = await postThread(sourceId, creationId, []);
     const remoteId = created.threadId;
     localToRemoteId.set(threadId, remoteId);
-    threads.unshift({ remoteId, status: "regular", ...preferences });
-    writeThreads(userId, threads);
+    if (created.metadata) {
+      saveServerThreadMetadata(userId, created.metadata);
+      if (preferences?.modelProfileId) {
+        setThreadModelProfileId(userId, remoteId, preferences.modelProfileId);
+      }
+    }
+    else {
+      threads.unshift({ remoteId, status: "regular", ...preferences });
+      writeThreads(userId, threads);
+    }
     draftThreadPreferences.delete(key);
     return { remoteId };
   },
   async fetch(threadId) {
-    const canonicalId = canonicalThreadId(threadId);
-    const thread = readThreads(userId).find(
-      ({ remoteId }) => remoteId === canonicalId || remoteId === threadId,
-    );
+    const thread = getCachedThread(userId, threadId);
     if (!thread) throw new Error("找不到这条会话，请刷新后重试。");
-    return thread;
+    return toRemoteThread(thread);
   },
   async rename(remoteId, title) {
     const canonicalId = canonicalThreadId(remoteId);
-    const threads = readThreads(userId);
-    const thread = threads.find((item) => item.remoteId === canonicalId || item.remoteId === remoteId);
-    if (thread) {
-      thread.title = title;
-      writeThreads(userId, threads);
+    const thread = getCachedThread(userId, canonicalId);
+    if (!thread || !thread.metadataRevision) {
+      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
+    }
+    try {
+      const updated = await patchThreadMetadata(canonicalId, thread.metadataRevision, {
+        title: title.trim() || null,
+      });
+      saveServerThreadMetadata(userId, updated);
+      window.dispatchEvent(new Event("askdb:thread-list-refresh-requested"));
+    } catch (error) {
+      if (error instanceof ThreadApiError && error.current) {
+        saveServerThreadMetadata(userId, error.current);
+      }
+      throw error;
     }
   },
   async archive(remoteId) {
-    updateThreadStatus(userId, remoteId, "archived");
+    const canonicalId = canonicalThreadId(remoteId);
+    const thread = getCachedThread(userId, canonicalId);
+    if (!thread || !thread.metadataRevision) {
+      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
+    }
+    try {
+      const updated = await archiveRemoteThread(canonicalId, thread.metadataRevision);
+      saveServerThreadMetadata(userId, updated);
+    } catch (error) {
+      if (error instanceof ThreadApiError && error.current) {
+        saveServerThreadMetadata(userId, error.current);
+      }
+      throw error;
+    }
   },
   async unarchive(remoteId) {
-    updateThreadStatus(userId, remoteId, "regular");
+    const canonicalId = canonicalThreadId(remoteId);
+    const thread = getCachedThread(userId, canonicalId);
+    if (!thread || !thread.metadataRevision) {
+      throw new Error("会话信息尚未同步到服务端，请刷新后重试。");
+    }
+    try {
+      const updated = await restoreRemoteThread(canonicalId, thread.metadataRevision);
+      saveServerThreadMetadata(userId, updated);
+    } catch (error) {
+      if (error instanceof ThreadApiError && error.current) {
+        saveServerThreadMetadata(userId, error.current);
+      }
+      throw error;
+    }
   },
   async delete(remoteId) {
     const canonicalId = canonicalThreadId(remoteId);
-    if (isServerThreadId(canonicalId)) {
-      let impactVersion: string | null = null;
-      let staleConfirmation = false;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const impactResponse = await fetch(
-          `/api/threads/${encodeURIComponent(canonicalId)}/deletion-impact`,
-          { cache: "no-store", credentials: "same-origin" },
-        );
-        if (impactResponse.status === 404) {
-          removeLocalThread(userId, canonicalId, remoteId);
-          return;
-        }
-        const impact = await impactResponse.json().catch(() => null) as {
-          impact_version?: unknown;
-          linked_business_rules?: { count?: unknown; labels?: unknown };
-          linked_query_example_candidates?: { count?: unknown };
-          published_query_examples_retained?: unknown;
-        } | null;
-        if (!impactResponse.ok || typeof impact?.impact_version !== "string") {
-          throw new Error("读取删除影响失败，请稍后重试。");
-        }
-        const ruleCount = typeof impact.linked_business_rules?.count === "number"
-          ? impact.linked_business_rules.count
-          : 0;
-        const labels = Array.isArray(impact.linked_business_rules?.labels)
-          ? impact.linked_business_rules.labels.filter((label): label is string => typeof label === "string")
-          : [];
-        const candidateCountValue = impact.linked_query_example_candidates?.count;
-        const queryCandidateCount = Number.isSafeInteger(candidateCountValue) &&
-          (candidateCountValue as number) >= 0
-          ? candidateCountValue as number
-          : null;
-        const ruleNotice = ruleCount > 0
-          ? `\n\n关联业务规则：${ruleCount} 条${labels.length ? `（${labels.join("、")}）` : ""}。删除后待处理和已发布的关联规则都会移除，可能影响同一数据源的其他会话。`
-            : "\n\n关联业务规则：0 条。";
-        const queryMemoryNotice = queryCandidateCount === null
-          ? "\n\n删除会清除关联的未发布查询示例候选；已发布查询示例保留。"
-          : `\n\n关联的未发布查询示例候选：${queryCandidateCount} 条，删除后清除；已发布查询示例保留。`;
-        const pendingImport = readThreads(userId).find((thread) => thread.remoteId === canonicalId)
-          ?.historyImportPending;
-        const confirmation =
-          `${staleConfirmation ? "删除影响已变化，请重新确认。\n\n" : ""}` +
-          `确定删除这条会话吗？在线会话内容和摘要将立即移除；关联已发布规则会立即从在线召回中屏蔽，活动 Wren 版本的移除任务随后完成。历史版本和备份保留 30 天。` +
-          (pendingImport
-            ? "\n\n旧会话导入尚未完成；删除会清除服务端已接收的分块和浏览器中的本地历史缓存。"
-            : "") +
-          ruleNotice +
-          queryMemoryNotice;
-        if (!window.confirm(confirmation)) return;
-        impactVersion = impact.impact_version;
-        const response = await authMutation(
-          `/api/threads/${encodeURIComponent(canonicalId)}`,
-          "DELETE",
-          {
-            impact_version: impactVersion,
-            confirmed: true,
-            idempotency_key: crypto.randomUUID().replaceAll("-", ""),
-          },
-        );
-        if (response.ok) {
-          const result = await response.json().catch(() => null) as {
-            status?: unknown;
-            linked_rule_suppression_recorded?: unknown;
-            historical_artifacts_expire_at?: unknown;
-          } | null;
-          const expiryDate = typeof result?.historical_artifacts_expire_at === "string"
-            ? new Date(result.historical_artifacts_expire_at)
-            : null;
-          const retentionNotice = expiryDate && !Number.isNaN(expiryDate.getTime())
-            ? `历史 revision 和备份保留至 ${expiryDate.toLocaleDateString("zh-CN")}。`
-            : "历史 revision 和备份按 30 天保留期清理。";
-          const suppressionNotice = ruleCount > 0 && result?.linked_rule_suppression_recorded === true
-            ? "在线召回抑制已登记；活动 Wren 版本的移除仍在处理。"
-            : ruleCount > 0
-              ? `关联规则删除任务状态：${typeof result?.status === "string" ? result.status : "处理中"}。`
-              : "";
-          window.dispatchEvent(new CustomEvent("askdb:thread-delete-notice", {
-            detail: `会话已删除。${suppressionNotice}${retentionNotice}`,
-          }));
-          break;
-        }
-        if (response.status === 404) {
-          removeLocalThread(userId, canonicalId, remoteId);
-          return;
-        }
-        const body = await response.json().catch(() => null) as {
-          code?: unknown;
-          detail?: { code?: unknown; message?: unknown };
-          message?: unknown;
-        } | null;
-        const code = body?.code ?? body?.detail?.code;
-        if (response.status === 409 && code === "THREAD_DELETE_CONFIRMATION_STALE" && attempt === 0) {
-          staleConfirmation = true;
-          continue;
-        }
-        throw new Error(
-          typeof body?.message === "string"
-            ? body.message
-            : typeof body?.detail?.message === "string"
-              ? body.detail.message
-              : "删除会话失败，请重试。",
-        );
-      }
-      if (impactVersion === null) return;
-    }
-    removeLocalThread(userId, canonicalId, remoteId);
+    await requestThreadDeletionFromUI(userId, canonicalId, remoteId);
   },
   async generateTitle() {
     return new ReadableStream({

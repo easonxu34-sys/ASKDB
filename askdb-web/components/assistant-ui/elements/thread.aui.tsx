@@ -25,7 +25,6 @@ import {
   getThreadResultArtifacts,
   getDraftThreadDataSource,
   getDraftThreadModelProfileId,
-  migrateLegacyThreadSources,
   reconcileLocalThreadModelSelection,
   setDraftThreadDataSource,
   setDraftThreadModelProfileId,
@@ -338,12 +337,6 @@ const DataSourceSelection: FC<{
       try {
         const nextCatalog = await fetchDataSourceCatalog();
         if (!active) return;
-        const defaultSource = nextCatalog.data_sources.find(
-          (source) => source.id === nextCatalog.default_data_source_id,
-        );
-        if (defaultSource) {
-          migrateLegacyThreadSources(userId, defaultSource.id, defaultSource.display_name);
-        }
         setCatalog(nextCatalog);
         setLoadError(false);
       } catch {

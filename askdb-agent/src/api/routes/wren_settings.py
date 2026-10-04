@@ -160,6 +160,27 @@ async def get_source(source_id: str, request: Request, response: Response) -> di
 
 
 @router.get(
+    "/v1/settings/wren/data-sources/{source_id}/runtime-status",
+    dependencies=[Depends(require_admin)],
+)
+async def get_source_runtime_status(
+    source_id: str, request: Request, response: Response
+) -> dict[str, Any]:
+    _no_store(response)
+    try:
+        service = _service(request)
+        await service.initialize()
+        return service.runtime_diagnostics(
+            source_id,
+            memory_recall_enabled=bool(
+                getattr(request.app.state, "memory_recall_enabled", False)
+            ),
+        )
+    except Exception as exc:
+        _raise_safe(exc)
+
+
+@router.get(
     "/v1/settings/wren/data-sources/{source_id}/revisions/{revision_id}",
     dependencies=[Depends(require_admin)],
 )

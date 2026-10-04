@@ -1,0 +1,263 @@
+case_id,category,query,expected_document_ids,expected_document_titles,expected_document_content,prohibited_document_ids,prohibited_document_titles,prohibited_document_content,review_decision,corrected_expected_document_ids,corrected_prohibited_document_ids,rationale,reviewer,reviewed_at
+query-tpcc_actual_001,query_example,查询指定仓库的名称、城市、省份、年度累计销售额和税率,tpcc_actual_001,查询指定仓库的名称、城市、省份、年度累计销售额和税率,"SELECT w_id, w_name, w_city, w_state, w_ytd, w_tax FROM warehouse WHERE w_id = :w_id",,,,,,,,,
+query-tpcc_actual_006,query_example,查询指定仓库、指定地区的名称、年度销售额、税率和下一订单编号,tpcc_actual_006,查询指定仓库、指定地区的名称、年度销售额、税率和下一订单编号,"SELECT d_w_id, d_id, d_name, d_ytd, d_tax, d_next_o_id FROM district WHERE d_w_id = :d_w_id AND d_id = :d_id",,,,,,,,,
+query-tpcc_actual_014,query_example,查询指定客户的姓名、信用类型、账户余额、付款次数和成为客户时间,tpcc_actual_014,查询指定客户的姓名、信用类型、账户余额、付款次数和成为客户时间,"SELECT c_w_id, c_d_id, c_id, c_last, c_first, c_credit, c_balance, c_payment_cnt, c_since FROM customer WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id",,,,,,,,,
+query-tpcc_actual_022,query_example,查询指定商品的名称和单价,tpcc_actual_022,查询指定商品的名称和单价,"SELECT i_id, i_name, i_price FROM item WHERE i_id = :i_id",,,,,,,,,
+query-tpcc_actual_089,query_example,查询指定商品的名称和价格,tpcc_actual_089,查询指定商品的名称和价格,"SELECT i_id, i_name, i_price FROM item WHERE i_id = :i_id",,,,,,,,,
+query-tpcc_actual_030,query_example,查询指定订单的客户、承运商、明细数量和下单时间,tpcc_actual_030,查询指定订单的客户、承运商、明细数量和下单时间,"SELECT o_w_id, o_d_id, o_id, o_c_id, o_carrier_id, o_ol_cnt, o_all_local, o_entry_d FROM orders WHERE o_w_id = :o_w_id AND o_d_id = :o_d_id AND o_id = :o_id",,,,,,,,,
+query-tpcc_actual_038,query_example,查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间,tpcc_actual_038,查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间,"SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity, ol_delivery_d FROM order_line WHERE ol_w_id = :ol_w_id AND ol_d_id = :ol_d_id AND ol_o_id = :ol_o_id AND ol_number = :ol_number",,,,,,,,,
+query-tpcc_actual_047,query_example,查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间,tpcc_actual_047,查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间,"SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity, ol_delivery_d FROM order_line WHERE ol_w_id = :ol_w_id AND ol_d_id = :ol_d_id AND ol_o_id = :ol_o_id AND ol_number = :ol_number",,,,,,,,,
+query-tpcc_actual_048,query_example,查询指定仓库的指定商品的库存数量、年度销售数量、订单次数和跨仓次数,tpcc_actual_048,查询指定仓库的指定商品的库存数量、年度销售数量、订单次数和跨仓次数,"SELECT s_w_id, s_i_id, s_quantity, s_ytd, s_order_cnt, s_remote_cnt FROM stock WHERE s_w_id = :s_w_id AND s_i_id = :s_i_id",,,,,,,,,
+query-tpcc_actual_058,query_example,查询指定付款历史的客户、付款时间、金额和备注,tpcc_actual_058,查询指定付款历史的客户、付款时间、金额和备注,"SELECT hist_id, h_c_w_id, h_c_d_id, h_c_id, h_date, h_amount, h_data FROM payment_history WHERE hist_id = :hist_id",,,,,,,,,
+query-tpcc_actual_066,query_example,查询指定待处理新订单,tpcc_actual_066,查询指定待处理新订单,"SELECT no_w_id, no_d_id, no_o_id FROM new_order WHERE no_w_id = :no_w_id AND no_d_id = :no_d_id AND no_o_id = :no_o_id",,,,,,,,,
+query-tpcc_actual_090,query_example,查询当前 TPC-C 配置项,tpcc_actual_090,查询当前 TPC-C 配置项,"SELECT cfg_name, cfg_value FROM system_config ORDER BY cfg_name",,,,,,,,,
+query-tpcc_actual_076,query_example,统计仓库数量,tpcc_actual_076,统计仓库数量,SELECT COUNT(*) AS warehouse_count FROM warehouse,,,,,,,,,
+query-tpcc_actual_078,query_example,按信用类型统计客户数量,tpcc_actual_078,按信用类型统计客户数量,"SELECT c_credit, COUNT(*) AS customer_count FROM customer GROUP BY c_credit ORDER BY c_credit",,,,,,,,,
+query-tpcc_actual_080,query_example,统计销售订单数量,tpcc_actual_080,统计销售订单数量,SELECT COUNT(*) AS order_count FROM orders,,,,,,,,,
+query-tpcc_actual_085,query_example,查询指定日期最近创建的 8 个订单,tpcc_actual_085,查询指定日期最近创建的 8 个订单,"SELECT o_w_id, o_d_id, o_id, o_c_id, o_entry_d FROM orders WHERE o_entry_d >= :from_o_entry_d AND o_entry_d < :before_o_entry_d ORDER BY o_entry_d DESC, o_w_id, o_d_id, o_id LIMIT 8",,,,,,,,,
+query-tpcc_actual_086,query_example,查询销售金额最高的 8 条订单明细,tpcc_actual_086,查询销售金额最高的 8 条订单明细,"SELECT ol_w_id, ol_d_id, ol_o_id, ol_number, ol_i_id, ol_amount, ol_quantity FROM order_line ORDER BY ol_amount DESC, ol_w_id, ol_d_id, ol_o_id, ol_number LIMIT 8",,,,,,,,,
+query-tpcc_actual_087,query_example,查询库存数量最低的 8 条库存记录,tpcc_actual_087,查询库存数量最低的 8 条库存记录,"SELECT s_w_id, s_i_id, s_quantity, s_ytd, s_order_cnt FROM stock ORDER BY s_quantity, s_w_id, s_i_id LIMIT 8",,,,,,,,,
+query-tpcc_actual_088,query_example,统计承运商为空的订单数量,tpcc_actual_088,统计承运商为空的订单数量,SELECT COUNT(*) AS order_count FROM orders WHERE o_carrier_id IS NULL,,,,,,,,,
+query-tpcc_actual_091,query_example,查询指定客户的所属地区名称,tpcc_actual_091,查询指定客户的所属地区名称,"SELECT c.c_w_id, c.c_d_id, c.c_id, d.d_name FROM customer AS c JOIN district AS d ON c.c_w_id = d.d_w_id AND c.c_d_id = d.d_id WHERE c.c_w_id = :c_w_id AND c.c_d_id = :c_d_id AND c.c_id = :c_id",,,,,,,,,
+query-tpcc_actual_092,query_example,查询指定订单对应的客户姓名,tpcc_actual_092,查询指定订单对应的客户姓名,"SELECT o.o_w_id, o.o_d_id, o.o_id, o.o_c_id, c.c_last, c.c_first FROM orders AS o JOIN customer AS c ON o.o_w_id = c.c_w_id AND o.o_d_id = c.c_d_id AND o.o_c_id = c.c_id WHERE o.o_w_id = :o_w_id AND o.o_d_id = :o_d_id AND o.o_id = :o_id",,,,,,,,,
+query-tpcc_actual_093,query_example,查询指定订单明细的库存数量,tpcc_actual_093,查询指定订单明细的库存数量,"SELECT ol.ol_number, ol.ol_i_id, ol.ol_supply_w_id, s.s_quantity FROM order_line AS ol JOIN stock AS s ON ol.ol_supply_w_id = s.s_w_id AND ol.ol_i_id = s.s_i_id WHERE ol.ol_w_id = :ol_w_id AND ol.ol_d_id = :ol_d_id AND ol.ol_o_id = :ol_o_id AND ol.ol_number = :ol_number",,,,,,,,,
+schema-customer-overview,schema_rule,查看客户模型有哪些字段,schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223,customer,"Table: askdb_tpcc.bmsql_customer
+Description: 客户
+Column: c_w_id (INT) — 仓库ID
+Column: c_d_id (INT) — 地区ID
+Column: c_id (INT) — 客户ID
+Column: c_discount (DECIMAL(6, 4)) — 客户折扣
+Column: c_credit (CHAR(2)) — 信用类型
+Column: c_last (VARCHAR(32)) — 姓
+Column: c_first (VARCHAR(32)) — 名
+Column: c_credit_lim (DECIMAL(14, 2)) — 信用额度
+Column: c_balance (DECIMAL(14, 2)) — 账户余额
+Column: c_ytd_payment (DECIMAL(14, 2)) — 年度付款额
+Column: c_payment_cnt (INT) — 付款次数
+Column: c_delivery_cnt (INT) — 收货次数
+Column: c_street_1 (VARCHAR(64)) — 地址1
+Column: c_street_2 (VARCHAR(64)) — 地址2
+Column: c_city (VARCHAR(32)) — 城市
+Column: c_state (VARCHAR(16)) — 省份/州
+Column: c_zip (VARCHAR(16)) — 邮编
+Column: c_phone (VARCHAR(32)) — 电话
+Column: c_since (DATETIME) — 成为客户时间
+Column: c_middle (CHAR(2)) — 中间名
+Column: c_data (VARCHAR(255)) — 客户备注",,,,,,,,,
+schema-customer-field,schema_rule,查询客户中的信用类型字段,schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223,customer,"Table: askdb_tpcc.bmsql_customer
+Description: 客户
+Column: c_w_id (INT) — 仓库ID
+Column: c_d_id (INT) — 地区ID
+Column: c_id (INT) — 客户ID
+Column: c_discount (DECIMAL(6, 4)) — 客户折扣
+Column: c_credit (CHAR(2)) — 信用类型
+Column: c_last (VARCHAR(32)) — 姓
+Column: c_first (VARCHAR(32)) — 名
+Column: c_credit_lim (DECIMAL(14, 2)) — 信用额度
+Column: c_balance (DECIMAL(14, 2)) — 账户余额
+Column: c_ytd_payment (DECIMAL(14, 2)) — 年度付款额
+Column: c_payment_cnt (INT) — 付款次数
+Column: c_delivery_cnt (INT) — 收货次数
+Column: c_street_1 (VARCHAR(64)) — 地址1
+Column: c_street_2 (VARCHAR(64)) — 地址2
+Column: c_city (VARCHAR(32)) — 城市
+Column: c_state (VARCHAR(16)) — 省份/州
+Column: c_zip (VARCHAR(16)) — 邮编
+Column: c_phone (VARCHAR(32)) — 电话
+Column: c_since (DATETIME) — 成为客户时间
+Column: c_middle (CHAR(2)) — 中间名
+Column: c_data (VARCHAR(255)) — 客户备注",,,,,,,,,
+schema-district-overview,schema_rule,查看仓库下属销售地区模型有哪些字段,schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4,district,"Table: askdb_tpcc.bmsql_district
+Description: 仓库下属销售地区
+Column: d_w_id (INT) — 所属仓库ID
+Column: d_id (INT) — 地区ID
+Column: d_ytd (DECIMAL(14, 2)) — 年度累计销售额
+Column: d_tax (DECIMAL(6, 4)) — 税率
+Column: d_next_o_id (INT) — 下一订单ID
+Column: d_name (VARCHAR(32)) — 地区名称
+Column: d_street_1 (VARCHAR(64)) — 地址1
+Column: d_street_2 (VARCHAR(64)) — 地址2
+Column: d_city (VARCHAR(32)) — 城市
+Column: d_state (VARCHAR(16)) — 省份/州
+Column: d_zip (VARCHAR(16)) — 邮编",,,,,,,,,
+schema-district-field,schema_rule,查询仓库下属销售地区中的税率字段,schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4,district,"Table: askdb_tpcc.bmsql_district
+Description: 仓库下属销售地区
+Column: d_w_id (INT) — 所属仓库ID
+Column: d_id (INT) — 地区ID
+Column: d_ytd (DECIMAL(14, 2)) — 年度累计销售额
+Column: d_tax (DECIMAL(6, 4)) — 税率
+Column: d_next_o_id (INT) — 下一订单ID
+Column: d_name (VARCHAR(32)) — 地区名称
+Column: d_street_1 (VARCHAR(64)) — 地址1
+Column: d_street_2 (VARCHAR(64)) — 地址2
+Column: d_city (VARCHAR(32)) — 城市
+Column: d_state (VARCHAR(16)) — 省份/州
+Column: d_zip (VARCHAR(16)) — 邮编",,,,,,,,,
+schema-item-overview,schema_rule,查看商品模型有哪些字段,schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0,item,"Table: askdb_tpcc.bmsql_item
+Description: 商品
+Column: i_id (INT) — 商品ID
+Column: i_name (VARCHAR(64)) — 商品名称
+Column: i_price (DECIMAL(10, 2)) — 商品单价
+Column: i_data (VARCHAR(128)) — 商品描述
+Column: i_im_id (INT) — 商品图片ID",,,,,,,,,
+schema-item-field,schema_rule,查询商品中的商品单价字段,schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0,item,"Table: askdb_tpcc.bmsql_item
+Description: 商品
+Column: i_id (INT) — 商品ID
+Column: i_name (VARCHAR(64)) — 商品名称
+Column: i_price (DECIMAL(10, 2)) — 商品单价
+Column: i_data (VARCHAR(128)) — 商品描述
+Column: i_im_id (INT) — 商品图片ID",,,,,,,,,
+schema-new_order-overview,schema_rule,查看待处理新订单模型有哪些字段,schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de,new_order,"Table: askdb_tpcc.bmsql_new_order
+Description: 待处理新订单
+Column: no_w_id (INT) — 仓库ID
+Column: no_d_id (INT) — 地区ID
+Column: no_o_id (INT) — 订单ID",,,,,,,,,
+schema-new_order-field,schema_rule,查询待处理新订单中的订单ID字段,schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de,new_order,"Table: askdb_tpcc.bmsql_new_order
+Description: 待处理新订单
+Column: no_w_id (INT) — 仓库ID
+Column: no_d_id (INT) — 地区ID
+Column: no_o_id (INT) — 订单ID",,,,,,,,,
+schema-order_line-overview,schema_rule,查看销售订单明细模型有哪些字段,schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b,order_line,"Table: askdb_tpcc.bmsql_order_line
+Description: 销售订单明细
+Column: ol_w_id (INT) — 仓库ID
+Column: ol_d_id (INT) — 地区ID
+Column: ol_o_id (INT) — 订单ID
+Column: ol_number (INT) — 订单行号
+Column: ol_i_id (INT) — 商品ID
+Column: ol_delivery_d (DATETIME) — 配送时间
+Column: ol_amount (DECIMAL(12, 2)) — 销售金额
+Column: ol_supply_w_id (INT) — 供货仓库ID
+Column: ol_quantity (INT) — 购买数量
+Column: ol_dist_info (VARCHAR(64)) — 配送信息",,,,,,,,,
+schema-order_line-field,schema_rule,查询销售订单明细中的销售金额字段,schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b,order_line,"Table: askdb_tpcc.bmsql_order_line
+Description: 销售订单明细
+Column: ol_w_id (INT) — 仓库ID
+Column: ol_d_id (INT) — 地区ID
+Column: ol_o_id (INT) — 订单ID
+Column: ol_number (INT) — 订单行号
+Column: ol_i_id (INT) — 商品ID
+Column: ol_delivery_d (DATETIME) — 配送时间
+Column: ol_amount (DECIMAL(12, 2)) — 销售金额
+Column: ol_supply_w_id (INT) — 供货仓库ID
+Column: ol_quantity (INT) — 购买数量
+Column: ol_dist_info (VARCHAR(64)) — 配送信息",,,,,,,,,
+schema-orders-overview,schema_rule,查看销售订单模型有哪些字段,schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b,orders,"Table: askdb_tpcc.bmsql_oorder
+Description: 销售订单
+Column: o_w_id (INT) — 仓库ID
+Column: o_d_id (INT) — 地区ID
+Column: o_id (INT) — 订单ID
+Column: o_c_id (INT) — 客户ID
+Column: o_carrier_id (INT) — 承运商ID
+Column: o_ol_cnt (INT) — 订单明细数量
+Column: o_all_local (TINYINT) — 是否全部本地供货
+Column: o_entry_d (DATETIME) — 下单时间",,,,,,,,,
+schema-orders-field,schema_rule,查询销售订单中的承运商ID字段,schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b,orders,"Table: askdb_tpcc.bmsql_oorder
+Description: 销售订单
+Column: o_w_id (INT) — 仓库ID
+Column: o_d_id (INT) — 地区ID
+Column: o_id (INT) — 订单ID
+Column: o_c_id (INT) — 客户ID
+Column: o_carrier_id (INT) — 承运商ID
+Column: o_ol_cnt (INT) — 订单明细数量
+Column: o_all_local (TINYINT) — 是否全部本地供货
+Column: o_entry_d (DATETIME) — 下单时间",,,,,,,,,
+schema-payment_history-overview,schema_rule,查看客户付款历史模型有哪些字段,schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79,payment_history,"Table: askdb_tpcc.bmsql_history
+Description: 客户付款历史
+Column: hist_id (BIGINT) — 历史记录ID
+Column: h_c_id (INT) — 客户ID
+Column: h_c_d_id (INT) — 客户地区ID
+Column: h_c_w_id (INT) — 客户仓库ID
+Column: h_d_id (INT) — 付款地区ID
+Column: h_w_id (INT) — 付款仓库ID
+Column: h_date (DATETIME) — 付款时间
+Column: h_amount (DECIMAL(12, 2)) — 付款金额
+Column: h_data (VARCHAR(64)) — 付款备注",,,,,,,,,
+schema-payment_history-field,schema_rule,查询客户付款历史中的付款金额字段,schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79,payment_history,"Table: askdb_tpcc.bmsql_history
+Description: 客户付款历史
+Column: hist_id (BIGINT) — 历史记录ID
+Column: h_c_id (INT) — 客户ID
+Column: h_c_d_id (INT) — 客户地区ID
+Column: h_c_w_id (INT) — 客户仓库ID
+Column: h_d_id (INT) — 付款地区ID
+Column: h_w_id (INT) — 付款仓库ID
+Column: h_date (DATETIME) — 付款时间
+Column: h_amount (DECIMAL(12, 2)) — 付款金额
+Column: h_data (VARCHAR(64)) — 付款备注",,,,,,,,,
+schema-stock-overview,schema_rule,查看仓库商品库存模型有哪些字段,schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7,stock,"Table: askdb_tpcc.bmsql_stock
+Description: 仓库商品库存
+Column: s_w_id (INT) — 仓库ID
+Column: s_i_id (INT) — 商品ID
+Column: s_quantity (INT) — 库存数量
+Column: s_ytd (INT) — 年度销售数量
+Column: s_order_cnt (INT) — 订单次数
+Column: s_remote_cnt (INT) — 跨仓订单次数
+Column: s_data (VARCHAR(128)) — 库存备注
+Column: s_dist_01 (VARCHAR(32)) — 商品1
+Column: s_dist_02 (VARCHAR(32))
+Column: s_dist_03 (VARCHAR(32))
+Column: s_dist_04 (VARCHAR(32))
+Column: s_dist_05 (VARCHAR(32))
+Column: s_dist_06 (VARCHAR(32))
+Column: s_dist_07 (VARCHAR(32))
+Column: s_dist_08 (VARCHAR(32))
+Column: s_dist_09 (VARCHAR(32))
+Column: s_dist_10 (VARCHAR(32))",,,,,,,,,
+schema-stock-field,schema_rule,查询仓库商品库存中的库存数量字段,schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7,stock,"Table: askdb_tpcc.bmsql_stock
+Description: 仓库商品库存
+Column: s_w_id (INT) — 仓库ID
+Column: s_i_id (INT) — 商品ID
+Column: s_quantity (INT) — 库存数量
+Column: s_ytd (INT) — 年度销售数量
+Column: s_order_cnt (INT) — 订单次数
+Column: s_remote_cnt (INT) — 跨仓订单次数
+Column: s_data (VARCHAR(128)) — 库存备注
+Column: s_dist_01 (VARCHAR(32)) — 商品1
+Column: s_dist_02 (VARCHAR(32))
+Column: s_dist_03 (VARCHAR(32))
+Column: s_dist_04 (VARCHAR(32))
+Column: s_dist_05 (VARCHAR(32))
+Column: s_dist_06 (VARCHAR(32))
+Column: s_dist_07 (VARCHAR(32))
+Column: s_dist_08 (VARCHAR(32))
+Column: s_dist_09 (VARCHAR(32))
+Column: s_dist_10 (VARCHAR(32))",,,,,,,,,
+schema-system_config-overview,schema_rule,查看TPC-C 测试配置模型有哪些字段,schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb,system_config,"Table: askdb_tpcc.bmsql_config
+Description: TPC-C 测试配置
+Column: cfg_name (VARCHAR(30)) — 配置项名称
+Column: cfg_value (VARCHAR(50)) — 配置项值",,,,,,,,,
+schema-system_config-field,schema_rule,查询TPC-C 测试配置中的配置项名称字段,schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb,system_config,"Table: askdb_tpcc.bmsql_config
+Description: TPC-C 测试配置
+Column: cfg_name (VARCHAR(30)) — 配置项名称
+Column: cfg_value (VARCHAR(50)) — 配置项值",,,,,,,,,
+schema-warehouse-overview,schema_rule,查看仓库/销售区域模型有哪些字段,schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc,warehouse,"Table: askdb_tpcc.bmsql_warehouse
+Description: 仓库/销售区域
+Column: w_id (INT) — 仓库ID
+Column: w_ytd (DECIMAL(14, 2)) — 年度累计销售额
+Column: w_tax (DECIMAL(6, 4)) — 税率
+Column: w_name (VARCHAR(32)) — 仓库/区域名称
+Column: w_street_1 (VARCHAR(64)) — 地址1
+Column: w_street_2 (VARCHAR(64)) — 地址2
+Column: w_city (VARCHAR(32)) — 城市
+Column: w_state (VARCHAR(16)) — 省份/州
+Column: w_zip (VARCHAR(16)) — 邮编",,,,,,,,,
+schema-warehouse-field,schema_rule,查询仓库/销售区域中的年度累计销售额字段,schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc,warehouse,"Table: askdb_tpcc.bmsql_warehouse
+Description: 仓库/销售区域
+Column: w_id (INT) — 仓库ID
+Column: w_ytd (DECIMAL(14, 2)) — 年度累计销售额
+Column: w_tax (DECIMAL(6, 4)) — 税率
+Column: w_name (VARCHAR(32)) — 仓库/区域名称
+Column: w_street_1 (VARCHAR(64)) — 地址1
+Column: w_street_2 (VARCHAR(64)) — 地址2
+Column: w_city (VARCHAR(32)) — 城市
+Column: w_state (VARCHAR(16)) — 省份/州
+Column: w_zip (VARCHAR(16)) — 邮编",,,,,,,,,
+no-match-01,no_match_or_isolation,火星陨坑直径分布,,,,,,,,,,,,
+no-match-02,no_match_or_isolation,黑洞引力波探测进展,,,,,,,,,,,,
+no-match-03,no_match_or_isolation,古典音乐和弦进行,,,,,,,,,,,,
+no-match-04,no_match_or_isolation,电影节摄影奖项列表,,,,,,,,,,,,
+no-match-05,no_match_or_isolation,Tomorrow rainfall probability in Osaka,,,,,,,,,,,,
+no-match-06,no_match_or_isolation,Hospital appointment queue by clinic,,,,,,,,,,,,
+no-match-07,no_match_or_isolation,Household electricity usage by hour,,,,,,,,,,,,
+no-match-08,no_match_or_isolation,Football league standings by club,,,,,,,,,,,,
+isolation-tpcc-order-count,no_match_or_isolation,统计销售订单数量,tpcc_actual_080,统计销售订单数量,SELECT COUNT(*) AS order_count FROM orders,synthetic:other_source:order_count,统计销售订单数量,SELECT COUNT(*) AS order_count FROM retail_orders,,,,,,
+isolation-control-order-count,no_match_or_isolation,统计销售订单数量,synthetic:other_source:order_count,统计销售订单数量,SELECT COUNT(*) AS order_count FROM retail_orders,tpcc_actual_080,统计销售订单数量,SELECT COUNT(*) AS order_count FROM orders,,,,,,

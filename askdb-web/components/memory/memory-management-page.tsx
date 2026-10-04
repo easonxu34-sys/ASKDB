@@ -325,7 +325,7 @@ function BusinessRuleCard({ candidate, user, isAdmin, sourceName, working, runAc
   const id = candidate.business_rule_id;
   const mine = candidate.submitted_by === user?.user_id;
   const transition = { expected_version: candidate.version };
-  return <article className="grid gap-4 rounded-xl border border-[#eae4da] bg-white/75 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:p-5">
+  return <article className="rounded-xl border border-[#eae4da] bg-white/75 p-4 sm:p-5">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2"><Badge>{sourceName}</Badge><StatusPair review={candidate.review_status} publication={candidate.publication_status} /></div>
       <h2 className="mt-3 font-serif text-lg leading-6 text-[#403c35]">{candidate.term || "规则内容已移除"}</h2>
@@ -336,25 +336,34 @@ function BusinessRuleCard({ candidate, user, isAdmin, sourceName, working, runAc
       <p className="mt-2 font-sans text-[10px] text-[#979084]">提交于 {new Date(candidate.created_at).toLocaleString("zh-CN")} · 到期 {new Date(candidate.expires_at).toLocaleDateString("zh-CN")}</p>
       {candidate.review_reason_code && <p className="mt-2 text-xs text-[#925841]">处理说明：{candidate.review_reason_code}</p>}
     </div>
-    <div className="flex flex-wrap content-start gap-2 sm:max-w-52 sm:justify-end">
-      {isAdmin && candidate.review_status === "pending" && <ActionButton busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "approve", transition), "审核已通过；还需要发布到新的 Wren 版本后才会生效。")}>审核通过</ActionButton>}
-      {isAdmin && candidate.review_status === "pending" && <div className="w-full">
-        <button type="button" className="text-xs text-[#a45f40] underline underline-offset-4" onClick={() => setAskingClarification((value) => !value)}>{askingClarification ? "取消补充请求" : "请求补充"}</button>
-        {askingClarification && <div className="mt-2 space-y-2 text-left">
-          <textarea aria-label="需要提交人补充的问题" value={clarificationQuestion} onChange={(event) => setClarificationQuestion(event.target.value)} rows={3} className="w-full rounded-lg border border-[#e3dbcf] bg-white p-2 text-xs leading-5 outline-none focus:border-[#c57650]" />
-          <ActionButton busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "clarification-request", { ...transition, question: clarificationQuestion.trim() }), "已请求提交人补充说明。")}>发送请求</ActionButton>
-        </div>}
+    <div className="mt-5 flex flex-col gap-4 border-t border-[#eee8de] pt-4 sm:flex-row sm:items-center sm:justify-between">
+      {mine && candidate.review_status === "pending" && <div className="flex shrink-0 flex-col items-start gap-1.5">
+        <span className="font-sans text-[10px] text-[#89847a]">提交人操作</span>
+        <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "withdraw", transition), "已撤回提交。")}>撤回</ActionButton>
       </div>}
-      {isAdmin && candidate.review_status === "pending" && <>
-        <select aria-label="拒绝原因" value={reason} onChange={(event) => setReason(event.target.value)} className="h-7 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-2 font-sans text-[10px] text-[#655e54] outline-none focus:border-[#c57650]">
-          <option value="ambiguous_definition">口径不清楚</option><option value="duplicate_term">已有同名规则</option><option value="unsupported_scope">适用范围不支持</option><option value="invalid_reference">引用无效</option><option value="conflicting_rule">与现有规则冲突</option><option value="other">其他</option>
-        </select>
-        <ActionButton variant="quiet" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "reject", { ...transition, reason_code: reason }), "已拒绝此业务规则。")}>拒绝</ActionButton>
-      </>}
-      {mine && candidate.review_status === "pending" && <ActionButton variant="quiet" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "withdraw", transition), "已撤回提交。")}>撤回</ActionButton>}
-      {isAdmin && candidate.review_status === "approved" && candidate.publication_status !== "active" && <ActionButton busy={working === id} onClick={() => runAction(id, () => publishRule(candidate), "发布任务已提交。")}>发布到 Wren</ActionButton>}
-      {isAdmin && candidate.publication_status === "active" && <ActionButton variant="quiet" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "revoke", { idempotency_key: makeActionKey() }), "已撤销；线上召回已立即停止，Wren 正在移除。")}>撤销生效内容</ActionButton>}
-      {mine && candidate.review_status === "needs_clarification" && <ClarificationForm candidate={candidate} runAction={runAction} working={working} />}
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
+          {isAdmin && candidate.review_status === "pending" && <button type="button" aria-expanded={askingClarification} aria-controls={`clarification-panel-${id}`} onClick={() => setAskingClarification((value) => !value)} className="inline-flex h-10 items-center rounded-lg px-3 font-sans text-xs font-medium text-[#a45f40] transition-colors hover:bg-[#fbf6f0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:ring-offset-2">
+            {askingClarification ? "取消补充请求" : "请求补充"}
+          </button>}
+          {isAdmin && candidate.review_status === "pending" && <>
+            <select aria-label="拒绝原因" value={reason} onChange={(event) => setReason(event.target.value)} className="h-10 min-w-36 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-3 font-sans text-xs text-[#655e54] outline-none transition-colors focus:border-[#c57650] focus:ring-2 focus:ring-[#c57650]/20">
+              <option value="ambiguous_definition">口径不清楚</option><option value="duplicate_term">已有同名规则</option><option value="unsupported_scope">适用范围不支持</option><option value="invalid_reference">引用无效</option><option value="conflicting_rule">与现有规则冲突</option><option value="other">其他</option>
+            </select>
+            <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "reject", { ...transition, reason_code: reason }), "已拒绝此业务规则。")}>拒绝</ActionButton>
+          </>}
+          {isAdmin && candidate.review_status === "pending" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "approve", transition), "审核已通过；还需要发布到新的 Wren 版本后才会生效。")}>审核通过</ActionButton>}
+          {isAdmin && candidate.review_status === "approved" && candidate.publication_status !== "active" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => publishRule(candidate), "发布任务已提交。")}>发布到 Wren</ActionButton>}
+          {isAdmin && candidate.publication_status === "active" && <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "revoke", { idempotency_key: makeActionKey() }), "已撤销；线上召回已立即停止，Wren 正在移除。")}>撤销生效内容</ActionButton>}
+          {mine && candidate.review_status === "needs_clarification" && <ClarificationForm candidate={candidate} runAction={runAction} working={working} />}
+        </div>
+        {isAdmin && candidate.review_status === "pending" && <div id={`clarification-panel-${id}`} hidden={!askingClarification} className="w-full sm:ml-auto sm:max-w-xl">
+          <textarea aria-label="需要提交人补充的问题" value={clarificationQuestion} onChange={(event) => setClarificationQuestion(event.target.value)} rows={3} className="w-full rounded-lg border border-[#e3dbcf] bg-white p-3 font-sans text-xs leading-5 outline-none transition-colors focus:border-[#c57650] focus:ring-2 focus:ring-[#c57650]/20" />
+          <div className="mt-2 flex justify-end">
+            <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "clarification-request", { ...transition, question: clarificationQuestion.trim() }), "已请求提交人补充说明。")}>发送请求</ActionButton>
+          </div>
+        </div>}
+      </div>
     </div>
   </article>;
 }
@@ -398,13 +407,14 @@ function PreparedRevisions({ revisions, sourceId, working, runAction }: {
   </section>;
 }
 
-function ActionButton({ children, onClick, busy, variant = "primary" }: {
+function ActionButton({ children, onClick, busy, variant = "primary", className }: {
   children: React.ReactNode;
   onClick: () => void;
   busy: boolean;
   variant?: "primary" | "quiet";
+  className?: string;
 }) {
-  return <Button type="button" size="sm" variant={variant === "quiet" ? "outline" : "default"} disabled={busy} onClick={onClick} className={variant === "primary" ? "bg-[#bd7551] text-white hover:bg-[#a96242]" : "border-[#e6ded2] bg-[#fbfaf7] text-[#655e54] hover:bg-[#f1eee7]"}>
+  return <Button type="button" size="sm" variant={variant === "quiet" ? "outline" : "default"} disabled={busy} onClick={onClick} className={`${variant === "primary" ? "bg-[#bd7551] text-white hover:bg-[#a96242]" : "border-[#e6ded2] bg-[#fbfaf7] text-[#655e54] hover:bg-[#f1eee7]"} ${className ?? ""}`}>
     {busy ? "处理中…" : children}
   </Button>;
 }

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "dataset_status": "draft_requires_review_and_scoring",
+  "dataset_status": "approved",
   "purpose": "offline lexical recall evaluation only; never load into application memory",
   "source": {
     "jdbc_url": "jdbc:mysql://localhost:3306/askdb_tpcc",
@@ -53,13 +53,13 @@
         "c_zip",
         "customer"
       ],
-      "body": "Table: askdb_tpcc.bmsql_customer\nDescription: 客户\nColumn: c_w_id (INT) — 仓库ID\nColumn: c_d_id (INT) — 地区ID\nColumn: c_id (INT) — [已脱敏记录标识]: c_discount (DECIMAL(6, 4)) — 客户折扣\nColumn: c_credit (CHAR(2)) — 信用类型\nColumn: c_last (VARCHAR(32)) — 姓\nColumn: c_first (VARCHAR(32)) — 名\nColumn: c_credit_lim (DECIMAL(14, 2)) — 信用额度\nColumn: c_balance (DECIMAL(14, 2)) — 账户余额\nColumn: c_ytd_payment (DECIMAL(14, 2)) — 年度付款额\nColumn: c_payment_cnt (INT) — 付款次数\nColumn: c_delivery_cnt (INT) — 收货次数\nColumn: c_street_1 (VARCHAR(64)) — 地址1\nColumn: c_street_2 (VARCHAR(64)) — 地址2\nColumn: c_city (VARCHAR(32)) — 城市\nColumn: c_state (VARCHAR(16)) — 省份/州\nColumn: c_zip (VARCHAR(16)) — 邮编\nColumn: c_phone (VARCHAR(32)) — 电话\nColumn: c_since (DATETIME) — 成为客户时间\nColumn: c_middle (CHAR(2)) — 中间名\nColumn: c_data (VARCHAR(255)) — 客户备注",
+      "body": "Table: askdb_tpcc.bmsql_customer\nDescription: 客户\nColumn: c_w_id (INT) — 仓库ID\nColumn: c_d_id (INT) — 地区ID\nColumn: c_id (INT) — 客户ID\nColumn: c_discount (DECIMAL(6, 4)) — 客户折扣\nColumn: c_credit (CHAR(2)) — 信用类型\nColumn: c_last (VARCHAR(32)) — 姓\nColumn: c_first (VARCHAR(32)) — 名\nColumn: c_credit_lim (DECIMAL(14, 2)) — 信用额度\nColumn: c_balance (DECIMAL(14, 2)) — 账户余额\nColumn: c_ytd_payment (DECIMAL(14, 2)) — 年度付款额\nColumn: c_payment_cnt (INT) — 付款次数\nColumn: c_delivery_cnt (INT) — 收货次数\nColumn: c_street_1 (VARCHAR(64)) — 地址1\nColumn: c_street_2 (VARCHAR(64)) — 地址2\nColumn: c_city (VARCHAR(32)) — 城市\nColumn: c_state (VARCHAR(16)) — 省份/州\nColumn: c_zip (VARCHAR(16)) — 邮编\nColumn: c_phone (VARCHAR(32)) — 电话\nColumn: c_since (DATETIME) — 成为客户时间\nColumn: c_middle (CHAR(2)) — 中间名\nColumn: c_data (VARCHAR(255)) — 客户备注",
       "connector_type": "mysql",
       "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
       "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
       "review_status": "active",
       "publication_status": "active",
-      "content_hash": "2b101ff0fb2ee0a27611d87ef172943b874601f3726a9b76eeb73968e3e3ecb1",
+      "content_hash": "d620b1bbdd70b9f2b1b67a92884e7e321f1878688c125696cecd84a05870ad52",
       "sql_template": null
     },
     {
@@ -82,13 +82,13 @@
         "d_zip",
         "district"
       ],
-      "body": "Table: askdb_tpcc.bmsql_district\nDescription: 仓库下属销售地区\nColumn: d_w_id (INT) — 所属仓库ID\nColumn: d_id (INT) — 地区ID\nColumn: d_ytd (DECIMAL(14, 2)) — 年度累计销售额\nColumn: d_tax (DECIMAL(6, 4)) — 税率\nColumn: d_next_o_id (INT) — 下一[已脱敏记录标识]: d_name (VARCHAR(32)) — 地区名称\nColumn: d_street_1 (VARCHAR(64)) — 地址1\nColumn: d_street_2 (VARCHAR(64)) — 地址2\nColumn: d_city (VARCHAR(32)) — 城市\nColumn: d_state (VARCHAR(16)) — 省份/州\nColumn: d_zip (VARCHAR(16)) — 邮编",
+      "body": "Table: askdb_tpcc.bmsql_district\nDescription: 仓库下属销售地区\nColumn: d_w_id (INT) — 所属仓库ID\nColumn: d_id (INT) — 地区ID\nColumn: d_ytd (DECIMAL(14, 2)) — 年度累计销售额\nColumn: d_tax (DECIMAL(6, 4)) — 税率\nColumn: d_next_o_id (INT) — 下一订单ID\nColumn: d_name (VARCHAR(32)) — 地区名称\nColumn: d_street_1 (VARCHAR(64)) — 地址1\nColumn: d_street_2 (VARCHAR(64)) — 地址2\nColumn: d_city (VARCHAR(32)) — 城市\nColumn: d_state (VARCHAR(16)) — 省份/州\nColumn: d_zip (VARCHAR(16)) — 邮编",
       "connector_type": "mysql",
       "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
       "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
       "review_status": "active",
       "publication_status": "active",
-      "content_hash": "40f35841555d18702745c17019806417e32e81cbfe16de801c4daedd8d867397",
+      "content_hash": "71bc336e9fdfaad482fc10a0998cb4185748a907d10ca42197fdf3741612e7cb",
       "sql_template": null
     },
     {
@@ -154,13 +154,13 @@
         "ol_w_id",
         "order_line"
       ],
-      "body": "Table: askdb_tpcc.bmsql_order_line\nDescription: 销售订单明细\nColumn: ol_w_id (INT) — 仓库ID\nColumn: ol_d_id (INT) — 地区ID\nColumn: ol_o_id (INT) — [已脱敏记录标识]: ol_number (INT) — 订单行号\nColumn: ol_i_id (INT) — 商品ID\nColumn: ol_delivery_d (DATETIME) — 配送时间\nColumn: ol_amount (DECIMAL(12, 2)) — 销售金额\nColumn: ol_supply_w_id (INT) — 供货仓库ID\nColumn: ol_quantity (INT) — 购买数量\nColumn: ol_dist_info (VARCHAR(64)) — 配送信息",
+      "body": "Table: askdb_tpcc.bmsql_order_line\nDescription: 销售订单明细\nColumn: ol_w_id (INT) — 仓库ID\nColumn: ol_d_id (INT) — 地区ID\nColumn: ol_o_id (INT) — 订单ID\nColumn: ol_number (INT) — 订单行号\nColumn: ol_i_id (INT) — 商品ID\nColumn: ol_delivery_d (DATETIME) — 配送时间\nColumn: ol_amount (DECIMAL(12, 2)) — 销售金额\nColumn: ol_supply_w_id (INT) — 供货仓库ID\nColumn: ol_quantity (INT) — 购买数量\nColumn: ol_dist_info (VARCHAR(64)) — 配送信息",
       "connector_type": "mysql",
       "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
       "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
       "review_status": "active",
       "publication_status": "active",
-      "content_hash": "070c3c77af49a661f77b20b5a7afb46dd0c97884766425d25a1b33c1dacf9d4d",
+      "content_hash": "099855bd44344dcb1d206c28beb3113d8617a1a617cc184eba7405d3051d38f3",
       "sql_template": null
     },
     {
@@ -180,13 +180,13 @@
         "o_w_id",
         "orders"
       ],
-      "body": "Table: askdb_tpcc.bmsql_oorder\nDescription: 销售订单\nColumn: o_w_id (INT) — 仓库ID\nColumn: o_d_id (INT) — 地区ID\nColumn: o_id (INT) — [已脱敏记录标识]: o_c_id (INT) — [已脱敏记录标识]: o_carrier_id (INT) — 承运商ID\nColumn: o_ol_cnt (INT) — 订单明细数量\nColumn: o_all_local (TINYINT) — 是否全部本地供货\nColumn: o_entry_d (DATETIME) — 下单时间",
+      "body": "Table: askdb_tpcc.bmsql_oorder\nDescription: 销售订单\nColumn: o_w_id (INT) — 仓库ID\nColumn: o_d_id (INT) — 地区ID\nColumn: o_id (INT) — 订单ID\nColumn: o_c_id (INT) — 客户ID\nColumn: o_carrier_id (INT) — 承运商ID\nColumn: o_ol_cnt (INT) — 订单明细数量\nColumn: o_all_local (TINYINT) — 是否全部本地供货\nColumn: o_entry_d (DATETIME) — 下单时间",
       "connector_type": "mysql",
       "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
       "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
       "review_status": "active",
       "publication_status": "active",
-      "content_hash": "1a94f5695db8fbe1a53abbd33668f73a684505770a9396d96040e8a2af365aff",
+      "content_hash": "e06fe4294e95740506decba89cb665b3feb4e997517fd3fad44a2cabbf664034",
       "sql_template": null
     },
     {
@@ -207,13 +207,13 @@
         "hist_id",
         "payment_history"
       ],
-      "body": "Table: askdb_tpcc.bmsql_history\nDescription: 客户付款历史\nColumn: hist_id (BIGINT) — 历史记录ID\nColumn: h_c_id (INT) — [已脱敏记录标识]: h_c_d_id (INT) — 客户地区ID\nColumn: h_c_w_id (INT) — 客户仓库ID\nColumn: h_d_id (INT) — 付款地区ID\nColumn: h_w_id (INT) — 付款仓库ID\nColumn: h_date (DATETIME) — 付款时间\nColumn: h_amount (DECIMAL(12, 2)) — 付款金额\nColumn: h_data (VARCHAR(64)) — 付款备注",
+      "body": "Table: askdb_tpcc.bmsql_history\nDescription: 客户付款历史\nColumn: hist_id (BIGINT) — 历史记录ID\nColumn: h_c_id (INT) — 客户ID\nColumn: h_c_d_id (INT) — 客户地区ID\nColumn: h_c_w_id (INT) — 客户仓库ID\nColumn: h_d_id (INT) — 付款地区ID\nColumn: h_w_id (INT) — 付款仓库ID\nColumn: h_date (DATETIME) — 付款时间\nColumn: h_amount (DECIMAL(12, 2)) — 付款金额\nColumn: h_data (VARCHAR(64)) — 付款备注",
       "connector_type": "mysql",
       "wren_revision_id": "offline:askdb_tpcc:compiled-mdl",
       "mdl_digest": "f0f088a1b3f4abb5c53a2d692b0b460b1fedd79c48b9b8756d9e9b26316da7a5",
       "review_status": "active",
       "publication_status": "active",
-      "content_hash": "8c0271e08f804d5a4895d1291231c1939ff96694f7e9bb1e1bae5c7d8a6bf55d",
+      "content_hash": "ab2f56653e7d2cc4aed4914978ca1013358a7b23fcb701085e04352331c23bd4",
       "sql_template": null
     },
     {
@@ -1557,5 +1557,67 @@
     "The 8 no-match prompts and 2 cross-source cases are draft prompts; the control-source document is synthetic.",
     "Offline data-source and revision IDs are placeholders and do not bind this fixture to any live runtime.",
     "No SQL was executed; no database connection was opened; this draft has not been scored."
-  ]
+  ],
+  "human_review": {
+    "status": "approved",
+    "required_case_count": 52,
+    "reviewed_case_count": 52,
+    "reviewed_case_ids": [
+      "query-tpcc_actual_001",
+      "query-tpcc_actual_006",
+      "query-tpcc_actual_014",
+      "query-tpcc_actual_022",
+      "query-tpcc_actual_089",
+      "query-tpcc_actual_030",
+      "query-tpcc_actual_038",
+      "query-tpcc_actual_047",
+      "query-tpcc_actual_048",
+      "query-tpcc_actual_058",
+      "query-tpcc_actual_066",
+      "query-tpcc_actual_090",
+      "query-tpcc_actual_076",
+      "query-tpcc_actual_078",
+      "query-tpcc_actual_080",
+      "query-tpcc_actual_085",
+      "query-tpcc_actual_086",
+      "query-tpcc_actual_087",
+      "query-tpcc_actual_088",
+      "query-tpcc_actual_091",
+      "query-tpcc_actual_092",
+      "query-tpcc_actual_093",
+      "schema-customer-overview",
+      "schema-customer-field",
+      "schema-district-overview",
+      "schema-district-field",
+      "schema-item-overview",
+      "schema-item-field",
+      "schema-new_order-overview",
+      "schema-new_order-field",
+      "schema-order_line-overview",
+      "schema-order_line-field",
+      "schema-orders-overview",
+      "schema-orders-field",
+      "schema-payment_history-overview",
+      "schema-payment_history-field",
+      "schema-stock-overview",
+      "schema-stock-field",
+      "schema-system_config-overview",
+      "schema-system_config-field",
+      "schema-warehouse-overview",
+      "schema-warehouse-field",
+      "no-match-01",
+      "no-match-02",
+      "no-match-03",
+      "no-match-04",
+      "no-match-05",
+      "no-match-06",
+      "no-match-07",
+      "no-match-08",
+      "isolation-tpcc-order-count",
+      "isolation-control-order-count"
+    ],
+    "reviewer": "用户在 Codex 对话中确认",
+    "reviewed_at": "2026-10-04",
+    "note": "用户已明确确认52题标签全部通过审核"
+  }
 }

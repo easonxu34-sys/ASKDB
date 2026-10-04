@@ -44,6 +44,26 @@ class ThreadDeletionConflict(ValueError):
     """The thread deletion impact changed or its confirmation expired."""
 
 
+class ThreadCursorStale(RuntimeError):
+    """A thread-list cursor no longer refers to the current owner snapshot."""
+
+
+class ThreadMetadataConflict(RuntimeError):
+    """A compare-and-swap thread metadata write used an older revision."""
+
+    def __init__(self, current: ConversationThread) -> None:
+        super().__init__("thread metadata revision changed")
+        self.current = current
+
+
+class ThreadStateConflict(RuntimeError):
+    """A thread no longer satisfies an archive, restore, or metadata transition."""
+
+    def __init__(self, current: ConversationThread) -> None:
+        super().__init__("thread state changed")
+        self.current = current
+
+
 class ThreadDeletionJournalRequired(RuntimeError):
     """Destructive memory changes are disabled without the durable journal."""
 
@@ -60,6 +80,27 @@ class ConversationThread:
     last_user_turn_at: datetime
     expires_at: datetime
     history_import_pending: bool = False
+    source_name: str | None = None
+    title: str | None = None
+    is_pinned: bool = False
+    archived_at: datetime | None = None
+    retention_paused: bool = False
+    retention_remaining_seconds: int | None = None
+    metadata_revision: int = 1
+    record_status: str = "active"
+
+
+@dataclass(frozen=True)
+class ThreadPage:
+    threads: tuple[ConversationThread, ...]
+    next_cursor: str | None
+    snapshot_revision: int
+
+
+@dataclass(frozen=True)
+class ThreadState:
+    thread_id: str
+    status: str
 
 
 @dataclass(frozen=True)

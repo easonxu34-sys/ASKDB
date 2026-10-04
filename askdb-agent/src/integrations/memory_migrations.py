@@ -719,6 +719,59 @@ def _query_example_thread_provenance(connection: sqlite3.Connection) -> None:
         )
 
 
+def _thread_metadata_and_archive_lifecycle(connection: sqlite3.Connection) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(agent_conversation_threads)"
+        )
+    }
+    additions = (
+        ("title", "TEXT"),
+        ("is_pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("archived_at", "TEXT"),
+        ("retention_remaining_seconds", "INTEGER"),
+        ("metadata_revision", "INTEGER NOT NULL DEFAULT 1"),
+    )
+    for name, declaration in additions:
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE agent_conversation_threads ADD COLUMN {name} {declaration}"
+            )
+
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS agent_thread_list_revisions (
+            owner_user_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0)
+        )"""
+    )
+    connection.execute(
+        """INSERT OR IGNORE INTO agent_thread_list_revisions(owner_user_id, revision)
+           SELECT DISTINCT owner_user_id, 1 FROM chat_thread_data_sources"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_agent_threads_archive_expiry
+           ON agent_conversation_threads(status, archived_at, expires_at)"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_chat_thread_owner_source
+           ON chat_thread_data_sources(owner_user_id, data_source_id, thread_id)"""
+    )
+    connection.execute(
+        """CREATE TRIGGER IF NOT EXISTS agent_thread_source_name_revision
+           AFTER UPDATE OF display_name ON wren_data_sources
+           WHEN OLD.display_name IS NOT NEW.display_name
+           BEGIN
+               UPDATE agent_thread_list_revisions
+               SET revision=revision+1
+               WHERE owner_user_id IN (
+                   SELECT DISTINCT owner_user_id FROM chat_thread_data_sources
+                   WHERE data_source_id=NEW.id
+               );
+           END"""
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("agent_memory_001_conversations", "conversation-v1", _conversation_schema),
     (
@@ -755,6 +808,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "agent_memory_008_query_example_thread_provenance",
         "query-example-thread-provenance-and-deletion-impact-v1",
         _query_example_thread_provenance,
+    ),
+    (
+        "agent_memory_009_thread_metadata_and_archive_lifecycle",
+        "thread-metadata-owner-list-revisions-and-paused-retention-v1",
+        _thread_metadata_and_archive_lifecycle,
     ),
 )
 

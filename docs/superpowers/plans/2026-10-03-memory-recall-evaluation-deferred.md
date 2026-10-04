@@ -3,25 +3,39 @@
 **Recorded:** 2026-10-03
 **Decision:** Deferred by the user until the memory system is fully assembled; the user plans to run end-to-end testing then. This work is postponed, not cancelled.
 
+**Update (2026-10-04):** The user resumed this work and asked to follow the
+listed order. The six descriptions are repaired, an offline loader/report
+command exists, and a draft diagnostic report has been generated. Human review
+was then explicitly confirmed for all 52 cases by the user; the accepted offline
+score is recorded separately below. Runtime readiness and the online recall gate
+remain separate.
+
+**Update (2026-10-04, later decision):** The user will assess recall quality
+themselves and does not want the offline gold score or runtime-ready environment
+flag to gate startup. With persistent memory and its journal enabled, online
+recall now defaults on; `ASKDB_AGENT_RECALL_ENABLED=0` is an explicit opt-out.
+This does not activate unpublished query examples or replace corpus binding,
+review, SQL validation, and publication.
+
 ## Deferred work
 
-1. Repair the six `[已脱敏记录标识]` fragments found in schema document bodies in `askdb_tpcc_recall_gold_draft.json`; regenerate or correct them from the compiled MDL and recheck the affected documents.
-2. Human-review all 52 cases and their expected/prohibited document IDs:
+1. **Complete:** repaired the six fragments by regenerating the ten MDL-backed model documents from `wren-project/target/mdl.json`; terms and content hashes were regenerated too.
+2. **Complete:** the user confirmed all 52 expected/prohibited label decisions on 2026-10-04 using `askdb_tpcc_recall_review_sheet.csv`:
    - 22 query-example cases: confirm the question, target example, SQL template, model/field names, and typed parameters agree.
    - 20 schema cases: confirm each question targets the marked model/field and the document text matches the compiled MDL.
    - 8 no-match cases: confirm no document in the target source should answer them.
    - 2 source-isolation cases: confirm the target-source document is expected and the other source's document is prohibited.
-3. Record each human decision, corrected labels, rationale, reviewer, and review date. The CSV's external `APPROVED` value is provenance, not acceptance of this recall gold set.
-4. Add a small offline JSON loader/report command around `evaluate_lexical_recall()`. The evaluator function exists, but there is no fixture-loading CLI in `askdb-agent/evals/memory/` yet.
-5. Run the offline recall score after review. The current release gate requires at least 20 `schema_rule`, 20 `query_example`, and 10 `no_match_or_isolation` cases; schema Hit@5 >= 80%; query-example Hit@3 >= 80%; and zero no-match false recalls and zero prohibited-document recalls.
+3. **Complete:** recorded approved decisions, rationale, reviewer provenance, review date, and the full reviewed case ID list in the fixture and worksheet. The CSV's original external `APPROVED` value remains provenance, not this review decision.
+4. **Complete:** added `evals/memory/run_recall_eval.py`, which loads JSON, validates counts/references/placeholders, and emits text or JSON with per-category metrics and per-case results.
+5. **Complete:** accepted evaluation report at `evals/memory/reports/2026-10-04-approved-recall-report.json`. The release gate requires at least 20 `schema_rule`, 20 `query_example`, and 10 `no_match_or_isolation` cases; schema Hit@5 >= 80%; query-example Hit@3 >= 80%; and zero no-match false recalls and zero prohibited-document recalls. The reviewed set meets these conditions.
 
 ## Scope and safety
 
 - This fixture remains an offline draft, not an application/Wren memory corpus. Keep its placeholder source/revision bindings self-consistent for offline scoring; do not treat scoring as corpus activation.
-- Recall acceptance and runtime readiness are separate gates. Do not set `ASKDB_AGENT_RECALL_GOLD_ACCEPTED=1` before human review and a passing score, or `ASKDB_AGENT_RECALL_RUNTIME_READY=1` before activation/recovery acceptance. Online Recall stays disabled until both gates and the memory/journal prerequisites are satisfied.
+- The offline gold score and runtime activation/recovery remain distinct evidence, but the user chose not to make either an environment-flag startup gate. Persistent-memory and deletion-journal prerequisites remain required.
 - This evaluation measures retrieval selection and source isolation. It does not establish that SQL returns correct rows. The fixture omits sample parameter values and result evidence; validating SQL results would require a separate, explicitly authorized read-only check or reviewer-provided evidence.
-- Resume this work when the user says the memory system is assembled and is ready for self-testing. First repair the draft and prepare a review sheet, then complete human sign-off, add/run the offline loader, and report the gate metrics before changing any runtime flags.
+- The reviewed offline gold score is complete but optional for startup. Online recall follows the persistent-memory master switch; active corpus binding, review, SQL validation, publication, and recovery behavior still govern which material can be recalled safely.
 
 ## Current status
 
-`askdb_tpcc_recall_gold_draft.json` remains `draft_requires_review_and_scoring`. No human approval or score has been recorded. See the [memory implementation progress ledger](2026-10-02-agent-memory-progress.md) for the rest of the project status.
+`askdb_tpcc_recall_gold_draft.json` records user-approved labels and a passing offline retrieval score, which remains optional for startup. Online recall defaults on when persistent memory and its journal are configured. See the [memory implementation progress ledger](2026-10-02-agent-memory-progress.md) for the rest of the project status.

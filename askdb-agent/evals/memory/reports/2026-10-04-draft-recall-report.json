@@ -1,0 +1,956 @@
+{
+  "report_version": 1,
+  "fixture": "askdb_tpcc_recall_gold_draft.json",
+  "dataset_status": "draft_requires_review_and_scoring",
+  "human_review_complete": false,
+  "total_questions": 52,
+  "document_count": 44,
+  "minimum_dataset_complete": true,
+  "metric_release_eligible": true,
+  "release_eligible": false,
+  "release_criteria": {
+    "minimum_cases": {
+      "schema_rule": 20,
+      "query_example": 20,
+      "no_match_or_isolation": 10
+    },
+    "schema_rule_hit_at_5_minimum": 0.8,
+    "query_example_hit_at_3_minimum": 0.8,
+    "no_match_false_recall_maximum": 0,
+    "prohibited_document_recall_maximum": 0,
+    "numeric_metrics_pass": true,
+    "all_cases_human_reviewed": false
+  },
+  "categories": [
+    {
+      "category": "schema_rule",
+      "question_count": 20,
+      "hit_at_k": 1.0,
+      "precision_at_k": 0.2,
+      "no_match_false_recall_count": 0,
+      "prohibited_recall_count": 0
+    },
+    {
+      "category": "query_example",
+      "question_count": 22,
+      "hit_at_k": 1.0,
+      "precision_at_k": 0.3333333333333333,
+      "no_match_false_recall_count": 0,
+      "prohibited_recall_count": 0
+    },
+    {
+      "category": "no_match_or_isolation",
+      "question_count": 10,
+      "hit_at_k": 1.0,
+      "precision_at_k": 0.2,
+      "no_match_false_recall_count": 0,
+      "prohibited_recall_count": 0
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "query-tpcc_actual_001",
+      "category": "query_example",
+      "query": "查询指定仓库的名称、城市、省份、年度累计销售额和税率",
+      "expected_document_ids": [
+        "tpcc_actual_001"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_001",
+        "tpcc_actual_006",
+        "tpcc_actual_048"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_001"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_006",
+      "category": "query_example",
+      "query": "查询指定仓库、指定地区的名称、年度销售额、税率和下一订单编号",
+      "expected_document_ids": [
+        "tpcc_actual_006"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_006",
+        "tpcc_actual_001",
+        "tpcc_actual_048"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_006"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_014",
+      "category": "query_example",
+      "query": "查询指定客户的姓名、信用类型、账户余额、付款次数和成为客户时间",
+      "expected_document_ids": [
+        "tpcc_actual_014"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_014",
+        "tpcc_actual_078",
+        "tpcc_actual_091"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_014"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_022",
+      "category": "query_example",
+      "query": "查询指定商品的名称和单价",
+      "expected_document_ids": [
+        "tpcc_actual_022"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_022",
+        "tpcc_actual_089",
+        "tpcc_actual_048"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_022"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_089",
+      "category": "query_example",
+      "query": "查询指定商品的名称和价格",
+      "expected_document_ids": [
+        "tpcc_actual_089"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_089",
+        "tpcc_actual_022",
+        "tpcc_actual_048"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_089"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_030",
+      "category": "query_example",
+      "query": "查询指定订单的客户、承运商、明细数量和下单时间",
+      "expected_document_ids": [
+        "tpcc_actual_030"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_030",
+        "tpcc_actual_038",
+        "tpcc_actual_047"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_030"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_038",
+      "category": "query_example",
+      "query": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "expected_document_ids": [
+        "tpcc_actual_038"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_038",
+        "tpcc_actual_047",
+        "tpcc_actual_030"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_038"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_047",
+      "category": "query_example",
+      "query": "查询指定订单的指定明细行的商品、销售金额、购买数量和配送时间",
+      "expected_document_ids": [
+        "tpcc_actual_047"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_038",
+        "tpcc_actual_047",
+        "tpcc_actual_030"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_047"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_048",
+      "category": "query_example",
+      "query": "查询指定仓库的指定商品的库存数量、年度销售数量、订单次数和跨仓次数",
+      "expected_document_ids": [
+        "tpcc_actual_048"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_048",
+        "tpcc_actual_093",
+        "tpcc_actual_001"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_048"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_058",
+      "category": "query_example",
+      "query": "查询指定付款历史的客户、付款时间、金额和备注",
+      "expected_document_ids": [
+        "tpcc_actual_058"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_058",
+        "tpcc_actual_014",
+        "tpcc_actual_030"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_058"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_066",
+      "category": "query_example",
+      "query": "查询指定待处理新订单",
+      "expected_document_ids": [
+        "tpcc_actual_066"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_066",
+        "tpcc_actual_092",
+        "tpcc_actual_093"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_066"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_090",
+      "category": "query_example",
+      "query": "查询当前 TPC-C 配置项",
+      "expected_document_ids": [
+        "tpcc_actual_090"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_090",
+        "tpcc_actual_066",
+        "tpcc_actual_022"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_090"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_076",
+      "category": "query_example",
+      "query": "统计仓库数量",
+      "expected_document_ids": [
+        "tpcc_actual_076"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_076",
+        "tpcc_actual_080",
+        "tpcc_actual_078"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_076"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_078",
+      "category": "query_example",
+      "query": "按信用类型统计客户数量",
+      "expected_document_ids": [
+        "tpcc_actual_078"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_078",
+        "tpcc_actual_014",
+        "tpcc_actual_076"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_078"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_080",
+      "category": "query_example",
+      "query": "统计销售订单数量",
+      "expected_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_080",
+        "tpcc_actual_088",
+        "tpcc_actual_076"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_085",
+      "category": "query_example",
+      "query": "查询指定日期最近创建的 8 个订单",
+      "expected_document_ids": [
+        "tpcc_actual_085"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_085",
+        "tpcc_actual_086",
+        "tpcc_actual_087"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_085"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_086",
+      "category": "query_example",
+      "query": "查询销售金额最高的 8 条订单明细",
+      "expected_document_ids": [
+        "tpcc_actual_086"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_086",
+        "tpcc_actual_038",
+        "tpcc_actual_047"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_086"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_087",
+      "category": "query_example",
+      "query": "查询库存数量最低的 8 条库存记录",
+      "expected_document_ids": [
+        "tpcc_actual_087"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_087",
+        "tpcc_actual_093",
+        "tpcc_actual_048"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_087"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_088",
+      "category": "query_example",
+      "query": "统计承运商为空的订单数量",
+      "expected_document_ids": [
+        "tpcc_actual_088"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_088",
+        "tpcc_actual_080",
+        "tpcc_actual_030"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_088"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_091",
+      "category": "query_example",
+      "query": "查询指定客户的所属地区名称",
+      "expected_document_ids": [
+        "tpcc_actual_091"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_091",
+        "tpcc_actual_014",
+        "tpcc_actual_006"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_091"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_092",
+      "category": "query_example",
+      "query": "查询指定订单对应的客户姓名",
+      "expected_document_ids": [
+        "tpcc_actual_092"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_092",
+        "tpcc_actual_030",
+        "tpcc_actual_014"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_092"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "query-tpcc_actual_093",
+      "category": "query_example",
+      "query": "查询指定订单明细的库存数量",
+      "expected_document_ids": [
+        "tpcc_actual_093"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_093",
+        "tpcc_actual_048",
+        "tpcc_actual_087"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_093"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-customer-overview",
+      "category": "schema_rule",
+      "query": "查看客户模型有哪些字段",
+      "expected_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "returned_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-customer-field",
+      "category": "schema_rule",
+      "query": "查询客户中的信用类型字段",
+      "expected_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "returned_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-district-overview",
+      "category": "schema_rule",
+      "query": "查看仓库下属销售地区模型有哪些字段",
+      "expected_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "returned_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "matched_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-district-field",
+      "category": "schema_rule",
+      "query": "查询仓库下属销售地区中的税率字段",
+      "expected_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "returned_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "matched_document_ids": [
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-item-overview",
+      "category": "schema_rule",
+      "query": "查看商品模型有哪些字段",
+      "expected_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "returned_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "matched_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-item-field",
+      "category": "schema_rule",
+      "query": "查询商品中的商品单价字段",
+      "expected_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "returned_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "matched_document_ids": [
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-new_order-overview",
+      "category": "schema_rule",
+      "query": "查看待处理新订单模型有哪些字段",
+      "expected_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "returned_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de",
+        "schema:60753e74f79d2986690ff1a2f27d2fc6aeaf69371717ae770cf91f30e9d2cc91",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "matched_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-new_order-field",
+      "category": "schema_rule",
+      "query": "查询待处理新订单中的订单ID字段",
+      "expected_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "returned_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "matched_document_ids": [
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-order_line-overview",
+      "category": "schema_rule",
+      "query": "查看销售订单明细模型有哪些字段",
+      "expected_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "returned_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "matched_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-order_line-field",
+      "category": "schema_rule",
+      "query": "查询销售订单明细中的销售金额字段",
+      "expected_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "returned_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "matched_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-orders-overview",
+      "category": "schema_rule",
+      "query": "查看销售订单模型有哪些字段",
+      "expected_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "returned_document_ids": [
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "matched_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-orders-field",
+      "category": "schema_rule",
+      "query": "查询销售订单中的承运商ID字段",
+      "expected_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "returned_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "matched_document_ids": [
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-payment_history-overview",
+      "category": "schema_rule",
+      "query": "查看客户付款历史模型有哪些字段",
+      "expected_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "returned_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-payment_history-field",
+      "category": "schema_rule",
+      "query": "查询客户付款历史中的付款金额字段",
+      "expected_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "returned_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-stock-overview",
+      "category": "schema_rule",
+      "query": "查看仓库商品库存模型有哪些字段",
+      "expected_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "returned_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:2359f80646aa10e69b7c657ef0419197b9d16476f1b199d3b0e5e59ef4e6c5de"
+      ],
+      "matched_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-stock-field",
+      "category": "schema_rule",
+      "query": "查询仓库商品库存中的库存数量字段",
+      "expected_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "returned_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "matched_document_ids": [
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-system_config-overview",
+      "category": "schema_rule",
+      "query": "查看TPC-C 测试配置模型有哪些字段",
+      "expected_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "returned_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb",
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-system_config-field",
+      "category": "schema_rule",
+      "query": "查询TPC-C 测试配置中的配置项名称字段",
+      "expected_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "returned_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb",
+        "schema:214e23e9026fc310e2670334a0320cef806fe2cf8786e48f3d241c2c478f3223",
+        "schema:1991e5c51e7fa045ed9a399c24f27a8304171360c0ebb0c2da0d757b3f80ec79",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:6a5da50c88d5e3d44c0dbe037d93362f38718d6c4c071dc475fd3a5aa67615c0"
+      ],
+      "matched_document_ids": [
+        "schema:8a9df71c5eb83d709f2c48a3cbbff9fffaeafd9e917a6b16ce4a5b57abbea8bb"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-warehouse-overview",
+      "category": "schema_rule",
+      "query": "查看仓库/销售区域模型有哪些字段",
+      "expected_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "returned_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7"
+      ],
+      "matched_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "schema-warehouse-field",
+      "category": "schema_rule",
+      "query": "查询仓库/销售区域中的年度累计销售额字段",
+      "expected_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "returned_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc",
+        "schema:976aef57af8bf6106344270ceabafe95fd0e1aaa7d69f663f7ecec84cad377c4",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b",
+        "schema:e4d6c738c9705a8c9b2d5f0489c442c62574aabc6b016866bd283d9b127e31d7",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b"
+      ],
+      "matched_document_ids": [
+        "schema:6b8fe44b9505c89227e6c27efde76350472b002241d6c31615b31a47cc8a63bc"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-01",
+      "category": "no_match_or_isolation",
+      "query": "火星陨坑直径分布",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-02",
+      "category": "no_match_or_isolation",
+      "query": "黑洞引力波探测进展",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-03",
+      "category": "no_match_or_isolation",
+      "query": "古典音乐和弦进行",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-04",
+      "category": "no_match_or_isolation",
+      "query": "电影节摄影奖项列表",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-05",
+      "category": "no_match_or_isolation",
+      "query": "Tomorrow rainfall probability in Osaka",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-06",
+      "category": "no_match_or_isolation",
+      "query": "Hospital appointment queue by clinic",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-07",
+      "category": "no_match_or_isolation",
+      "query": "Household electricity usage by hour",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "no-match-08",
+      "category": "no_match_or_isolation",
+      "query": "Football league standings by club",
+      "expected_document_ids": [],
+      "returned_document_ids": [],
+      "matched_document_ids": [],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "isolation-tpcc-order-count",
+      "category": "no_match_or_isolation",
+      "query": "统计销售订单数量",
+      "expected_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "returned_document_ids": [
+        "tpcc_actual_080",
+        "tpcc_actual_088",
+        "tpcc_actual_076",
+        "schema:b2acac66e85ede2166b5aafd91c50c69a598312f77d12c1e72b903f41fe7419b",
+        "schema:f03f333cc7f286fe8161af5f48988a13dc0e43a22c85667885d20287b926507b"
+      ],
+      "matched_document_ids": [
+        "tpcc_actual_080"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    },
+    {
+      "case_id": "isolation-control-order-count",
+      "category": "no_match_or_isolation",
+      "query": "统计销售订单数量",
+      "expected_document_ids": [
+        "synthetic:other_source:order_count"
+      ],
+      "returned_document_ids": [
+        "synthetic:other_source:order_count"
+      ],
+      "matched_document_ids": [
+        "synthetic:other_source:order_count"
+      ],
+      "prohibited_document_ids_returned": [],
+      "pass": true
+    }
+  ],
+  "notes": [
+    "Offline retrieval selection and source-isolation metrics only; this does not verify SQL result correctness.",
+    "A draft or unreviewed fixture can never be release_eligible, even when its retrieval metrics pass."
+  ]
+}

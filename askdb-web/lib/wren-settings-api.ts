@@ -53,6 +53,7 @@ type SafePath = {
     | "create"
     | "detail"
     | "revision"
+    | "runtimeStatus"
     | "operation"
     | "schema"
     | "test"
@@ -101,6 +102,12 @@ function resolvePath(segments: string[], method: string): SafePath | null {
   const id = encodeURIComponent(segments[1]);
   if (segments.length === 2 && (method === "GET" || method === "PUT")) {
     return { path: `/v1/settings/wren/data-sources/${id}`, kind: "detail" };
+  }
+  if (segments.length === 3 && segments[2] === "runtime-status" && method === "GET") {
+    return {
+      path: `/v1/settings/wren/data-sources/${id}/runtime-status`,
+      kind: "runtimeStatus",
+    };
   }
   if (
     segments.length === 4 &&
@@ -429,6 +436,76 @@ function safeOperation(value: unknown): Record<string, unknown> | null {
   };
 }
 
+const runtimeReasonCodes = new Set([
+  "SOURCE_DISABLED",
+  "NO_ACTIVE_REVISION",
+  "SOURCE_RUNTIME_NOT_READY",
+  "ACTIVE_REVISION_NOT_READY",
+  "NO_ACTIVE_RULES",
+  "ONLINE_RECALL_DISABLED",
+  "RECALL_DISABLED",
+]);
+
+function safeRuntimeStatus(value: unknown): Record<string, unknown> | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "data_source_id",
+      "source_enabled",
+      "source_runtime_status",
+      "active_revision_id",
+      "active_revision_status",
+      "active_revision_ready",
+      "semantic_rules",
+      "online_recall",
+    ]) ||
+    typeof value.data_source_id !== "string" ||
+    typeof value.source_enabled !== "boolean" ||
+    typeof value.source_runtime_status !== "string" ||
+    !(typeof value.active_revision_id === "string" || value.active_revision_id === null) ||
+    !(typeof value.active_revision_status === "string" || value.active_revision_status === null) ||
+    typeof value.active_revision_ready !== "boolean" ||
+    !isRecord(value.semantic_rules) ||
+    !hasOnlyKeys(value.semantic_rules, [
+      "configured_count",
+      "available_to_query_gate",
+      "reason_codes",
+    ]) ||
+    !Number.isSafeInteger(value.semantic_rules.configured_count) ||
+    Number(value.semantic_rules.configured_count) < 0 ||
+    typeof value.semantic_rules.available_to_query_gate !== "boolean" ||
+    !Array.isArray(value.semantic_rules.reason_codes) ||
+    !value.semantic_rules.reason_codes.every(
+      (code) => typeof code === "string" && runtimeReasonCodes.has(code),
+    ) ||
+    !isRecord(value.online_recall) ||
+    !hasOnlyKeys(value.online_recall, ["enabled", "reason_codes"]) ||
+    typeof value.online_recall.enabled !== "boolean" ||
+    !Array.isArray(value.online_recall.reason_codes) ||
+    !value.online_recall.reason_codes.every(
+      (code) => typeof code === "string" && runtimeReasonCodes.has(code),
+    )
+  )
+    return null;
+  return {
+    data_source_id: value.data_source_id,
+    source_enabled: value.source_enabled,
+    source_runtime_status: value.source_runtime_status,
+    active_revision_id: value.active_revision_id,
+    active_revision_status: value.active_revision_status,
+    active_revision_ready: value.active_revision_ready,
+    semantic_rules: {
+      configured_count: value.semantic_rules.configured_count,
+      available_to_query_gate: value.semantic_rules.available_to_query_gate,
+      reason_codes: value.semantic_rules.reason_codes,
+    },
+    online_recall: {
+      enabled: value.online_recall.enabled,
+      reason_codes: value.online_recall.reason_codes,
+    },
+  };
+}
+
 function isSensitiveFieldName(key: string): boolean {
   const normalized = key.toLowerCase();
   if (normalized.endsWith("_type")) return false;
@@ -693,6 +770,7 @@ function safePayload(value: unknown, kind: SafePath["kind"]): unknown | null {
   }
   if (kind === "detail" || kind === "create") return safeDetail(value);
   if (kind === "revision") return safeRevisionDetail(value);
+  if (kind === "runtimeStatus") return safeRuntimeStatus(value);
   if (kind === "operation") return safeOperation(value);
   if (kind === "test") {
     return isRecord(value) && value.ok === true

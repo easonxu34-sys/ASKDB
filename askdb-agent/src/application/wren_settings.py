@@ -500,6 +500,68 @@ class WrenSettingsApplication:
     def detail(self, source_id: str) -> dict[str, Any]:
         return self.store.source_detail(source_id)
 
+    def runtime_diagnostics(
+        self, source_id: str, *, memory_recall_enabled: bool
+    ) -> dict[str, Any]:
+        """Report which active Wren rules can enter the live query context."""
+        source = self.store.get_data_source(source_id)
+        revision = (
+            self.store.get_revision(source_id, source.active_revision_id)
+            if source.active_revision_id
+            else None
+        )
+        configured_rules = revision.config.get("rules", []) if revision else []
+        rule_count = 0
+        if isinstance(configured_rules, list):
+            for rule in configured_rules:
+                content = rule.get("content") if isinstance(rule, dict) else rule
+                if isinstance(content, str) and content.strip():
+                    rule_count += 1
+
+        active_revision_ready = bool(
+            source.enabled
+            and source.runtime_status == "ready"
+            and revision is not None
+            and revision.status == "active"
+            and revision.project_dir
+            and revision.profile_name
+        )
+        rule_reasons: list[str] = []
+        if not source.enabled:
+            rule_reasons.append("SOURCE_DISABLED")
+        if not source.active_revision_id:
+            rule_reasons.append("NO_ACTIVE_REVISION")
+        elif source.runtime_status != "ready":
+            rule_reasons.append("SOURCE_RUNTIME_NOT_READY")
+        if revision is not None and (
+            revision.status != "active"
+            or not revision.project_dir
+            or not revision.profile_name
+        ):
+            rule_reasons.append("ACTIVE_REVISION_NOT_READY")
+        if rule_count == 0:
+            rule_reasons.append("NO_ACTIVE_RULES")
+        if not memory_recall_enabled:
+            rule_reasons.append("ONLINE_RECALL_DISABLED")
+
+        return {
+            "data_source_id": source.id,
+            "source_enabled": source.enabled,
+            "source_runtime_status": source.runtime_status,
+            "active_revision_id": source.active_revision_id,
+            "active_revision_status": revision.status if revision else None,
+            "active_revision_ready": active_revision_ready,
+            "semantic_rules": {
+                "configured_count": rule_count,
+                "available_to_query_gate": not rule_reasons,
+                "reason_codes": rule_reasons,
+            },
+            "online_recall": {
+                "enabled": memory_recall_enabled,
+                "reason_codes": [] if memory_recall_enabled else ["RECALL_DISABLED"],
+            },
+        }
+
     def revision_detail(self, source_id: str, revision_id: str) -> dict[str, Any]:
         source = self.store.get_data_source(source_id)
         revision = self.store.get_revision(source_id, revision_id)

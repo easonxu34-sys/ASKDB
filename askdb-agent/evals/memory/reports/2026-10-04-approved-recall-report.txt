@@ -1,0 +1,14 @@
+Recall evaluation: askdb_tpcc_recall_gold_draft.json
+Dataset: approved | questions: 52 | documents: 44
+Review complete: True | minimum sample counts met: True
+Metric gate: True | release eligible: True
+
+Category metrics:
+- schema_rule: n=20, Hit@k=1.0, Precision@k=0.2, false_no_match=0, prohibited=0
+- query_example: n=22, Hit@k=1.0, Precision@k=0.3333333333333333, false_no_match=0, prohibited=0
+- no_match_or_isolation: n=10, Hit@k=1.0, Precision@k=0.2, false_no_match=0, prohibited=0
+
+Failed cases: 0
+
+Offline retrieval selection and source-isolation metrics only; this does not verify SQL result correctness.
+A draft or unreviewed fixture can never be release_eligible, even when its retrieval metrics pass.
