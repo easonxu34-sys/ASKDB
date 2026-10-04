@@ -55,21 +55,27 @@ Check the Docker build context excludes `.git`, local `.env` files, Python virtu
 - Create: `.dockerignore`
 - Create: `.env.docker.example`
 - Modify: `.gitignore`
+- Modify: `askdb-web/lib/agent-proxy.ts`
+- Create: `askdb-web/tests/agent-proxy.test.mjs`
 
 **Interfaces:**
 - `agent` serves `/healthz` on internal port `8000` and mounts named volume `agent_data` at `/app/data`.
-- `web` points `ASKDB_AGENT_URL` to `http://agent:8000`, publishes only `127.0.0.1:3000:3000`, and waits for Agent health.
+- `web` points `ASKDB_AGENT_URL` to `http://agent:8000`, sets `ASKDB_AGENT_INTERNAL_HTTP_HOSTS=agent`, publishes only `127.0.0.1:3000:3000`, and waits for Agent health.
 - `tunnel` runs cloudflared with the user's named tunnel token; the Cloudflare published route targets `http://web:3000`. No service opens an inbound host port except the local Web inspection port.
 
-- [ ] **Step 1: Define locked-in runtime paths**
+- [ ] **Step 1: Add a fail-closed internal HTTP host allowlist**
+
+Keep current loopback HTTP behavior. Parse `ASKDB_AGENT_INTERNAL_HTTP_HOSTS` as a comma-separated set of exact, case-insensitive hostnames; allow non-loopback HTTP only when the parsed set contains the exact hostname. Empty/unset configuration still rejects every non-loopback HTTP URL. Credentials and unsupported schemes remain rejected. Add Node tests for default rejection, explicit exact-host acceptance, rejection of a hostname suffix/lookalike, loopback compatibility, and URL credential rejection. Run only `node --test tests/agent-proxy.test.mjs` from `askdb-web/` for this focused behavior.
+
+- [ ] **Step 2: Define locked-in runtime paths**
 
 Set `ASKDB_SETTINGS_DB_PATH=/app/data/model-settings.sqlite3`, `ASKDB_WREN_DATA_DIR=/app/data/wren`, and `WREN_HOME=/app/data/wren-home` in the Agent container. Do not set `WREN_PROJECT_DIR` by default: a non-empty value triggers legacy-project migration and fails when the ignored `target/mdl.json` artifact is absent. New data sources use the existing Web onboarding flow and persistent Wren data directory.
 
-- [ ] **Step 2: Add Compose health checks and service dependencies**
+- [ ] **Step 3: Add Compose health checks and service dependencies**
 
 Probe Agent `/healthz` with Python's standard library and Web `/` with Node's built-in `fetch`. Start Web after Agent is healthy and tunnel after Web is healthy. Do not add an Agent `ports` mapping.
 
-- [ ] **Step 3: Add environment template and ignore rule**
+- [ ] **Step 4: Add environment template and ignore rule**
 
 Document `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ASKDB_MODEL`, `ASKDB_SETTINGS_ENCRYPTION_KEY`, `CLOUDFLARE_TUNNEL_TOKEN`, and `CLOUDFLARE_TUNNEL_HOSTNAME` in `.env.docker.example`; leave secret values blank. Ignore `.env.docker` and add an explicit ignore exception for the checked-in example.
 

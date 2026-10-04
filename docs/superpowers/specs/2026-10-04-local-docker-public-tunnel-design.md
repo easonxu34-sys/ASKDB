@@ -18,6 +18,8 @@ Compose 包含三个服务：
 
 浏览器请求始终进入 Web 的同源 API 路由。Agent API、Wren CLI、SQLite 和数据源凭证都留在 Compose 网络/本地持久卷，不直接映射到公网。
 
+Web 的 Agent URL 校验继续拒绝默认配置下的非 loopback HTTP。仅当部署显式设置 `ASKDB_AGENT_INTERNAL_HTTP_HOSTS` 后，列表中的精确主机名才允许使用 HTTP；Compose 将该值固定为 `agent`，且 Agent 端口不发布到宿主机。空值保持现有 fail-closed 行为。该白名单只放宽 Web 到 Agent 的容器网络传输，不改变公网入口、Agent 监听和端口发布边界。
+
 ## 持久化与密钥
 
 - Agent 的 `/app/data` 使用 Compose 命名卷，保存 SQLite 账号/模型设置、加密记忆、Wren 配置和 Wren 数据源修订。
@@ -56,4 +58,4 @@ Compose 包含三个服务：
 - 本方案是在本地运行应用、经 Cloudflare 命名隧道公开 Web 的测试部署。它依赖 Cloudflare 账号、Cloudflare DNS 中的域名、隧道 Token 和已发布路由。
 - Docker daemon 必须由操作者先启动；当前机器上的 Docker CLI 检测到 daemon 未运行，因而镜像构建和实际公网联通只能在 daemon 可用后验证。
 - 真实问数需要有效模型服务、Wren 数据源配置、已构建的语义模型和数据库只读权限；容器化本身不代表真实数据链路已验收。
-- 不修改 Agent/Web 的业务 API 或认证逻辑；不把 Agent 端口、数据库端口或 Wren MCP 暴露到公网。
+- 不修改 Agent/Web 的业务 API 或认证逻辑；只为 Compose 内网连接增加精确 Agent 主机名的传输白名单；不把 Agent 端口、数据库端口或 Wren MCP 暴露到公网。
