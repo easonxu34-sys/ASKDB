@@ -12,10 +12,10 @@ remain separate.
 
 **Update (2026-10-04, later decision):** The user will assess recall quality
 themselves and does not want the offline gold score or runtime-ready environment
-flag to gate startup. With persistent memory and its journal enabled, online
-recall now defaults on; `ASKDB_AGENT_RECALL_ENABLED=0` is an explicit opt-out.
-This does not activate unpublished query examples or replace corpus binding,
-review, SQL validation, and publication.
+flag to gate startup. Persistent memory and online recall now start by default;
+the Agent creates a stable journal key on first startup. `ASKDB_AGENT_RECALL_ENABLED=0`
+is an explicit recall opt-out. This does not activate unpublished query examples
+or replace corpus binding, review, SQL validation, and publication.
 
 ## Deferred work
 
@@ -32,9 +32,9 @@ review, SQL validation, and publication.
 ## Scope and safety
 
 - This fixture remains an offline draft, not an application/Wren memory corpus. Keep its placeholder source/revision bindings self-consistent for offline scoring; do not treat scoring as corpus activation.
-- The offline gold score and runtime activation/recovery remain distinct evidence, but the user chose not to make either an environment-flag startup gate. Persistent-memory and deletion-journal prerequisites remain required.
+- The offline gold score and runtime activation/recovery remain distinct evidence, but the user chose not to make either an environment-flag startup gate. The Agent now creates persistent journal storage automatically when it is absent.
 - This evaluation measures retrieval selection and source isolation. It does not establish that SQL returns correct rows. The fixture omits sample parameter values and result evidence; validating SQL results would require a separate, explicitly authorized read-only check or reviewer-provided evidence.
-- The reviewed offline gold score is complete but optional for startup. Online recall follows the persistent-memory master switch; active corpus binding, review, SQL validation, publication, and recovery behavior still govern which material can be recalled safely.
+- The reviewed offline gold score is complete but optional for startup. Memory and recall default to on; active corpus binding, review, SQL validation, publication, and recovery behavior still govern which material can be recalled safely.
 
 ## Current status
 

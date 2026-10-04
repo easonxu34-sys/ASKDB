@@ -145,5 +145,6 @@
 
 - 2026-10-04 user decision on recall defaults:
   - The user will assess recall quality themselves; the offline gold evaluator is not a prerequisite for enabling recall.
-  - Startup no longer requires `ASKDB_AGENT_RECALL_GOLD_ACCEPTED` or `ASKDB_AGENT_RECALL_RUNTIME_READY`. With persistent memory enabled and its journal configured, recall is enabled by default; `ASKDB_AGENT_RECALL_ENABLED=0` remains an explicit opt-out.
-  - Persistent-memory journal validation, corpus activation/publication flow, and the existing runtime safety checks remain in place. Removing the environment gates does not itself activate an unpublished query corpus.
+  - Startup no longer requires `ASKDB_AGENT_RECALL_GOLD_ACCEPTED`, `ASKDB_AGENT_RECALL_RUNTIME_READY`, or `ASKDB_AGENT_MEMORY_ENABLED`. Memory and recall now start by default; `ASKDB_AGENT_RECALL_ENABLED=0` remains an explicit opt-out.
+  - If no journal key is supplied, Agent atomically creates and persists a Fernet key with mode `0600` under the default journal directory. Existing configured journal path/key values remain supported. Corpus activation/publication and runtime safety checks remain in place; enabling recall does not itself activate an unpublished query corpus.
+  - Migrated the current local journal key from `askdb-agent/.env` to `askdb-agent/data/agent-memory/deletion-journal.key` before removing redundant local enable/path/key settings, preserving access to its existing journal.

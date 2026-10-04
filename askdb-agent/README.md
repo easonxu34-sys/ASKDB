@@ -29,15 +29,11 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 开发环境可将密钥写入本机 `.env`；生产环境不要把密钥写进仓库镜像或 SQLite 卷。默认数据库路径为 `./data/model-settings.sqlite3`，实际默认位置在 Agent 包目录下的 `data/model-settings.sqlite3`；可通过 `ASKDB_SETTINGS_DB_PATH` 指定持久化卷。Agent 会限制新建数据目录为 `0700`、数据库文件为 `0600`。备份时同时保护 SQLite 文件和 Fernet 密钥；只有数据库密文而没有原密钥无法恢复 API Key。
 
-### 启用持久会话记忆
+### 持久会话记忆与在线召回
 
-持久会话记忆默认关闭。要在本机启用，在 `.env` 中配置 `ASKDB_AGENT_MEMORY_ENABLED=1`、`ASKDB_MEMORY_JOURNAL_PATH` 和稳定的 `ASKDB_MEMORY_JOURNAL_KEY`；journal 目录必须与设置数据库目录、语料目录分开。可将语料目录指定为 `ASKDB_AGENT_MEMORY_CORPUS_DIR`。开发环境可生成一把 Fernet 密钥并保存到本机 `.env`：
+持久会话记忆和在线召回默认启动，无需设置启用开关。首次启动时，Agent 在设置数据库旁创建独立的 `data/agent-memory/` 目录，自动生成并以 `0600` 权限保存稳定的 Fernet journal 密钥，同时创建加密删除 journal。journal 与设置数据库及默认语料目录分开；启动时会先执行迁移、journal 校验、恢复和过期清理，再接受会话请求。
 
-```bash
-python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-```
-
-示例路径：`ASKDB_MEMORY_JOURNAL_PATH=./data/agent-memory/deletion-journal.jsonl`，`ASKDB_AGENT_MEMORY_CORPUS_DIR=./data/agent-memory-corpus`。从 Agent 项目目录启动时，这两个目录会分别与默认设置数据库目录隔离。密钥必须跨重启保留；丢失或更换密钥会使已加密的 journal 无法恢复。配置完成后重启 Agent，启动会先运行迁移、journal 校验、恢复和过期清理，再接受会话请求。
+必须把 `data/agent-memory/` 放在持久卷中，并与设置数据库一起备份。密钥丢失或更换会使已加密的 journal 无法恢复。在线召回只使用已绑定并激活的语料；gold 评测与 runtime-ready 环境变量不再是启动门槛。若需关闭在线召回，可设置 `ASKDB_AGENT_RECALL_ENABLED=0`。也可通过 `ASKDB_MEMORY_JOURNAL_PATH`、`ASKDB_MEMORY_JOURNAL_KEY` 或 `ASKDB_AGENT_MEMORY_CORPUS_DIR` 覆盖默认存储位置/密钥，生产环境建议从部署密钥管理器注入稳定密钥。已有部署若曾使用 `ASKDB_MEMORY_JOURNAL_KEY`，迁移到自动生成的本地 key 文件前，必须先把原密钥安全迁移到 `data/agent-memory/deletion-journal.key`，或继续由密钥管理器提供原密钥；不要让新生成的密钥替换现有 journal 的密钥。
 
 如果尚无 SQLite 模型记录但没有配置 Fernet 密钥，现有 `.env` 模型仍可用于聊天，设置 API 会返回 `MODEL_SETTINGS_UNAVAILABLE`。数据库已有加密设置而密钥缺失或不匹配时，Agent 会失败关闭，不回退到 `.env` 模型。
 

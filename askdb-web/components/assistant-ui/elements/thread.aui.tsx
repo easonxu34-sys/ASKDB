@@ -434,7 +434,7 @@ const DataSourceSelection: FC<{
         <div className="flex min-h-7 flex-wrap items-center gap-2 px-1 font-sans">
           <span role="status" className="min-w-0 text-[11px] text-[#89847a]">
             {catalog.migration_status === "failed"
-              ? "旧 Wren 配置导入失败；原配置仍保留，请检查 Agent 设置。"
+              ? "旧配置导入失败；原配置仍保留，请检查 Agent 设置。"
               : "配置并应用一个 MySQL 数据源后即可开始查询。"}
           </span>
           <a

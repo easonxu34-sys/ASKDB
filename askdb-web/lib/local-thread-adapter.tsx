@@ -22,6 +22,7 @@ import {
   ThreadApiError,
   type ThreadMetadata,
 } from "@/lib/thread-api";
+import { getThreadGroupPageState } from "@/lib/thread-grouping.mjs";
 
 const THREADS_KEY = (userId: string) => `askdb:user:${encodeURIComponent(userId)}:chat:threads`;
 const THREAD_CACHE_VERSION_KEY = (userId: string) =>
@@ -82,6 +83,7 @@ const threadSearchQueries = new Map<string, string>();
 const loadedRecentIdsByUser = new Map<string, Set<string>>();
 const recentThreadPageStates = new Map<string, { query: string; hasMore: boolean }>();
 const cacheVersionCheckedByUser = new Set<string>();
+const recentGroupByUser = new Map<string, string>();
 
 export function setThreadSearchQuery(userId: string, query: string) {
   threadSearchQueries.set(userId, query);
@@ -258,7 +260,13 @@ export function saveServerThreadMetadata(userId: string, metadata: ThreadMetadat
   window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
 }
 
-function toRemoteThread(thread: StoredThread) {
+function toRemoteThread(
+  thread: StoredThread,
+  groupState: { showHeading: boolean; showDivider: boolean } = {
+    showHeading: false,
+    showDivider: false,
+  },
+) {
   return {
     remoteId: thread.remoteId,
     status: thread.status,
@@ -274,6 +282,8 @@ function toRemoteThread(thread: StoredThread) {
       retentionRemainingSeconds: thread.retentionRemainingSeconds,
       metadataRevision: thread.metadataRevision,
       historyImportPending: thread.historyImportPending === true,
+      showDataSourceHeading: groupState.showHeading,
+      showDataSourceDivider: groupState.showDivider,
     },
   };
 }
@@ -1159,7 +1169,10 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
   async list(params?: { after?: string }) {
     initializeThreadCache(userId);
     const query = threadSearchQuery(userId).trim();
-    if (!params?.after) publishRecentThreadPageState(userId, query, false);
+    if (!params?.after) {
+      recentGroupByUser.delete(userId);
+      publishRecentThreadPageState(userId, query, false);
+    }
     let page: Awaited<ReturnType<typeof fetchThreadPage>>;
     try {
       page = await fetchThreadPage({
@@ -1196,6 +1209,12 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
     const serverThreads = page.threads.map((metadata) =>
       storedThreadFromMetadata(metadata, cachedById.get(metadata.thread_id)),
     );
+    const groupStates = getThreadGroupPageState(
+      page.threads,
+      params?.after ? recentGroupByUser.get(userId) : undefined,
+    );
+    const lastGroupState = groupStates.at(-1);
+    if (lastGroupState) recentGroupByUser.set(userId, lastGroupState.groupKey);
     const mergedById = new Map(cachedThreads.map((thread) => [thread.remoteId, thread]));
     for (const thread of serverThreads) mergedById.set(thread.remoteId, thread);
     writeThreads(userId, [...mergedById.values()]);
@@ -1211,7 +1230,12 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
     }
     window.dispatchEvent(new Event("askdb:thread-metadata-updated"));
     return {
-      threads: serverThreads.map(toRemoteThread),
+      threads: serverThreads.map((thread, index) =>
+        toRemoteThread(thread, {
+          showHeading: groupStates[index]?.showHeading === true,
+          showDivider: groupStates[index]?.showDivider === true,
+        }),
+      ),
       ...(page.next_cursor ? { nextCursor: page.next_cursor } : {}),
     };
   },

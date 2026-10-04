@@ -81,12 +81,94 @@ class EncryptedDeletionJournal:
         self._journal_id: str | None = None
 
     @classmethod
-    def from_environment(cls) -> EncryptedDeletionJournal:
-        path = os.environ.get("ASKDB_MEMORY_JOURNAL_PATH", "").strip()
+    def from_environment(
+        cls, *, settings_database_path: Path, corpus_path: Path | None = None
+    ) -> EncryptedDeletionJournal:
+        settings_database_path = settings_database_path.expanduser().resolve()
+        configured_path = os.environ.get("ASKDB_MEMORY_JOURNAL_PATH", "").strip()
+        path = (
+            Path(configured_path).expanduser().resolve()
+            if configured_path
+            else settings_database_path.parent
+            / "agent-memory"
+            / "deletion-journal.jsonl"
+        )
+        journal_root = path.parent
+        if path == settings_database_path or journal_root == settings_database_path.parent:
+            raise DeletionJournalUnavailable(
+                "journal must use a separate directory from the settings database"
+            )
+        if corpus_path is not None:
+            corpus_root = corpus_path.expanduser().resolve()
+            if (
+                journal_root == corpus_root
+                or journal_root.is_relative_to(corpus_root)
+                or corpus_root.is_relative_to(journal_root)
+            ):
+                raise DeletionJournalUnavailable(
+                    "journal and query corpus must use separate directories"
+                )
         key = os.environ.get("ASKDB_MEMORY_JOURNAL_KEY", "").strip()
-        if not path or not key:
-            raise DeletionJournalUnavailable("journal is not configured")
-        return cls(Path(path), key)
+        if not key:
+            key = cls._load_or_create_key(path.with_name("deletion-journal.key"))
+        return cls(path, key)
+
+    @staticmethod
+    def _load_or_create_key(path: Path) -> str:
+        path = Path(os.path.abspath(path.expanduser()))
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_path = path.with_name(path.name + ".lock")
+        lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.fchmod(lock_descriptor, 0o600)
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            if path.exists():
+                try:
+                    if path.is_symlink():
+                        raise DeletionJournalUnavailable(
+                            "journal key file must not be a symbolic link"
+                        )
+                    os.chmod(path, 0o600)
+                    return path.read_text(encoding="ascii").strip()
+                except (OSError, UnicodeError) as exc:
+                    raise DeletionJournalUnavailable(
+                        "journal key file is unavailable"
+                    ) from exc
+
+            key = Fernet.generate_key()
+            temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                descriptor = os.open(
+                    temporary_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    with os.fdopen(descriptor, "wb", closefd=False) as key_file:
+                        key_file.write(key)
+                        key_file.flush()
+                        os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.replace(temporary_path, path)
+                os.chmod(path, 0o600)
+            finally:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+            directory_descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            return key.decode("ascii")
+        except OSError as exc:
+            raise DeletionJournalUnavailable(
+                "journal key could not be loaded or persisted"
+            ) from exc
+        finally:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            os.close(lock_descriptor)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:

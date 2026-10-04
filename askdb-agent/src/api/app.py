@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -49,66 +49,6 @@ from application.query_memory import QueryMemoryApplication
 from integrations.query_memory_store import QueryMemoryStore
 
 
-def _persisted_memory_requires_runtime(database_path: Any) -> bool:
-    if not database_path.exists():
-        return False
-    connection = sqlite3.connect(database_path)
-    try:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
-        if "agent_memory_journal_state" in tables:
-            state_columns = {
-                row[1]
-                for row in connection.execute(
-                    "PRAGMA table_info(agent_memory_journal_state)"
-                )
-            }
-            if "journal_initialized" in state_columns:
-                state = connection.execute(
-                    "SELECT journal_initialized FROM agent_memory_journal_state WHERE id=1"
-                ).fetchone()
-                if state and state[0]:
-                    return True
-        if "agent_conversation_threads" in tables:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM agent_conversation_threads"
-            ).fetchone()[0]
-            if count > 0:
-                return True
-        if "business_rule_candidates" in tables:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM business_rule_candidates"
-            ).fetchone()[0]
-            if count > 0:
-                return True
-        if "business_rule_origins" in tables:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM business_rule_origins WHERE publication_status IN ('active','removal_pending')"
-            ).fetchone()[0]
-            if count > 0:
-                return True
-        if "query_example_candidates" in tables:
-            count = connection.execute(
-                """SELECT COUNT(*) FROM query_example_candidates
-                   WHERE review_status IN ('pending','approved','needs_revalidation')
-                      OR publication_status='active'"""
-            ).fetchone()[0]
-            if count > 0:
-                return True
-        if "query_corpus_revisions" in tables:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM query_corpus_revisions WHERE status IN ('prepared','active')"
-            ).fetchone()[0]
-            return count > 0
-        return False
-    finally:
-        connection.close()
-
-
 def create_app(
     runtime: Any | None = None,
     *,
@@ -127,25 +67,25 @@ def create_app(
         try:
             await asyncio.to_thread(store.list_data_sources)
             await wren_settings.initialize()
-            memory_enabled = os.environ.get("ASKDB_AGENT_MEMORY_ENABLED", "0").strip() == "1"
+            # Persistent memory starts by default; only recall has an opt-out.
+            memory_enabled = True
             recall_setting = os.environ.get("ASKDB_AGENT_RECALL_ENABLED")
             recall_requested = recall_setting is None or recall_setting.strip() == "1"
-            recall_enabled = recall_requested and memory_enabled
-            if recall_setting is not None and recall_setting.strip() == "1" and not memory_enabled:
-                raise RuntimeError(
-                    "online recall requires ASKDB_AGENT_MEMORY_ENABLED and its journal"
-                )
-            app.state.memory_recall_enabled = recall_enabled
-            memory_required = await asyncio.to_thread(
-                _persisted_memory_requires_runtime, store.database_path.resolve()
-            )
-            if memory_required and not memory_enabled:
-                raise RuntimeError(
-                    "persisted agent memory requires ASKDB_AGENT_MEMORY_ENABLED and its journal"
-                )
+            app.state.memory_recall_enabled = recall_requested
             if memory_enabled:
-                journal = EncryptedDeletionJournal.from_environment()
                 database_path = store.database_path.resolve()
+                corpus_setting = os.environ.get(
+                    "ASKDB_AGENT_MEMORY_CORPUS_DIR", ""
+                ).strip()
+                corpus_path = (
+                    Path(corpus_setting).expanduser().resolve()
+                    if corpus_setting
+                    else database_path.parent / "agent-memory-corpus"
+                )
+                journal = EncryptedDeletionJournal.from_environment(
+                    settings_database_path=database_path,
+                    corpus_path=corpus_path,
+                )
                 if journal.path == database_path or journal.path.parent == database_path.parent:
                     raise RuntimeError(
                         "memory journal must use a separate directory from the settings database"
@@ -255,10 +195,6 @@ def create_app(
                     ),
                     name="askdb-agent-memory-sweeper",
                 )
-            else:
-                wren_settings.attach_query_memory_store(None)
-                await wren_settings.recover_source_operations()
-                await wren_settings.prune_expired_wren_revisions()
             revision_retention_task = asyncio.create_task(
                 wren_settings.run_revision_retention_sweeper(),
                 name="askdb-wren-revision-retention",

@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArchiveIcon,
+  ChevronDownIcon,
   DatabaseIcon,
   LogOutIcon,
   MessageSquareIcon,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/local-thread-adapter";
 import type { AuthUser } from "@/lib/auth-api";
 import { archiveThread, patchThreadMetadata, ThreadApiError } from "@/lib/thread-api";
+import { getThreadGroupKey } from "@/lib/thread-grouping.mjs";
 import { ThreadDeleteConfirmationDialog } from "@/components/threads/thread-delete-confirmation-dialog";
 
 type ThreadListSidebarProps = {
@@ -50,7 +52,12 @@ type PendingThreadDelete = {
   resolve?: (deleted: boolean) => void;
 };
 
-export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: ThreadListSidebarProps) => {
+export const ThreadListSidebar = ({
+  mobileOpen,
+  onNavigate,
+  user,
+  onLogout,
+}: ThreadListSidebarProps) => {
   const aui = useAui();
   const [search, setSearch] = useState("");
   const [threadPageState, setThreadPageState] = useState(() => ({
@@ -59,6 +66,7 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
   }));
   const [sourceCatalog, setSourceCatalog] = useState<DataSourceCatalog | null>(null);
   const [threadNotice, setThreadNotice] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [, setSourceRevision] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<PendingThreadDelete | null>(null);
   const deleteTargetRef = useRef<PendingThreadDelete | null>(null);
@@ -89,8 +97,12 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
         if (active) setSourceCatalog(null);
       }
     };
-    const reloadSourcesAndThreads = () => { void loadSources(true); };
-    const reloadThreads = () => { void aui.threads.reload(); };
+    const reloadSourcesAndThreads = () => {
+      void loadSources(true);
+    };
+    const reloadThreads = () => {
+      void aui.threads.reload();
+    };
     const refreshLocalBindings = () => setSourceRevision((revision) => revision + 1);
     void loadSources();
     window.addEventListener("askdb:data-source-catalog-updated", reloadSourcesAndThreads);
@@ -119,11 +131,13 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
 
   useEffect(() => {
     const updatePageState = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        userId?: unknown;
-        query?: unknown;
-        hasMore?: unknown;
-      }>).detail;
+      const detail = (
+        event as CustomEvent<{
+          userId?: unknown;
+          query?: unknown;
+          hasMore?: unknown;
+        }>
+      ).detail;
       if (
         detail?.userId === user.user_id &&
         detail.query === search.trim() &&
@@ -150,7 +164,8 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
         typeof detail.threadId !== "string" ||
         typeof detail.originalId !== "string" ||
         typeof detail.resolve !== "function"
-      ) return;
+      )
+        return;
       customEvent.preventDefault();
       deleteTargetRef.current?.resolve?.(false);
       const target = {
@@ -187,8 +202,6 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
     deleteTargetRef.current = null;
     setDeleteTarget(null);
   }
-
-  let lastRenderedGroup: string | undefined;
 
   return (
     <aside
@@ -232,11 +245,22 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
         />
       </label>
       {threadNotice && (
-        <div role="status" className="mx-3 mb-2 rounded-lg border border-[#ead6b6] bg-[#fff8e9] px-3 py-2 text-[11px] leading-5 text-[#765b36]">
+        <div
+          role="status"
+          className="mx-3 mb-2 rounded-lg border border-[#ead6b6] bg-[#fff8e9] px-3 py-2 text-[11px] leading-5 text-[#765b36]"
+        >
           <div className="flex items-start gap-2">
             <p className="min-w-0 flex-1">{threadNotice}</p>
-            <button type="button" onClick={() => void aui.threads.reload()} className="shrink-0 underline underline-offset-2">刷新</button>
-            <button type="button" aria-label="关闭会话提示" onClick={() => setThreadNotice("")}>×</button>
+            <button
+              type="button"
+              onClick={() => void aui.threads.reload()}
+              className="shrink-0 underline underline-offset-2"
+            >
+              刷新
+            </button>
+            <button type="button" aria-label="关闭会话提示" onClick={() => setThreadNotice("")}>
+              ×
+            </button>
           </div>
         </div>
       )}
@@ -247,17 +271,37 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
               const remoteId = threadListItem.remoteId;
               const metadata = remoteId ? getCachedThread(user.user_id, remoteId) : undefined;
               const sourceId = metadata?.dataSourceId ?? "";
-              const sourceName = metadata?.dataSourceNameSnapshot ?? "未命名数据源";
-              const groupKey = `${sourceId}\u0000${sourceName}`;
-              const previous = lastRenderedGroup;
-              lastRenderedGroup = groupKey;
+              const sourceName = metadata?.dataSourceNameSnapshot?.trim() || "未命名数据源";
+              const groupKey = getThreadGroupKey(sourceId, sourceName);
+              const custom = (
+                threadListItem as typeof threadListItem & {
+                  custom?: {
+                    showDataSourceHeading?: boolean;
+                    showDataSourceDivider?: boolean;
+                  };
+                }
+              ).custom;
+              const groupCollapsed = collapsedGroups.has(groupKey);
+              const showGroupHeading = custom?.showDataSourceHeading ?? false;
+              const showGroupDivider = custom?.showDataSourceDivider ?? false;
               return (
                 <ThreadListItem
                   key={threadListItem.id}
                   user={user}
                   remoteId={remoteId}
-                  showGroupHeading={groupKey !== previous}
+                  showGroupHeading={showGroupHeading}
+                  showGroupDivider={showGroupDivider}
                   groupSourceName={sourceName}
+                  groupCollapsed={groupCollapsed}
+                  renderThread={!groupCollapsed}
+                  onToggleGroup={() => {
+                    setCollapsedGroups((groups) => {
+                      const next = new Set(groups);
+                      if (next.has(groupKey)) next.delete(groupKey);
+                      else next.add(groupKey);
+                      return next;
+                    });
+                  }}
                   sourceCatalog={sourceCatalog}
                   onNavigate={onNavigate}
                   onError={setThreadNotice}
@@ -287,7 +331,9 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
               <Settings2Icon className="size-3.5" aria-hidden="true" />
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-[10px] text-[#89847a]">{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</span>
+              <span className="block truncate text-[10px] text-[#89847a]">
+                {user.username} · {user.role === "admin" ? "管理员" : "普通用户"}
+              </span>
             </span>
           </Link>
           <button
@@ -304,7 +350,9 @@ export const ThreadListSidebar = ({ mobileOpen, onNavigate, user, onLogout }: Th
       <ThreadDeleteConfirmationDialog
         open={Boolean(deleteTarget)}
         threadId={deleteTarget?.threadId ?? null}
-        onOpenChange={(open) => { if (!open) finishDelete(false); }}
+        onOpenChange={(open) => {
+          if (!open) finishDelete(false);
+        }}
         onDeleted={(threadId) => finishDelete(true, threadId)}
       />
     </aside>
@@ -315,7 +363,11 @@ const ThreadListItem = ({
   user,
   remoteId,
   showGroupHeading,
+  showGroupDivider,
   groupSourceName,
+  groupCollapsed,
+  renderThread,
+  onToggleGroup,
   sourceCatalog,
   onNavigate,
   onError,
@@ -324,7 +376,11 @@ const ThreadListItem = ({
   user: AuthUser;
   remoteId?: string;
   showGroupHeading: boolean;
+  showGroupDivider: boolean;
   groupSourceName: string;
+  groupCollapsed: boolean;
+  renderThread: boolean;
+  onToggleGroup: () => void;
   sourceCatalog: DataSourceCatalog | null;
   onNavigate: () => void;
   onError: (message: string) => void;
@@ -345,9 +401,10 @@ const ThreadListItem = ({
   const expiresDate = expiresAt ? new Date(expiresAt) : null;
   const metadata = remoteId ? getCachedThread(user.user_id, remoteId) : undefined;
   const isPinned = metadata?.isPinned === true;
-  const expiryLabel = expiresDate && !Number.isNaN(expiresDate.getTime())
-    ? `到期 ${expiresDate.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}`
-    : null;
+  const expiryLabel =
+    expiresDate && !Number.isNaN(expiresDate.getTime())
+      ? `到期 ${expiresDate.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}`
+      : null;
 
   async function pinThread() {
     if (!remoteId || !metadata?.metadataRevision) return;
@@ -403,88 +460,110 @@ const ThreadListItem = ({
     }
   }
 
+  if (!showGroupHeading && !renderThread) return null;
+
   return (
     <div>
       {showGroupHeading && (
-        <div className="px-3 pb-1 pt-3 text-[10px] font-medium tracking-wide text-[#8b8377]">
-          {groupSourceName}
+        <div
+          className={`mx-1 ${showGroupDivider ? "mt-2 border-t border-[#e3ded4] pt-2" : "pt-1"}`}
+        >
+          <button
+            type="button"
+            aria-expanded={!groupCollapsed}
+            aria-label={`${groupSourceName}，${groupCollapsed ? "展开" : "收起"}`}
+            onClick={onToggleGroup}
+            className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[11px] font-medium text-[#777166] transition-colors hover:bg-[#e9e5dc] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
+          >
+            <DatabaseIcon className="size-3.5 shrink-0 text-[#9a9183]" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">{groupSourceName}</span>
+            <ChevronDownIcon
+              className={`size-3.5 shrink-0 text-[#938b7f] transition-transform ${groupCollapsed ? "-rotate-90" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
         </div>
       )}
-      <ThreadListItemPrimitive.Root className="group flex min-w-0 items-center rounded-lg transition-colors hover:bg-[#e9e5dc] data-[active]:bg-[#e7e1d6]">
-        <ThreadListItemPrimitive.Trigger
-          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-[#69645b] hover:text-[#393630] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none data-[active]:font-medium data-[active]:text-[#393630]"
-          onClick={onNavigate}
-        >
-          <MessageSquareIcon
-            className="size-3.5 shrink-0 text-[#a29b8e] group-data-[active]:text-[#b76d4b]"
-            aria-hidden="true"
-          />
-          <span className="min-w-0 flex-1 truncate">
-            <ThreadListItemPrimitive.Title fallback="新对话" />
-          </span>
-          {isPinned && <PinIcon className="size-3 shrink-0 text-[#b76d4b]" aria-label="已置顶" />}
-          {importPending && (
-            <span title="打开会话后自动续传旧记录" className="shrink-0 rounded-full bg-[#fff0d7] px-1.5 py-0.5 text-[9px] font-normal text-[#855b22]">
-              导入待续传
-            </span>
-          )}
-          {sourceId && unavailable && (
-            <span
-              title={`${sourceName ?? "数据源"} · 当前不可用`}
-              className="shrink-0 rounded-full bg-[#f8e9e4] px-1.5 py-0.5 text-[9px] font-normal text-[#9c4037]"
-            >
-              不可用
-            </span>
-          )}
-          {expiryLabel && expiresDate && (
-            <span
-              title={`会话将于 ${expiresDate.toLocaleString("zh-CN")} 到期`}
-              className="shrink-0 text-[9px] font-normal text-[#9b6651]"
-            >
-              {expiryLabel}
-            </span>
-          )}
-        </ThreadListItemPrimitive.Trigger>
-        <ThreadListItemMorePrimitive.Root sharedFocusGroup>
-          <ThreadListItemMorePrimitive.Trigger
-            aria-label="会话操作"
-            title="会话操作"
-            className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-[#89847a] opacity-0 transition-opacity hover:bg-[#ddd6ca] hover:text-[#514b42] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none group-hover:opacity-100 group-has-focus-visible:opacity-100 data-[state=open]:opacity-100"
+      {renderThread && (
+        <ThreadListItemPrimitive.Root className="group flex min-w-0 items-center rounded-lg transition-colors hover:bg-[#e9e5dc] data-[active]:bg-[#e7e1d6]">
+          <ThreadListItemPrimitive.Trigger
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2.5 pl-5 pr-2.5 text-left text-[13px] text-[#69645b] hover:text-[#393630] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none data-[active]:font-medium data-[active]:text-[#393630]"
+            onClick={onNavigate}
           >
-            <MoreHorizontalIcon className="size-4" aria-hidden="true" />
-          </ThreadListItemMorePrimitive.Trigger>
-          <ThreadListItemMorePrimitive.Content className="z-50 min-w-40 rounded-xl border border-[#e5ded3] bg-[#fbfaf7] p-1.5 text-[#514b42] shadow-lg">
-            <ThreadListItemMorePrimitive.Item
-              disabled={busy || !metadata?.metadataRevision}
-              onSelect={() => void pinThread()}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs outline-none hover:bg-[#eee9e0] focus:bg-[#eee9e0] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+            <MessageSquareIcon
+              className="size-3.5 shrink-0 text-[#a29b8e] group-data-[active]:text-[#b76d4b]"
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 truncate">
+              <ThreadListItemPrimitive.Title fallback="新对话" />
+            </span>
+            {isPinned && <PinIcon className="size-3 shrink-0 text-[#b76d4b]" aria-label="已置顶" />}
+            {importPending && (
+              <span
+                title="打开会话后自动续传旧记录"
+                className="shrink-0 rounded-full bg-[#fff0d7] px-1.5 py-0.5 text-[9px] font-normal text-[#855b22]"
+              >
+                导入待续传
+              </span>
+            )}
+            {sourceId && unavailable && (
+              <span
+                title={`${sourceName ?? "数据源"} · 当前不可用`}
+                className="shrink-0 rounded-full bg-[#f8e9e4] px-1.5 py-0.5 text-[9px] font-normal text-[#9c4037]"
+              >
+                不可用
+              </span>
+            )}
+            {expiryLabel && expiresDate && (
+              <span
+                title={`会话将于 ${expiresDate.toLocaleString("zh-CN")} 到期`}
+                className="shrink-0 text-[9px] font-normal text-[#9b6651]"
+              >
+                {expiryLabel}
+              </span>
+            )}
+          </ThreadListItemPrimitive.Trigger>
+          <ThreadListItemMorePrimitive.Root sharedFocusGroup>
+            <ThreadListItemMorePrimitive.Trigger
+              aria-label="会话操作"
+              title="会话操作"
+              className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-[#89847a] opacity-0 transition-opacity hover:bg-[#ddd6ca] hover:text-[#514b42] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none group-hover:opacity-100 group-has-focus-visible:opacity-100 data-[state=open]:opacity-100"
             >
-              <PinIcon
-                className={`size-3.5 ${isPinned ? "text-[#b76d4b]" : "text-[#89847a]"}`}
-                aria-hidden="true"
-              />
-              {isPinned ? "取消置顶" : "置顶会话"}
-            </ThreadListItemMorePrimitive.Item>
-            <ThreadListItemMorePrimitive.Item
-              disabled={busy || !metadata?.metadataRevision}
-              onSelect={() => void archive()}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs outline-none hover:bg-[#eee9e0] focus:bg-[#eee9e0] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-            >
-              <ArchiveIcon className="size-3.5 text-[#89847a]" aria-hidden="true" />
-              归档会话
-            </ThreadListItemMorePrimitive.Item>
-            <ThreadListItemMorePrimitive.Separator className="my-1 h-px bg-[#eee8df]" />
-            <ThreadListItemMorePrimitive.Item
-              disabled={busy}
-              onSelect={() => void remove()}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-[#984b3b] outline-none hover:bg-[#f3e5df] focus:bg-[#f3e5df] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-            >
-              <Trash2Icon className="size-3.5" aria-hidden="true" />
-              删除会话
-            </ThreadListItemMorePrimitive.Item>
-          </ThreadListItemMorePrimitive.Content>
-        </ThreadListItemMorePrimitive.Root>
-      </ThreadListItemPrimitive.Root>
+              <MoreHorizontalIcon className="size-4" aria-hidden="true" />
+            </ThreadListItemMorePrimitive.Trigger>
+            <ThreadListItemMorePrimitive.Content className="z-50 min-w-40 rounded-xl border border-[#e5ded3] bg-[#fbfaf7] p-1.5 text-[#514b42] shadow-lg">
+              <ThreadListItemMorePrimitive.Item
+                disabled={busy || !metadata?.metadataRevision}
+                onSelect={() => void pinThread()}
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs outline-none hover:bg-[#eee9e0] focus:bg-[#eee9e0] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              >
+                <PinIcon
+                  className={`size-3.5 ${isPinned ? "text-[#b76d4b]" : "text-[#89847a]"}`}
+                  aria-hidden="true"
+                />
+                {isPinned ? "取消置顶" : "置顶会话"}
+              </ThreadListItemMorePrimitive.Item>
+              <ThreadListItemMorePrimitive.Item
+                disabled={busy || !metadata?.metadataRevision}
+                onSelect={() => void archive()}
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs outline-none hover:bg-[#eee9e0] focus:bg-[#eee9e0] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              >
+                <ArchiveIcon className="size-3.5 text-[#89847a]" aria-hidden="true" />
+                归档会话
+              </ThreadListItemMorePrimitive.Item>
+              <ThreadListItemMorePrimitive.Separator className="my-1 h-px bg-[#eee8df]" />
+              <ThreadListItemMorePrimitive.Item
+                disabled={busy}
+                onSelect={() => void remove()}
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-[#984b3b] outline-none hover:bg-[#f3e5df] focus:bg-[#f3e5df] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              >
+                <Trash2Icon className="size-3.5" aria-hidden="true" />
+                删除会话
+              </ThreadListItemMorePrimitive.Item>
+            </ThreadListItemMorePrimitive.Content>
+          </ThreadListItemMorePrimitive.Root>
+        </ThreadListItemPrimitive.Root>
+      )}
     </div>
   );
 };

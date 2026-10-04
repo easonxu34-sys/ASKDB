@@ -2745,7 +2745,7 @@ export function DataSourcesPage() {
           <Section
             id="business-rules"
             title={`业务规则 · ${semantic.rules.length}`}
-            description="补充业务口径、指标定义或查询注意事项，作为 Wren 的语义上下文。"
+            description="补充业务口径、指标定义或查询注意事项，作为语义上下文。"
             collapsible
             initiallyOpen={semantic.rules.length === 0}
           >

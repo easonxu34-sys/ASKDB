@@ -264,7 +264,7 @@ async function settingsRequest<T>(segments: string[], init: RequestInit = {}): P
   try {
     value = await response.json();
   } catch {
-    throw new Error("Wren 设置服务返回了无效响应。");
+    throw new Error("设置服务返回了无效响应。");
   }
   if (!response.ok) {
     const body = value as { message?: unknown; detail?: { message?: unknown } } | null;

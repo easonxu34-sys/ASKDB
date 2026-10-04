@@ -23,7 +23,7 @@ function impactDescription(impact: ThreadDeletionImpact | null) {
   if (impact) {
     const rules = impact.linked_business_rules;
     lines.push(rules.count > 0
-      ? `关联业务规则：${rules.count} 条${rules.labels.length ? `（${rules.labels.join("、")}）` : ""}。删除后会从在线召回中屏蔽，活动 Wren 版本的移除随后完成，可能影响同一数据源的其他会话。`
+      ? `由此会话提交的业务规则：${rules.count} 条${rules.labels.length ? `（${rules.labels.join("、")}）` : ""}。删除后会立即从在线召回中屏蔽，活动 Wren 版本中的移除随后完成；可能影响同一数据源的其他会话。`
       : "关联业务规则：0 条。");
     const candidates = impact.linked_query_example_candidates.count;
     lines.push(`关联的未发布查询示例候选：${candidates} 条，删除后清除；已发布查询示例保留。`);

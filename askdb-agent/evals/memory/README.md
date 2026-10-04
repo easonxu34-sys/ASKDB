@@ -38,10 +38,10 @@ Agent or Wren memory index. The CSV's external `APPROVED` marker does not
 activate an AskDB query example. Before a record can enter online recall, bind it to the
 actual data-source ID, active Wren revision, and semantic digest, then use the
 existing review, SQL validation, and publication flow. The offline evaluator is
-an optional quality check and is not a startup gate. Online recall follows the
-persistent-memory master switch: when `ASKDB_AGENT_MEMORY_ENABLED=1` and its
-deletion-journal prerequisites are configured, recall is enabled by default.
-Set `ASKDB_AGENT_RECALL_ENABLED=0` only to explicitly disable recall. The
+an optional quality check and is not a startup gate. Persistent memory and
+online recall start by default; the Agent creates the deletion journal and a
+stable key under `data/agent-memory/` on first startup. Set
+`ASKDB_AGENT_RECALL_ENABLED=0` only to explicitly disable recall. The
 `ASKDB_AGENT_RECALL_GOLD_ACCEPTED` and `ASKDB_AGENT_RECALL_RUNTIME_READY`
 environment variables are no longer required or read by startup.
 

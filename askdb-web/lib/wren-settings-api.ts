@@ -28,14 +28,14 @@ const errorMessages: Record<string, string> = {
   DATA_SOURCE_NOT_FOUND: "找不到所选数据源或操作。",
   DATA_SOURCE_UNAVAILABLE: "所选数据源当前不可用，请检查设置。",
   DATA_SOURCE_REQUIRED: "请先为此会话选择一个数据源。",
-  WREN_CONFIGURATION_INVALID: "Wren 配置字段无效，请检查后重试。",
+  WREN_CONFIGURATION_INVALID: "配置字段无效，请检查后重试。",
   WREN_CONNECTION_FAILED: "数据库连接失败，请检查地址、账号和网络策略。",
   WREN_SCHEMA_DISCOVERY_FAILED: "读取数据库表结构失败，请检查账号权限。",
-  WREN_VALIDATION_FAILED: "Wren 配置校验失败，请检查模型、关系和规则。",
-  WREN_BUILD_FAILED: "Wren 模型构建失败，请检查配置后重试。",
+  WREN_VALIDATION_FAILED: "配置校验失败，请检查模型、关系和规则。",
+  WREN_BUILD_FAILED: "模型构建失败，请检查配置后重试。",
   WREN_RUNTIME_INIT_FAILED: "数据源运行环境初始化失败，当前版本仍保持生效。",
   CHAT_DATA_SOURCE_MISMATCH: "此会话已绑定其他数据源，请新建会话后切换。",
-  WREN_SETTINGS_UNAVAILABLE: "Wren 设置服务当前不可用。",
+  WREN_SETTINGS_UNAVAILABLE: "设置服务当前不可用。",
 };
 
 const noStoreHeaders = {

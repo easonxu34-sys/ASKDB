@@ -1351,6 +1351,12 @@ class BusinessRuleMemoryStore:
                     reason_code="runtime_removal_activated",
                     created_at=now,
                 )
+            self._advance_thread_deletion_statuses(
+                connection,
+                data_source_id=data_source_id,
+                business_rule_ids=normalized_ids,
+                now=now,
+            )
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -1506,6 +1512,68 @@ class BusinessRuleMemoryStore:
     def has_pending_removals(self, data_source_id: str) -> bool:
         return self.blocks_runtime_revision(data_source_id, ())
 
+    def _advance_thread_deletion_statuses(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        data_source_id: str,
+        business_rule_ids: tuple[str, ...],
+        now: datetime,
+    ) -> None:
+        """Complete delete operations only after every linked rule is offline."""
+        normalized_ids = tuple(sorted(set(business_rule_ids)))
+        if not normalized_ids:
+            return
+        placeholders = ",".join("?" for _ in normalized_ids)
+        sequences = connection.execute(
+            f"""SELECT DISTINCT event_sequence FROM agent_memory_suppressions
+                WHERE data_source_id=? AND item_type='business_rule'
+                  AND item_id IN ({placeholders})""",
+            (data_source_id, *normalized_ids),
+        ).fetchall()
+        for sequence_row in sequences:
+            sequence = sequence_row["event_sequence"]
+            operation = connection.execute(
+                """SELECT operation_id FROM agent_thread_deletion_operations
+                   WHERE data_source_id=? AND journal_sequence=? AND status='suppressed'""",
+                (data_source_id, sequence),
+            ).fetchone()
+            if operation is None:
+                continue
+            linked_rows = connection.execute(
+                """SELECT item_id FROM agent_memory_suppressions
+                   WHERE data_source_id=? AND item_type='business_rule'
+                     AND event_sequence=?""",
+                (data_source_id, sequence),
+            ).fetchall()
+            linked_ids = tuple(sorted({row["item_id"] for row in linked_rows}))
+            if not linked_ids:
+                continue
+            linked_placeholders = ",".join("?" for _ in linked_ids)
+            pending = connection.execute(
+                f"""SELECT 1 FROM business_rule_origins
+                    WHERE data_source_id=? AND business_rule_id IN ({linked_placeholders})
+                      AND publication_status='removal_pending'
+                    UNION ALL
+                    SELECT 1 FROM business_rule_candidates
+                    WHERE data_source_id=? AND business_rule_id IN ({linked_placeholders})
+                      AND publication_status='removal_pending'
+                    LIMIT 1""",
+                (
+                    data_source_id,
+                    *linked_ids,
+                    data_source_id,
+                    *linked_ids,
+                ),
+            ).fetchone()
+            if pending is None:
+                connection.execute(
+                    """UPDATE agent_thread_deletion_operations
+                       SET status='completed_online', updated_at=?
+                       WHERE operation_id=? AND status='suppressed'""",
+                    (now.isoformat(), operation["operation_id"]),
+                )
+
     def blocks_runtime_revision(
         self, data_source_id: str, business_rule_ids: tuple[str, ...]
     ) -> bool:
@@ -1597,6 +1665,147 @@ class BusinessRuleMemoryStore:
                         now.isoformat(),
                         (now + timedelta(days=30)).isoformat(),
                     ),
+                )
+
+            # A deletion journal entry can outlive its candidate/origin rows. If
+            # the active Wren revision still contains the exact managed rule ID,
+            # rebuild a redacted removal origin so the normal durable publisher
+            # can finish the operation. Never match on the user-visible label:
+            # native Wren rules may legitimately share that label.
+            suppressed_rows = connection.execute(
+                """SELECT suppression.event_sequence, suppression.data_source_id, suppression.item_id,
+                          suppression.created_at
+                   FROM agent_memory_suppressions AS suppression
+                   LEFT JOIN business_rule_origins AS origin
+                     ON origin.data_source_id=suppression.data_source_id
+                    AND origin.business_rule_id=suppression.item_id
+                   WHERE suppression.item_type='business_rule'
+                     AND suppression.reason IN
+                         ('thread_delete','thread_expire','business_rule_revoke')
+                     AND origin.business_rule_id IS NULL
+                   ORDER BY suppression.event_sequence, suppression.item_id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            for suppressed in suppressed_rows:
+                source_id = suppressed["data_source_id"]
+                rule_id = suppressed["item_id"]
+                if len(rule_id) != 32 or any(
+                    character not in "0123456789abcdef" for character in rule_id
+                ):
+                    continue
+                active = connection.execute(
+                    """SELECT source.active_revision_id, revision.config_json,
+                              revision.project_dir
+                       FROM wren_data_sources AS source
+                       JOIN wren_revisions AS revision
+                         ON revision.source_id=source.id
+                        AND revision.id=source.active_revision_id
+                       WHERE source.id=? AND revision.status='active'""",
+                    (source_id,),
+                ).fetchone()
+                if active is None or not active["active_revision_id"]:
+                    continue
+                managed_name = f"askdb_br_{rule_id}"
+                try:
+                    configured_rules = json.loads(active["config_json"] or "{}").get(
+                        "rules", []
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                matching_rule = next(
+                    (
+                        item
+                        for item in configured_rules
+                        if isinstance(item, dict)
+                        and str(item.get("name", "")) == managed_name
+                    ),
+                    None,
+                ) if isinstance(configured_rules, list) else None
+                project_dir = active["project_dir"]
+                rule_file: Path | None = None
+                if project_dir:
+                    try:
+                        project_root = Path(project_dir).expanduser().resolve()
+                        candidate_file = (
+                            project_root / "knowledge" / "rules" / f"{managed_name}.md"
+                        ).resolve()
+                        if project_root in candidate_file.parents and candidate_file.is_file():
+                            rule_file = candidate_file
+                    except OSError:
+                        rule_file = None
+                if matching_rule is None and rule_file is None:
+                    continue
+
+                candidate = connection.execute(
+                    """SELECT content_hash, review_status, publication_status
+                       FROM business_rule_candidates
+                       WHERE data_source_id=? AND business_rule_id=?""",
+                    (source_id, rule_id),
+                ).fetchone()
+                latest_event = connection.execute(
+                    """SELECT content_hash FROM business_rule_candidate_events
+                       WHERE data_source_id=? AND business_rule_id=?
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (source_id, rule_id),
+                ).fetchone()
+                if candidate is not None:
+                    content_hash = candidate["content_hash"]
+                elif latest_event is not None:
+                    content_hash = latest_event["content_hash"]
+                elif matching_rule is not None:
+                    content_hash = _hash(_canonical(matching_rule))
+                else:
+                    assert rule_file is not None
+                    content_hash = _hash(rule_file.read_bytes())
+                source_hash = self.deletion_journal.keyed_audit_hash(
+                    f"business-rule:{source_id}:{rule_id}"
+                )
+                connection.execute(
+                    """INSERT OR IGNORE INTO business_rule_origins
+                       (data_source_id, business_rule_id, source_thread_id,
+                        source_thread_hash, term_label, content_hash,
+                        active_wren_revision_id, publication_status, published_at,
+                        redacted_at, purge_after)
+                       VALUES (?, ?, NULL, ?, NULL, ?, ?, 'removal_pending', ?, ?, ?)""",
+                    (
+                        source_id,
+                        rule_id,
+                        source_hash,
+                        content_hash,
+                        active["active_revision_id"],
+                        suppressed["created_at"],
+                        now.isoformat(),
+                        (now + timedelta(days=30)).isoformat(),
+                    ),
+                )
+                if candidate is not None:
+                    connection.execute(
+                        """UPDATE business_rule_candidates
+                           SET review_status='revoked', publication_status='removal_pending',
+                               term=NULL, definition=NULL, mdl_references_json=NULL,
+                               clarification_question=NULL, review_reason_code='journal_recovery',
+                               version=version+1, updated_at=?
+                           WHERE data_source_id=? AND business_rule_id=?""",
+                        (now.isoformat(), source_id, rule_id),
+                    )
+                connection.execute(
+                    """UPDATE agent_thread_deletion_operations
+                       SET status='suppressed', updated_at=?
+                       WHERE data_source_id=? AND journal_sequence=?
+                         AND status='completed_online'""",
+                    (now.isoformat(), source_id, suppressed["event_sequence"]),
+                )
+            recovery_ids: dict[str, set[str]] = {}
+            for suppressed in suppressed_rows:
+                recovery_ids.setdefault(suppressed["data_source_id"], set()).add(
+                    suppressed["item_id"]
+                )
+            for source_id, rule_ids in recovery_ids.items():
+                self._advance_thread_deletion_statuses(
+                    connection,
+                    data_source_id=source_id,
+                    business_rule_ids=tuple(sorted(rule_ids)),
+                    now=now,
                 )
             connection.commit()
         except BaseException:
@@ -1728,17 +1937,49 @@ class BusinessRuleMemoryStore:
                         rule_id,
                     ),
                 )
+                candidate = connection.execute(
+                    """SELECT review_status, publication_status, content_hash
+                       FROM business_rule_candidates
+                       WHERE data_source_id=? AND business_rule_id=?""",
+                    (event.source_id, rule_id),
+                ).fetchone()
+                if candidate is not None:
+                    connection.execute(
+                        """UPDATE business_rule_candidates
+                           SET review_status='revoked', publication_status=?,
+                               term=NULL, definition=NULL, mdl_references_json=NULL,
+                               clarification_question=NULL, reviewed_by=?, reviewed_at=?,
+                               review_reason_code=?, version=version+1, updated_at=?
+                           WHERE data_source_id=? AND business_rule_id=?""",
+                        (
+                            target_publication,
+                            actor_id,
+                            now.isoformat(),
+                            event.event_type,
+                            now.isoformat(),
+                            event.source_id,
+                            rule_id,
+                        ),
+                    )
                 self._record_event(
                     connection,
                     business_rule_id=rule_id,
                     data_source_id=event.source_id,
                     actor_user_id=actor_id,
                     event_type=event.event_type,
-                    previous_review_status="approved",
+                    previous_review_status=(
+                        candidate["review_status"] if candidate else "approved"
+                    ),
                     review_status="revoked",
-                    previous_publication_status=origin["publication_status"],
+                    previous_publication_status=(
+                        candidate["publication_status"]
+                        if candidate
+                        else origin["publication_status"]
+                    ),
                     publication_status=target_publication,
-                    content_hash=origin["content_hash"],
+                    content_hash=(
+                        candidate["content_hash"] if candidate else origin["content_hash"]
+                    ),
                     reason_code=event.event_type,
                     created_at=now,
                     event_id=f"journal-{event.sequence}-{rule_id}",
