@@ -31,6 +31,7 @@ import {
   type ThreadMetadata,
 } from "@/lib/thread-api";
 import { getThreadGroupPageState } from "@/lib/thread-grouping.mjs";
+import { saveResultArtifact } from "@/lib/thread-result-artifacts.mjs";
 import {
   extractLegacyResultArtifact,
   MAX_IMPORTED_HISTORY_BYTES,
@@ -358,32 +359,10 @@ export function saveThreadResultArtifact(
   output: unknown,
 ) {
   const key = RESULT_ARTIFACTS_KEY(userId, canonicalThreadId(threadId));
-  let artifacts: Record<string, unknown[]> = {};
   try {
-    const stored: unknown = JSON.parse(window.localStorage.getItem(key) ?? "{}");
-    if (typeof stored === "object" && stored !== null && !Array.isArray(stored)) {
-      artifacts = Object.fromEntries(
-        Object.entries(stored).filter(([, value]) => Array.isArray(value)),
-      ) as Record<string, unknown[]>;
-    }
+    return saveResultArtifact(window.localStorage, key, turnId, output, MAX_RESULT_ARTIFACT_BYTES);
   } catch {
-    // Rebuild a corrupt local artifact index from the current result.
-  }
-  artifacts[turnId] = [...(artifacts[turnId] ?? []), output];
-  let serialized = JSON.stringify(artifacts);
-  while (
-    new TextEncoder().encode(serialized).byteLength > MAX_RESULT_ARTIFACT_BYTES &&
-    Object.keys(artifacts).length > 1
-  ) {
-    delete artifacts[Object.keys(artifacts)[0]];
-    serialized = JSON.stringify(artifacts);
-  }
-  try {
-    if (new TextEncoder().encode(serialized).byteLength <= MAX_RESULT_ARTIFACT_BYTES) {
-      window.localStorage.setItem(key, serialized);
-    }
-  } catch {
-    // Quota limits must not interrupt the live assistant stream.
+    return false;
   }
 }
 

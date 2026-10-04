@@ -39,7 +39,12 @@ test("accepts only supported chart artifacts with a matching query result", asyn
     },
   };
 
-  assert.equal(chatOutput.getChartMessageParts([query, chart]).length, 1);
+  const [persistedPart] = chatOutput.getChartMessageParts([query, chart]);
+  assert.equal(persistedPart.data.persistenceAvailable, true);
+  const [volatilePart] = chatOutput.getChartMessageParts([query, chart], {
+    persistenceAvailable: false,
+  });
+  assert.equal(volatilePart.data.persistenceAvailable, false);
   assert.equal(
     chatOutput.getChartMessageParts([query, { artifact: { ...chart.artifact, schema_version: 2 } }])
       .length,

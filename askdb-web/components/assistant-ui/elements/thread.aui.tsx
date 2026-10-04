@@ -713,6 +713,7 @@ const AssistantMessage: FC<{ user: AuthUser }> = ({ user }) => {
                   recommendedView={chart.recommendedView}
                   view={chart.view}
                   hasOverride={chart.hasOverride}
+                  persistenceAvailable={chart.persistenceAvailable}
                   overrideNotice={chart.overrideNotice}
                   userId={user.user_id}
                   threadId={threadId}

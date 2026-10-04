@@ -6,6 +6,13 @@ import {
   type EChartsChartArtifact,
   type SuccessfulQueryArtifact,
 } from "./chat-output.ts";
+import {
+  compareDecimalValues,
+  exactPercentShare,
+  exactPlotNumber,
+  formatDecimal,
+  sumDecimalValues,
+} from "./chart-decimal.ts";
 
 type QueryShape = SuccessfulQueryArtifact & {
   resultId: string;
@@ -14,11 +21,11 @@ type QueryShape = SuccessfulQueryArtifact & {
 
 type IndexedRow = { row: Record<string, unknown>; index: number };
 
-const CNY_FACTORS = {
-  yuan: 1,
-  thousand_yuan: 1_000,
-  ten_thousand_yuan: 10_000,
-  hundred_million_yuan: 100_000_000,
+const CNY_UNIT_POWERS = {
+  yuan: 0,
+  thousand_yuan: 3,
+  ten_thousand_yuan: 4,
+  hundred_million_yuan: 8,
 } as const;
 const CNY_LABELS = {
   yuan: "元",
@@ -88,24 +95,15 @@ function displayName(view: ChartViewConfiguration, field: string) {
   return view.field_labels[field]?.trim() || field;
 }
 
-function numberText(value: number, decimalPlaces: "auto" | number) {
-  const places = decimalPlaces === "auto" ? 6 : decimalPlaces;
-  return new Intl.NumberFormat("zh-CN", {
-    minimumFractionDigits: decimalPlaces === "auto" ? 0 : places,
-    maximumFractionDigits: places,
-  }).format(value);
-}
-
 export function formatChartValue(value: unknown, format: ChartValueFormat): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  let displayed = value;
+  let shift = 0;
   if (format.mode === "unit_scale") {
-    displayed = (value * CNY_FACTORS[format.source_unit]) / CNY_FACTORS[format.display_unit];
+    shift = CNY_UNIT_POWERS[format.source_unit] - CNY_UNIT_POWERS[format.display_unit];
   } else if (format.mode === "percent" && format.encoding === "ratio_0_1") {
-    displayed = value * 100;
+    shift = 2;
   }
-  if (!Number.isFinite(displayed)) return "—";
-  const text = numberText(displayed, format.decimal_places);
+  const text = formatDecimal(value, shift, format.decimal_places);
+  if (text === "—") return text;
   if (format.mode === "percent") return `${text}%`;
   if (format.mode === "suffix") return `${text}${format.suffix}`;
   if (format.mode === "unit_scale") return `${text} ${CNY_LABELS[format.display_unit]}`;
@@ -113,16 +111,20 @@ export function formatChartValue(value: unknown, format: ChartValueFormat): stri
 }
 
 function unitSignature(format: ChartValueFormat) {
-  if (format.mode === "unit_scale") return `${format.unit_family}:${format.display_unit}`;
+  if (format.mode === "unit_scale") {
+    return `${format.unit_family}:${format.source_unit}->${format.display_unit}`;
+  }
   if (format.mode === "suffix") return `suffix:${format.suffix.trim()}`;
-  if (format.mode === "percent") return "%";
+  if (format.mode === "percent") return `percent:${format.encoding}`;
   return "raw";
 }
 
 function sharedAxisFormat(view: ChartViewConfiguration, metrics: string[]): ChartValueFormat {
   const formats = metrics.map((field) => view.format_by_field[field]);
   const signatures = new Set(formats.map(unitSignature));
-  return signatures.size <= 1 ? formats[0] : { mode: "raw", decimal_places: "auto" };
+  return signatures.size <= 1
+    ? { ...formats[0], decimal_places: "auto" }
+    : { mode: "raw", decimal_places: "auto" };
 }
 
 export function getChartUnitWarning(view: ChartViewConfiguration) {
@@ -172,10 +174,10 @@ function sortRows(query: QueryShape, view: ChartViewConfiguration): IndexedRow[]
     const b = right.row[sortField];
     let result: number;
     if (view.sort.mode === "metric") {
-      const aValid = typeof a === "number" && Number.isFinite(a);
-      const bValid = typeof b === "number" && Number.isFinite(b);
+      const aValid = compareDecimalValues(a, a) !== undefined;
+      const bValid = compareDecimalValues(b, b) !== undefined;
       if (aValid !== bValid) return aValid ? -1 : 1;
-      result = aValid && bValid ? (a as number) - (b as number) : 0;
+      result = aValid && bValid ? (compareDecimalValues(a, b) ?? 0) : 0;
     } else {
       result = compareNullable(a, b, temporal);
       if (
@@ -264,8 +266,7 @@ export function buildEChartsOption(
     name: displayName(view, field),
     type: view.chart_type === "line" ? "line" : "bar",
     data: rows.map(({ row }) => {
-      const value = row[field];
-      return typeof value === "number" && Number.isFinite(value) ? value : null;
+      return exactPlotNumber(row[field]) ?? null;
     }),
     label: {
       show: view.show_data_labels,
@@ -273,7 +274,11 @@ export function buildEChartsOption(
         view.chart_type === "bar" && view.bar_orientation === "horizontal" ? "right" : "top",
       formatter: (params: unknown) => {
         const value = isRecord(params) ? params.value : params;
-        return formatChartValue(value, view.format_by_field[field]);
+        const sourceValue =
+          isRecord(params) && typeof params.dataIndex === "number"
+            ? rows[params.dataIndex]?.row[field]
+            : value;
+        return formatChartValue(sourceValue, view.format_by_field[field]);
       },
     },
     ...(view.chart_type === "line" ? { showSymbol: rows.length <= 60, connectNulls: false } : {}),
@@ -285,10 +290,11 @@ export function buildEChartsOption(
 
   if (view.chart_type === "pie") {
     const field = visibleMetrics[0];
-    const total = rows.reduce((sum, { row }) => sum + (row[field] as number), 0);
+    const total = sumDecimalValues(rows.map(({ row }) => row[field]));
+    if (!total || total.coefficient <= BigInt("0")) return null;
     const data = rows.map(({ row }) => ({
       name: safeLabel(row[view.dimension_field]),
-      value: row[field],
+      value: exactPlotNumber(row[field]) ?? null,
     }));
     return {
       title: { text: view.title, left: "center", textStyle: { fontSize: 14, fontWeight: 500 } },
@@ -299,13 +305,7 @@ export function buildEChartsOption(
           if (!isRecord(first) || typeof first.dataIndex !== "number") return "";
           const row = rows[first.dataIndex]?.row;
           if (!row) return "";
-          const value = row[field] as number;
-          const slice =
-            total > 0
-              ? new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(
-                  (value / total) * 100,
-                )
-              : "0";
+          const slice = exactPercentShare(row[field], total);
           return `${tooltipHtml(rows, view, [field], first)}<div>分类占比: ${slice}%</div>`;
         },
       },
@@ -321,7 +321,11 @@ export function buildEChartsOption(
             formatter: (params: unknown) => {
               if (!isRecord(params)) return "";
               const name = typeof params.name === "string" ? params.name : "";
-              return `${name}: ${formatChartValue(params.value, view.format_by_field[field])}`;
+              const sourceValue =
+                typeof params.dataIndex === "number"
+                  ? rows[params.dataIndex]?.row[field]
+                  : params.value;
+              return `${name}: ${formatChartValue(sourceValue, view.format_by_field[field])}`;
             },
           },
           data,

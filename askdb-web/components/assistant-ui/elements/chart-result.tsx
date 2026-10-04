@@ -33,6 +33,7 @@ type ChartResultProps = {
   recommendedView: ChartViewConfiguration;
   view: ChartViewConfiguration;
   hasOverride: boolean;
+  persistenceAvailable?: boolean;
   overrideNotice?: string;
   userId: string;
   threadId?: string;
@@ -161,6 +162,7 @@ export function ChartResult({
   recommendedView,
   view,
   hasOverride,
+  persistenceAvailable = true,
   overrideNotice,
   userId,
   threadId,
@@ -177,7 +179,7 @@ export function ChartResult({
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenError, setFullScreenError] = useState("");
   const isEmpty = queryArtifact.rows.length === 0;
-  const canEdit = Boolean(userId && threadId && sourceMessageId);
+  const canEdit = Boolean(persistenceAvailable && userId && threadId && sourceMessageId);
   const fieldCandidates = useMemo(() => getChartFieldCandidates(queryArtifact), [queryArtifact]);
   const temporalDimension =
     getArrowFieldKind(
@@ -445,6 +447,11 @@ export function ChartResult({
         {displayNotice && (
           <p role="status" className="mt-2 text-[11px] text-muted-foreground">
             {displayNotice}
+          </p>
+        )}
+        {!persistenceAvailable && (
+          <p role="status" className="mt-2 text-[11px] text-amber-700">
+            本轮查询结果未完整保存在浏览器中，图表设置无法保存。
           </p>
         )}
         {fullScreenError && (

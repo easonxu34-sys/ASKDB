@@ -6,13 +6,12 @@ import { sanitizeChatRequest } from "../lib/chat-request.ts";
 const validRequest = () => ({
   thread_id: "thread-synthetic-chat-01",
   model_profile_id: "profile-synthetic-01",
-  messages: [
-    { role: "user", content: "Show recent orders" },
-    { role: "assistant", content: "I can check that." },
-  ],
+  message: { role: "user", content: "Show recent orders" },
+  turn_id: "turn-synthetic-chat-01",
+  expected_sequence: 4,
 });
 
-test("forwards only the thread, messages, and model profile ID", () => {
+test("accepts the current thread, user message, turn sequence, and model profile contract", () => {
   const request = validRequest();
   const result = sanitizeChatRequest(request);
 
@@ -31,7 +30,7 @@ test("rejects chat payloads carrying client model configuration or credentials",
 
 test("rejects extra fields inside chat messages", () => {
   const request = validRequest();
-  request.messages[0].api_key = "not-a-real-fixture";
+  request.message.api_key = "not-a-real-fixture";
 
   assert.equal(sanitizeChatRequest(request), null);
 });
