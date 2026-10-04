@@ -6,62 +6,35 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.presentation import (
-    QUERY_GATE_SYSTEM_PROMPT,
-    RESPONSE_SAFETY_REVIEW_PROMPT,
-)
+from agent.presentation import QUERY_GATE_SYSTEM_PROMPT
 from application.chart_context import QueryArtifactContext, parse_requested_chart_type
+from application.chat_messages import (
+    content_text as _content_text,
+    decode_tool_content as _decode_tool_content,
+    final_assistant_text as _final_assistant_text,
+    message_type as _message_type,
+    message_value as _message_value,
+    visible_conversation as _visible_conversation,
+)
+from application.chat_safety import (
+    CLARIFY_EN as _CLARIFY_EN,
+    CLARIFY_ZH as _CLARIFY_ZH,
+    REFUSAL_EN as _REFUSAL_EN,
+    REFUSAL_ZH as _REFUSAL_ZH,
+    clarification_from_gate as _clarification_from_gate,
+    contains_chinese as _contains_chinese,
+    is_safe_user_facing_text as _is_safe_user_facing_text,
+    latest_user_text as _latest_user_text,
+)
+from application.chat_tool_events import (
+    ToolEventState,
+    present_tool_output,
+    progress_label_for_tool as _progress_tool_label,
+)
 from domain.chart_artifact import ChartRequest
 from tools.chart import create_chart_tool
 
 
-# These are review triggers only. A semantic reviewer decides whether the
-# candidate actually describes private implementation or is ordinary content.
-_RESPONSE_REVIEW_CANDIDATES = (
-    "wren",
-    "mcp",
-    "langchain",
-    "langgraph",
-    "fastapi",
-    "deepseek",
-    "openai",
-    "wren_query",
-    "wren_dry_plan",
-    "wren_dry_run",
-    "mysql",
-    "postgresql",
-    "clickhouse",
-    "duckdb",
-    "system prompt",
-    "internal implementation",
-    "internal architecture",
-    "tool call",
-    "tool trace",
-    "backend",
-    "server-side",
-    "provider",
-    "api key",
-    "access token",
-    "credential",
-    "private key",
-    "secret",
-    "内部实现",
-    "系统提示词",
-    "内部提示词",
-    "内部架构",
-    "工具调用",
-    "调用轨迹",
-    "服务端实现",
-    "服务商",
-    "访问令牌",
-    "凭据",
-    "私钥",
-    "密码",
-)
-_REFUSAL_ZH = "这个问题我无法回答，但可以帮你查询数据或生成图表。"
-_REFUSAL_EN = "I can't help with that request, but I can help with a data query or chart."
-_CLARIFY_ZH = "请补充明确的查询对象、指标或筛选口径，我再继续查询。"
-_CLARIFY_EN = "Please clarify the requested entity, metric, or filter before I run the query."
 _CHART_CLAIM_MARKERS = ("图表已生成", "柱状图已生成", "折线图已生成", "饼图已生成", "成功生成图表")
 
 
@@ -131,9 +104,7 @@ async def stream_chat_events(
         requested_chart_type=parse_requested_chart_type(latest_user_text),
         should_render=_chart_requested_for_turn(messages),
     )
-    latest_result_id: str | None = None
-    chart_rendered_for_latest_result = False
-    chart_attempted_for_latest_result = False
+    tool_event_state = ToolEventState()
     active_tool_steps: dict[str, str] = {}
     try:
         agent = runtime.create_agent_for_turn(context, chart_request)
@@ -172,33 +143,15 @@ async def stream_chat_events(
             if _message_type(raw_output) == "tool":
                 raw_output = _message_value(raw_output, "content")
             output = _decode_tool_content(raw_output)
-            if tool_name == "wren_query":
-                if _has_executed_sql(output):
-                    yield "result", {"output": output}
-                    data = output.get("data")
-                    latest_result_id = (
-                        data.get("result_id")
-                        if isinstance(data, Mapping) and isinstance(data.get("result_id"), str)
-                        else None
-                    )
-                    chart_rendered_for_latest_result = False
-                    chart_attempted_for_latest_result = False
-            elif tool_name == "render_chart" and isinstance(output, Mapping):
-                data = output.get("data")
-                if isinstance(data, Mapping) and data.get("kind") == "echarts_chart":
-                    yield "chart", {"artifact": dict(data)}
-                    if data.get("source_result_id") == latest_result_id:
-                        chart_rendered_for_latest_result = True
-                        chart_attempted_for_latest_result = True
-                elif isinstance(data, Mapping) and data.get("kind") == "chart_unavailable":
-                    yield "chart", {"unavailable": dict(data)}
-                    if latest_result_id:
-                        chart_attempted_for_latest_result = True
+            for output_event, payload in present_tool_output(
+                tool_name, output, tool_event_state
+            ):
+                yield output_event, payload
         if (
             chart_request.should_render
-            and latest_result_id
-            and not chart_rendered_for_latest_result
-            and not chart_attempted_for_latest_result
+            and tool_event_state.latest_result_id
+            and not tool_event_state.chart_rendered_for_latest_result
+            and not tool_event_state.chart_attempted_for_latest_result
         ):
             fallback_step_id = "render-chart-fallback"
             yield "progress", {
@@ -207,14 +160,12 @@ async def stream_chat_events(
                 "status": "running",
             }
             fallback = create_chart_tool(context, chart_request.requested_chart_type).invoke(
-                {"result_id": latest_result_id}
+                {"result_id": tool_event_state.latest_result_id}
             )
-            data = fallback.get("data") if isinstance(fallback, Mapping) else None
-            if isinstance(data, Mapping) and data.get("kind") == "echarts_chart":
-                yield "chart", {"artifact": dict(data)}
-                chart_rendered_for_latest_result = True
-            elif isinstance(data, Mapping) and data.get("kind") == "chart_unavailable":
-                yield "chart", {"unavailable": dict(data)}
+            for output_event, payload in present_tool_output(
+                "render_chart", fallback, tool_event_state
+            ):
+                yield output_event, payload
             yield "progress", {
                 "step_id": fallback_step_id,
                 "label": "生成图表",
@@ -234,18 +185,12 @@ async def stream_chat_events(
             text = final_answer
         if (
             chart_request.should_render
-            and not chart_rendered_for_latest_result
+            and not tool_event_state.chart_rendered_for_latest_result
             and any(marker in text for marker in _CHART_CLAIM_MARKERS)
         ):
             text = "本轮没有成功生成可显示的图表；我没有取得有效的本轮查询结果，请重新发送查询和分组维度。"
         yield "token", {"text": text}
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "completed"}
-
-
-def _progress_tool_label(tool_name: Any) -> str:
-    if tool_name == "render_chart":
-        return "生成图表"
-    return "查询数据"
 
 
 def _chart_requested_for_turn(messages: Sequence[Mapping[str, str]]) -> bool:
@@ -289,168 +234,3 @@ def _attach_recall_context(
         }
         break
     return result
-
-
-def _visible_conversation(messages: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
-    conversation: list[dict[str, str]] = []
-    for message in messages:
-        role = message.get("role")
-        if role not in {"user", "assistant"}:
-            continue
-        content = str(message.get("content", ""))
-        conversation.append({"role": role, "content": content})
-    return conversation
-
-
-def _message_type(message: Any) -> str | None:
-    if isinstance(message, Mapping):
-        value = message.get("type")
-    else:
-        value = getattr(message, "type", None)
-    return str(value) if value is not None else None
-
-
-def _message_value(message: Any, name: str) -> Any:
-    if isinstance(message, Mapping):
-        return message.get(name)
-    return getattr(message, name, None)
-
-
-def _final_assistant_text(output: Any) -> str | None:
-    """Extract a completed assistant answer, excluding tool-call messages."""
-    if isinstance(output, Mapping):
-        messages = output.get("messages")
-        if messages is None:
-            if _message_type(output) not in {"ai", "assistant", "AIMessage"}:
-                nested_output = output.get("output")
-                if nested_output is None:
-                    return None
-                return _final_assistant_text(nested_output)
-            messages = (output,)
-    elif isinstance(output, Sequence) and not isinstance(output, (str, bytes)):
-        messages = output
-    else:
-        messages = (output,)
-
-    for message in reversed(messages):
-        if _message_type(message) not in {"ai", "assistant", "AIMessage"}:
-            continue
-        if _message_value(message, "tool_calls") or _message_value(
-            message, "invalid_tool_calls"
-        ):
-            continue
-        content = _content_text(_message_value(message, "content"))
-        if content.strip():
-            return content
-    return None
-
-
-def _decode_tool_content(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    if isinstance(value, list):
-        text = _content_text(value)
-        if text:
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
-def _content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-    return ""
-
-
-def _needs_response_safety_review(value: str) -> bool:
-    normalized = value.casefold()
-    return any(marker in normalized for marker in _RESPONSE_REVIEW_CANDIDATES)
-
-
-async def _is_safe_user_facing_text(
-    reviewer: Any,
-    text: str,
-    messages: Sequence[Mapping[str, str]],
-    *,
-    purpose: str,
-) -> bool:
-    """Use candidate terms only to invoke semantic review, never to reject by themselves."""
-    if not _needs_response_safety_review(text):
-        return True
-    try:
-        review = await reviewer.ainvoke(
-            [
-                SystemMessage(content=RESPONSE_SAFETY_REVIEW_PROMPT),
-                HumanMessage(
-                    content=json.dumps(
-                        {
-                            "purpose": purpose,
-                            "conversation": _visible_conversation(messages),
-                            "draft_response": text,
-                        },
-                        ensure_ascii=False,
-                    )
-                ),
-            ]
-        )
-    except Exception:
-        return False
-    return _content_text(_message_value(review, "content")).strip() == "SAFE"
-
-
-def _latest_user_text(messages: Sequence[Mapping[str, str]]) -> str:
-    for message in reversed(messages):
-        if message.get("role") == "user":
-            return str(message.get("content", ""))
-    return ""
-
-
-def _contains_chinese(value: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in value)
-
-
-def _clarification_from_gate(content: str, user_text: str) -> str | None:
-    normalized = content.strip()
-    if normalized == "READY":
-        return None
-
-    fallback = _CLARIFY_ZH if _contains_chinese(user_text) else _CLARIFY_EN
-    prefix = "CLARIFY:"
-    if not normalized.startswith(prefix):
-        return fallback
-
-    question = normalized[len(prefix) :].strip()
-    if (
-        not question
-        or "```" in question
-        or "select " in question.casefold()
-        or " from " in question.casefold()
-    ):
-        return fallback
-    if _contains_chinese(question) != _contains_chinese(user_text):
-        return fallback
-    return question
-
-
-def _has_executed_sql(output: Any) -> bool:
-    if not isinstance(output, Mapping):
-        return False
-    data = output.get("data")
-    return (
-        isinstance(data, Mapping)
-        and isinstance(data.get("sql"), str)
-        and bool(data["sql"].strip())
-    )
