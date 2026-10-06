@@ -75,8 +75,8 @@ test("builds pie options from the exact categorical and numeric rows", () => {
   const option = buildEChartsOption(artifact, result);
 
   assert.deepEqual(option.series[0].data, [
-    { name: "east", value: 8 },
-    { name: "west", value: 3 },
+    { name: "east", value: 8, itemStyle: { color: "#3b82f6" } },
+    { name: "west", value: 3, itemStyle: { color: "#14b8a6" } },
   ]);
 });
 
@@ -296,8 +296,8 @@ test("validates and displays exact decimal pie values and shares", () => {
   );
 
   assert.deepEqual(option.series[0].data, [
-    { name: "east", value: 0.1 },
-    { name: "west", value: 0.2 },
+    { name: "east", value: 0.1, itemStyle: { color: "#3b82f6" } },
+    { name: "west", value: 0.2, itemStyle: { color: "#14b8a6" } },
   ]);
   assert.match(option.tooltip.formatter({ dataIndex: 0 }), /分类占比: 33\.33%/u);
 });
@@ -374,4 +374,156 @@ test("warns when source scales differ and uses one automatic shared axis precisi
     },
   );
   assert.equal(option.yAxis.axisLabel.formatter(1.234), "1.234");
+});
+
+test("applies current-result Top N to the first 1,000 rows with stable ties", () => {
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "double"],
+    rows: [
+      { region: "first tie", revenue: 5 },
+      { region: "small", revenue: 1 },
+      { region: "second tie", revenue: 5 },
+      { region: "largest", revenue: 10 },
+    ],
+  };
+  const artifact = {
+    ...line,
+    chart_type: "bar",
+    x_field: "region",
+    title: "revenue by region",
+  };
+  const view = {
+    chart_type: "bar",
+    dimension_field: "region",
+    metric_fields: ["revenue"],
+    hidden_metric_fields: [],
+    bar_orientation: "vertical",
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "metric", field: "revenue", direction: "desc" },
+    format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+    show_data_labels: false,
+    show_legend: false,
+    current_result_top_n: { field: "revenue", count: 2, direction: "desc" },
+  };
+  const option = buildEChartsOption(artifact, result, view);
+  assert.deepEqual(
+    option.xAxis.data.map((value, index) => option.xAxis.axisLabel.formatter(value, index)),
+    ["largest", "first tie"],
+  );
+  assert.deepEqual(option.series[0].data, [10, 5]);
+
+  const bottom = buildEChartsOption(
+    artifact,
+    result,
+    {
+      ...view,
+      sort: { mode: "metric", field: "revenue", direction: "asc" },
+      current_result_top_n: { field: "revenue", count: 2, direction: "asc" },
+    },
+  );
+  assert.deepEqual(
+    bottom.xAxis.data.map((value, index) => bottom.xAxis.axisLabel.formatter(value, index)),
+    ["small", "first tie"],
+  );
+});
+
+test("Top N ignores rows after the first 1,000 and reports every truncation signal", async () => {
+  const { isChartQueryTruncated } = await import("../lib/chart-output.ts");
+  const rows = Array.from({ length: 1000 }, (_, index) => ({ region: `r${index}`, revenue: 1 }));
+  rows.push({ region: "outside returned prefix", revenue: 1_000_000 });
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "double"],
+    rows,
+  };
+  const artifact = { ...line, chart_type: "bar", x_field: "region", title: "revenue by region" };
+  const option = buildEChartsOption(artifact, result, {
+    chart_type: "bar",
+    dimension_field: "region",
+    metric_fields: ["revenue"],
+    hidden_metric_fields: [],
+    bar_orientation: "vertical",
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "metric", field: "revenue", direction: "desc" },
+    format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+    show_data_labels: false,
+    show_legend: false,
+    current_result_top_n: { field: "revenue", count: 1, direction: "desc" },
+  });
+  assert.equal(option.series[0].data.length, 1);
+  assert.notEqual(option.xAxis.axisLabel.formatter(0, 0), "outside returned prefix");
+  assert.equal(option.aria.description, "图表仅展示部分查询结果");
+  assert.equal(isChartQueryTruncated({ ...query, truncated: true }), true);
+  assert.equal(isChartQueryTruncated({ ...query, rowCount: 99 }), true);
+  assert.equal(isChartQueryTruncated({ ...query, rows: Array(1001).fill(query.rows[0]) }), true);
+});
+
+test("maps fixed metric and pie category palettes to stable typed categories", async () => {
+  const { chartCategoryKey } = await import("../lib/chart-output.ts");
+  const rows = [
+    { region: "east", revenue: 3 },
+    { region: "west", revenue: 9 },
+    { region: "north", revenue: 5 },
+  ];
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "double"],
+    rows,
+  };
+  const pie = {
+    ...line,
+    chart_type: "pie",
+    x_field: "region",
+    title: "revenue by region",
+  };
+  const view = {
+    chart_type: "pie",
+    dimension_field: "region",
+    metric_fields: ["revenue"],
+    hidden_metric_fields: [],
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "metric", field: "revenue", direction: "desc" },
+    format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+    show_data_labels: false,
+    show_legend: false,
+    pie_category_colors: {
+      dimension_field: "region",
+      by_category_key: { [chartCategoryKey("east")]: "purple" },
+    },
+  };
+  const option = buildEChartsOption(pie, result, view);
+  const colorsByCategory = Object.fromEntries(
+    option.series[0].data.map((item) => [item.name, item.itemStyle.color]),
+  );
+  assert.equal(colorsByCategory.east, "#a855f7");
+  assert.equal(colorsByCategory.west, "#14b8a6");
+  assert.equal(colorsByCategory.north, "#22c55e");
+
+  const bar = buildEChartsOption(
+    { ...line, chart_type: "bar", x_field: "region", title: "revenue by region" },
+    result,
+    {
+      chart_type: "bar",
+      dimension_field: "region",
+      metric_fields: ["revenue"],
+      hidden_metric_fields: [],
+      bar_orientation: "vertical",
+      title: "Revenue",
+      field_labels: {},
+      sort: { mode: "original" },
+      format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+      show_data_labels: false,
+      show_legend: false,
+      color_by_metric: { revenue: "teal" },
+    },
+  );
+  assert.equal(bar.series[0].itemStyle.color, "#14b8a6");
+  assert.equal(bar.series[0].lineStyle, undefined);
 });

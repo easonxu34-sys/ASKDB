@@ -772,6 +772,17 @@ def _thread_metadata_and_archive_lifecycle(connection: sqlite3.Connection) -> No
     )
 
 
+def _remove_thread_expiry(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP INDEX IF EXISTS idx_agent_threads_expiry")
+    connection.execute("DROP INDEX IF EXISTS idx_agent_threads_archive_expiry")
+    connection.execute(
+        "ALTER TABLE agent_conversation_threads DROP COLUMN retention_remaining_seconds"
+    )
+    connection.execute(
+        "ALTER TABLE agent_conversation_threads DROP COLUMN expires_at"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     ("agent_memory_001_conversations", "conversation-v1", _conversation_schema),
     (
@@ -813,6 +824,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "agent_memory_009_thread_metadata_and_archive_lifecycle",
         "thread-metadata-owner-list-revisions-and-paused-retention-v1",
         _thread_metadata_and_archive_lifecycle,
+    ),
+    (
+        "agent_memory_010_remove_thread_expiry",
+        "persistent-threads-without-inactivity-expiry-v1",
+        _remove_thread_expiry,
     ),
 )
 

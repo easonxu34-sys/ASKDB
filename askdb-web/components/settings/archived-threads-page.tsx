@@ -19,13 +19,6 @@ function archivedAtLabel(value: string | null) {
   return Number.isNaN(date.getTime()) ? "归档时间未知" : date.toLocaleString("zh-CN");
 }
 
-function remainingLabel(seconds: number | null) {
-  if (seconds === null) return "保留期限已暂停";
-  if (seconds <= 0) return "保留期限已结束";
-  const days = Math.ceil(seconds / 86_400);
-  return `恢复后约保留 ${days} 天`;
-}
-
 export function ArchivedThreadsPage() {
   const [threads, setThreads] = useState<ThreadMetadata[]>([]);
   const [query, setQuery] = useState("");
@@ -209,7 +202,6 @@ export function ArchivedThreadsPage() {
                         <h3 className="truncate text-sm font-medium text-[#393630]">{item.title || "新对话"}</h3>
                         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#89847a]">
                           <span className="inline-flex items-center gap-1.5"><Clock3Icon className="size-3" aria-hidden="true" />已于 {archivedAtLabel(item.archived_at)} 归档</span>
-                          <span>{item.retention_paused ? "保留期限已暂停" : remainingLabel(item.retention_remaining_seconds)}</span>
                           {item.is_pinned && <span className="text-[#a76445]">已置顶</span>}
                         </div>
                       </div>

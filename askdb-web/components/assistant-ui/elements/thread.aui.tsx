@@ -4,6 +4,10 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/elements/attachment.aui";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import {
+  ConversationTimestamp,
+  MessageDateSeparator,
+} from "@/components/assistant-ui/elements/conversation-time";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 import { ChartResult } from "@/components/assistant-ui/elements/chart-result";
 import { QueryProgress } from "@/components/assistant-ui/elements/query-progress";
@@ -168,12 +172,27 @@ export const Thread: FC<{ user: AuthUser }> = ({ user }) => {
 };
 
 const ThreadMessage: FC<{ user: AuthUser }> = ({ user }) => {
-  const role = useAuiState((s) => s.message.role);
+  const message = useAuiState((s) => s.message);
+  const messages = useAuiState((s) => s.thread.messages);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
+  const messageIndex = messages.findIndex((item) => item.id === message.id);
+  const previousMessage = messageIndex > 0 ? messages[messageIndex - 1] : undefined;
 
   if (isEditing) return <EditComposer />;
-  if (role === "user") return <UserMessage />;
-  return <AssistantMessage user={user} />;
+  return (
+    <>
+      <MessageDateSeparator
+        current={message.createdAt}
+        previous={previousMessage?.createdAt}
+        isFirst={messageIndex <= 0}
+      />
+      {message.role === "user" ? (
+        <UserMessage createdAt={message.createdAt} />
+      ) : (
+        <AssistantMessage user={user} />
+      )}
+    </>
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -247,6 +266,8 @@ const Composer: FC<{ user: AuthUser }> = ({ user }) => {
   const aui = useAui();
   const canSend = useAuiState((state) => state.composer.canSend);
   const [dataSourceReady, setDataSourceReady] = useState(false);
+  const [modelSetupRequired, setModelSetupRequired] = useState(false);
+  const [dataSourceSetupRequired, setDataSourceSetupRequired] = useState(false);
   const [threadInitializing, setThreadInitializing] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const submissionInProgress = useRef(false);
@@ -286,26 +307,53 @@ const Composer: FC<{ user: AuthUser }> = ({ user }) => {
       <ComposerPrimitive.AttachmentDropzone asChild>
         <div
           data-slot="aui_composer-shell"
-          className="border-[#e7e2d8] focus-within:border-[#d8cbb9] data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
+          className="border-[#e7e2d8] focus-within:border-[#d8cbb9] data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-3 rounded-(--composer-radius) border bg-(--composer-bg) p-4 transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))] sm:p-5"
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
             placeholder="向 AskDB 提问…"
-            className="aui-composer-input placeholder:text-muted-foreground/65 max-h-48 min-h-12 w-full resize-none bg-transparent px-3 py-2 text-[15px] leading-6 outline-none"
+            className="aui-composer-input placeholder:text-muted-foreground/65 max-h-48 min-h-24 w-full resize-none bg-transparent px-2 py-1 text-[15px] leading-6 outline-none"
             rows={1}
             autoFocus
             aria-label="消息输入框"
           />
           <ComposerAction threadInitializing={threadInitializing} dataSourceReady={dataSourceReady}>
-            <ModelProfileSelector userId={user.user_id} isAdmin={user.role === "admin"} />
+            <ModelProfileSelector
+              userId={user.user_id}
+              isAdmin={user.role === "admin"}
+              onSetupRequiredChange={setModelSetupRequired}
+            />
             <DataSourceSelection
               userId={user.user_id}
               isAdmin={user.role === "admin"}
               onReadinessChange={setDataSourceReady}
+              onSetupRequiredChange={setDataSourceSetupRequired}
             />
           </ComposerAction>
         </div>
       </ComposerPrimitive.AttachmentDropzone>
+      {(modelSetupRequired || dataSourceSetupRequired) && (
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-2 pt-2 font-sans text-xs leading-5 text-[#89847a]">
+          <span>尚未配置：</span>
+          {modelSetupRequired && (
+            <a
+              href="/settings/models"
+              className="rounded-sm text-[#9c6046] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650]"
+            >
+              打开模型设置
+            </a>
+          )}
+          {modelSetupRequired && dataSourceSetupRequired && <span aria-hidden="true">·</span>}
+          {dataSourceSetupRequired && (
+            <a
+              href="/settings/wren"
+              className="rounded-sm text-[#9c6046] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650]"
+            >
+              打开数据源设置
+            </a>
+          )}
+        </p>
+      )}
       {submitError && (
         <p role="alert" className="px-2 pt-1 font-sans text-xs text-[#9c6046]">
           {submitError}
@@ -319,7 +367,8 @@ const DataSourceSelection: FC<{
   userId: string;
   isAdmin: boolean;
   onReadinessChange: (ready: boolean) => void;
-}> = ({ userId, isAdmin, onReadinessChange }) => {
+  onSetupRequiredChange: (required: boolean) => void;
+}> = ({ userId, isAdmin, onReadinessChange, onSetupRequiredChange }) => {
   const aui = useAui();
   const threadId = useAuiState((state) => state.optional.threadListItem?.remoteId);
   const threadItemId = useAuiState((state) => state.optional.threadListItem?.id);
@@ -356,6 +405,10 @@ const DataSourceSelection: FC<{
     () => catalog?.data_sources.filter(isChatAvailableDataSource) ?? [],
     [catalog],
   );
+
+  useEffect(() => {
+    onSetupRequiredChange(Boolean(catalog && isAdmin && availableSources.length === 0 && !loadError));
+  }, [availableSources.length, catalog, isAdmin, loadError, onSetupRequiredChange]);
 
   useEffect(() => {
     if (!catalog) return;
@@ -431,20 +484,10 @@ const DataSourceSelection: FC<{
         notice={notice || (loadError ? "数据源列表加载失败" : "")}
         onChange={(sourceId) => void changeSource(sourceId)}
       />
-      {isAdmin && catalog && availableSources.length === 0 && (
-        <div className="flex min-h-7 flex-wrap items-center gap-2 px-1 font-sans">
-          <span role="status" className="min-w-0 text-[11px] text-[#89847a]">
-            {catalog.migration_status === "failed"
-              ? "旧配置导入失败；原配置仍保留，请检查 Agent 设置。"
-              : "配置并应用一个 MySQL 数据源后即可开始查询。"}
-          </span>
-          <a
-            href="/settings/wren"
-            className="rounded-md px-1.5 py-1 text-xs text-[#9c6046] underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
-          >
-            打开数据源设置
-          </a>
-        </div>
+      {isAdmin && catalog?.migration_status === "failed" && availableSources.length === 0 && (
+        <p role="status" className="px-1 pb-1 font-sans text-[11px] leading-5 text-[#89847a]">
+          旧配置导入失败；原配置仍保留，请检查 Agent 设置。
+        </p>
       )}
       {!isAdmin && catalog && availableSources.length === 0 && (
         <p role="status" className="px-1 pb-1 font-sans text-[11px] leading-5 text-[#89847a]">
@@ -458,7 +501,8 @@ const DataSourceSelection: FC<{
 const ModelProfileSelector: FC<{
   userId: string;
   isAdmin: boolean;
-}> = ({ userId, isAdmin }) => {
+  onSetupRequiredChange: (required: boolean) => void;
+}> = ({ userId, isAdmin, onSetupRequiredChange }) => {
   const aui = useAui();
   const threadId = useAuiState((state) => state.optional.threadListItem?.remoteId);
   const threadItemId = useAuiState((state) => state.optional.threadListItem?.id);
@@ -489,6 +533,10 @@ const ModelProfileSelector: FC<{
   }, []);
 
   const availableProfiles = catalog?.profiles.filter((profile) => profile.available) ?? [];
+  useEffect(() => {
+    onSetupRequiredChange(Boolean(catalog && isAdmin && availableProfiles.length === 0 && !loadError));
+  }, [availableProfiles.length, catalog, isAdmin, loadError, onSetupRequiredChange]);
+
   const profileOptions = availableProfiles.map((profile) => ({
     value: profile.id,
     label: profile.name,
@@ -537,8 +585,8 @@ const ModelProfileSelector: FC<{
   }
 
   return (
-    <div className="flex min-h-8 min-w-0 max-w-full flex-wrap items-center gap-2 px-1 font-sans">
-      <label htmlFor="askdb-model-profile" className="text-[11px] text-[#89847a]">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 font-sans">
+      <label htmlFor="askdb-model-profile" className="shrink-0 text-xs text-[#89847a]">
         模型
       </label>
       <ComposerSelect
@@ -555,18 +603,9 @@ const ModelProfileSelector: FC<{
           {notice}
         </span>
       )}
-      {catalog &&
-        availableProfiles.length === 0 &&
-        (isAdmin ? (
-          <a
-            href="/settings/models"
-            className="rounded-md px-1.5 py-1 text-xs text-[#9c6046] underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
-          >
-            打开模型设置
-          </a>
-        ) : (
-          <span className="text-[11px] text-[#89847a]">管理员尚未配置可用模型</span>
-        ))}
+      {catalog && availableProfiles.length === 0 && !isAdmin && (
+        <span className="text-[11px] text-[#89847a]">管理员尚未配置可用模型</span>
+      )}
     </div>
   );
 };
@@ -583,11 +622,14 @@ const ComposerAction: FC<{
   );
 
   return (
-    <div className="aui-composer-action-wrapper relative flex w-full flex-wrap items-end justify-between gap-2">
-      <ComposerAddAttachment />
-      <div className="flex max-w-full flex-wrap items-end justify-end gap-1.5">
-        <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">{children}</div>
-        <div className="flex items-center gap-1.5">
+    <div className="aui-composer-action-wrapper relative flex w-full flex-wrap items-center gap-2 border-t border-[#eee9e1] pt-3">
+      <div className="flex shrink-0 items-center">
+        <ComposerAddAttachment />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-x-4 gap-y-2">
+        {children}
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <AuiIf condition={(s) => s.thread.capabilities.dictation}>
             <AuiIf condition={(s) => s.composer.dictation == null}>
               <ComposerPrimitive.Dictate asChild>
@@ -659,7 +701,6 @@ const ComposerAction: FC<{
               </Button>
             </ComposerPrimitive.Cancel>
           </AuiIf>
-        </div>
       </div>
     </div>
   );
@@ -713,6 +754,7 @@ const AssistantMessage: FC<{ user: AuthUser }> = ({ user }) => {
                   recommendedView={chart.recommendedView}
                   view={chart.view}
                   hasOverride={chart.hasOverride}
+                  undoHistory={chart.undoHistory}
                   persistenceAvailable={chart.persistenceAvailable}
                   overrideNotice={chart.overrideNotice}
                   userId={user.user_id}
@@ -902,7 +944,7 @@ const AssistantActionBar: FC<{ user: AuthUser }> = ({ user }) => {
   );
 };
 
-const UserMessage: FC = () => {
+const UserMessage: FC<{ createdAt: Date }> = ({ createdAt }) => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -914,6 +956,14 @@ const UserMessage: FC = () => {
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-[#eeeae2] text-foreground rounded-2xl px-4 py-2.5 wrap-break-word empty:hidden">
           <MessagePrimitive.Parts />
+        </div>
+        <div className="flex justify-end px-1 pt-1 font-sans text-[10px] leading-3 text-[#777166]">
+          <ConversationTimestamp
+            value={createdAt}
+            variant="clock"
+            accessibleLabel="提问时间"
+            className="tabular-nums"
+          />
         </div>
         <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
           <UserActionBar />

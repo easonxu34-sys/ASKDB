@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +20,13 @@ from domain.auth import Principal
 from integrations.conversation_store import ConversationMemoryStore
 
 logger = logging.getLogger(__name__)
+
+
+def short_log_reference(value: str | None) -> str | None:
+    """Hash opaque identifiers so related logs can be correlated safely."""
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(slots=True)
@@ -190,7 +200,18 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
     except Exception as exc:
         stream_failed = True
         await mark_failed()
-        logger.error("AskDB chat request failed (%s)", type(exc).__name__)
+        wren_diagnostic = _wren_error_diagnostic(
+            exc,
+            thread_id=request.thread_id,
+            turn_id=request.turn_id,
+        )
+        if wren_diagnostic is None:
+            logger.error("AskDB chat request failed (%s)", type(exc).__name__)
+        else:
+            logger.error(
+                "AskDB chat request failed diagnostic=%s",
+                json.dumps(wren_diagnostic, ensure_ascii=True, separators=(",", ":")),
+            )
         yield encode_sse(
             "error",
             {
@@ -224,6 +245,153 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
         await mark_failed()
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+
+
+def _wren_error_diagnostic(
+    exc: Exception,
+    *,
+    thread_id: str,
+    turn_id: str | None,
+) -> dict[str, Any] | None:
+    """Return bounded exception diagnostics without messages, SQL, or locals."""
+    if not any(base.__name__ == "WrenError" for base in type(exc).__mro__):
+        return None
+
+    def safe_label(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        name = value
+        if (
+            len(name) <= 64
+            and name.isascii()
+            and name.replace("_", "").isalnum()
+        ):
+            return name
+        return None
+
+    def safe_type_name(value: object) -> str:
+        return safe_label(type(value).__name__) or "UNKNOWN"
+
+    def safe_module_root(value: object) -> str:
+        module = type(value).__module__.split(".", maxsplit=1)[0]
+        return safe_label(module) or "UNKNOWN"
+
+    def enum_name(value: object) -> str:
+        return safe_label(getattr(value, "name", None)) or "UNKNOWN"
+
+    def safe_integer(value: object) -> int | None:
+        if type(value) is int and 0 <= value <= 2_147_483_647:
+            return value
+        return None
+
+    def driver_fields(error: BaseException) -> dict[str, object]:
+        fields: dict[str, object] = {"argument_count": 0, "argument_types": []}
+        try:
+            error_args = error.args
+        except Exception:
+            error_args = ()
+        if isinstance(error_args, tuple):
+            fields["argument_count"] = len(error_args)
+            fields["argument_types"] = [
+                safe_type_name(value) for value in error_args[:8]
+            ]
+            if len(error_args) > 8:
+                fields["argument_types_truncated"] = True
+
+        for attribute in ("errno", "sqlite_errorcode", "code"):
+            try:
+                numeric_code = safe_integer(getattr(error, attribute, None))
+            except Exception:
+                numeric_code = None
+            if numeric_code is not None:
+                fields["driver_code"] = numeric_code
+                fields["driver_code_source"] = attribute
+                break
+        if "driver_code" not in fields and isinstance(error_args, tuple) and error_args:
+            numeric_code = safe_integer(error_args[0])
+            if numeric_code is not None:
+                fields["driver_code"] = numeric_code
+                fields["driver_code_source"] = "args[0]"
+
+        for attribute in ("sqlstate", "sql_state", "pgcode"):
+            try:
+                state = getattr(error, attribute, None)
+            except Exception:
+                state = None
+            if (
+                isinstance(state, str)
+                and len(state) == 5
+                and state.isascii()
+                and state.isalnum()
+            ):
+                fields["sqlstate"] = state.upper()
+                fields["sqlstate_source"] = attribute
+                break
+        return fields
+
+    def safe_frames(error: BaseException) -> tuple[list[dict[str, object]], bool]:
+        frames: list[dict[str, object]] = []
+        tb = error.__traceback__
+        while tb is not None:
+            code = tb.tb_frame.f_code
+            frames.append(
+                {
+                    "file": os.path.basename(code.co_filename),
+                    "line": tb.tb_lineno,
+                    "function": safe_label(code.co_name) or "UNKNOWN",
+                }
+            )
+            tb = tb.tb_next
+        return frames[-32:], len(frames) > 32
+
+    exception_chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    exception_chain_truncated = False
+    while current is not None and id(current) not in seen:
+        if len(exception_chain) >= 8:
+            exception_chain_truncated = True
+            break
+        seen.add(id(current))
+        exception_chain.append(current)
+        current = current.__cause__ or current.__context__
+
+    chain_diagnostics: list[dict[str, object]] = []
+    for error in exception_chain:
+        frames, frames_truncated = safe_frames(error)
+        node: dict[str, object] = {
+            "type": safe_type_name(error),
+            "module": safe_module_root(error),
+            **driver_fields(error),
+            "stack": frames,
+        }
+        if frames_truncated:
+            node["stack_truncated"] = True
+        chain_diagnostics.append(node)
+
+    metadata = getattr(exc, "metadata", None)
+    metadata_keys: list[str] = []
+    metadata_keys_truncated = False
+    if isinstance(metadata, Mapping):
+        keys = list(metadata.keys())
+        metadata_keys_truncated = len(keys) > 16
+        for key in keys[:16]:
+            metadata_keys.append(
+                safe_label(getattr(key, "name", None))
+                or safe_label(key)
+                or safe_type_name(key)
+            )
+
+    return {
+        "code": enum_name(getattr(exc, "error_code", None)),
+        "phase": enum_name(getattr(exc, "phase", None)),
+        "thread_ref": short_log_reference(thread_id),
+        "turn_ref": short_log_reference(turn_id),
+        "metadata_keys": metadata_keys,
+        "metadata_keys_truncated": metadata_keys_truncated,
+        "exception_chain": chain_diagnostics,
+        "exception_chain_truncated": exception_chain_truncated,
+    }
 
 
 def _attach_turn_metadata(

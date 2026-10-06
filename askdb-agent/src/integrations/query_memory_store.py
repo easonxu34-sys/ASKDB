@@ -312,7 +312,7 @@ class QueryMemoryStore:
             )
             thread = connection.execute(
                 """SELECT binding.owner_user_id, binding.data_source_id,
-                          memory.status, memory.expires_at
+                          memory.status
                    FROM chat_thread_data_sources AS binding
                    JOIN agent_conversation_threads AS memory
                      ON memory.thread_id=binding.thread_id
@@ -321,7 +321,6 @@ class QueryMemoryStore:
             if (
                 thread is None or thread["data_source_id"] != data_source_id
                 or thread["owner_user_id"] != actor_id or thread["status"] != "active"
-                or _parse_time(thread["expires_at"]) <= now
             ):
                 raise QueryMemoryNotFound("thread is unavailable")
             source_turn_id = None
@@ -399,7 +398,7 @@ class QueryMemoryStore:
                 retry_after = math.ceil((oldest + timedelta(hours=1) - now).total_seconds())
                 raise QueryMemoryQuotaExceeded(retry_after)
             example_id = uuid.uuid4().hex
-            expires_at = min(now + self.CANDIDATE_TTL, _parse_time(thread["expires_at"]))
+            expires_at = now + self.CANDIDATE_TTL
             connection.execute(
                 """INSERT INTO query_example_candidates
                    (query_example_id, data_source_id, source_thread_id, source_turn_id,
@@ -434,12 +433,11 @@ class QueryMemoryStore:
 
     def resolve_thread_source(self, *, actor_id: str, thread_id: str) -> str:
         """Resolve source from the owner-bound server thread, never from request data."""
-        now = self._now()
         connection = self._connect()
         try:
             row = connection.execute(
                 """SELECT binding.data_source_id, binding.owner_user_id,
-                          memory.status, memory.expires_at
+                          memory.status
                    FROM chat_thread_data_sources AS binding
                    JOIN agent_conversation_threads AS memory
                      ON memory.thread_id=binding.thread_id
@@ -447,7 +445,7 @@ class QueryMemoryStore:
             ).fetchone()
             if (
                 row is None or row["owner_user_id"] != actor_id
-                or row["status"] != "active" or _parse_time(row["expires_at"]) <= now
+                or row["status"] != "active"
             ):
                 raise QueryMemoryNotFound("thread is unavailable")
             return str(row["data_source_id"])
@@ -1049,7 +1047,7 @@ class QueryMemoryStore:
                     now=now, event_id=f"journal-{event.sequence}-{example_id}",
                 )
             return
-        if event.event_type not in {"thread_delete", "thread_expire"} or not event.thread_id:
+        if event.event_type != "thread_delete" or not event.thread_id:
             return
         rows = connection.execute(
             """SELECT * FROM query_example_candidates
@@ -1081,7 +1079,7 @@ class QueryMemoryStore:
                 new_review, new_publication = "approved", "active"
                 event_type, reason = "source_thread_redacted", "published_example_survives_thread_deletion"
             else:
-                new_review = "expired" if event.event_type == "thread_expire" else "withdrawn"
+                new_review = "withdrawn"
                 new_publication = "removed"
                 connection.execute(
                     """UPDATE query_example_candidates SET source_thread_id=NULL,

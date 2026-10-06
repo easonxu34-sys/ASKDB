@@ -27,13 +27,13 @@ import {
   getRecentThreadPageState,
   getThreadDataSourceId,
   getThreadDataSourceName,
-  getThreadExpiresAt,
   isThreadHistoryImportPending,
   removeDeletedThreadCache,
   requestThreadDeletionFromUI,
   saveServerThreadMetadata,
   setThreadSearchQuery,
 } from "@/lib/local-thread-adapter";
+import { ConversationTimestamp } from "@/components/assistant-ui/elements/conversation-time";
 import type { AuthUser } from "@/lib/auth-api";
 import { archiveThread, patchThreadMetadata, ThreadApiError } from "@/lib/thread-api";
 import { getThreadGroupKey } from "@/lib/thread-grouping.mjs";
@@ -397,14 +397,8 @@ const ThreadListItem = ({
     sourceId && sourceCatalog && (!source || !source.enabled || source.runtime_status !== "ready"),
   );
   const importPending = isThreadHistoryImportPending(user.user_id, remoteId);
-  const expiresAt = remoteId ? getThreadExpiresAt(user.user_id, remoteId) : undefined;
-  const expiresDate = expiresAt ? new Date(expiresAt) : null;
   const metadata = remoteId ? getCachedThread(user.user_id, remoteId) : undefined;
   const isPinned = metadata?.isPinned === true;
-  const expiryLabel =
-    expiresDate && !Number.isNaN(expiresDate.getTime())
-      ? `到期 ${expiresDate.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}`
-      : null;
 
   async function pinThread() {
     if (!remoteId || !metadata?.metadataRevision) return;
@@ -487,15 +481,25 @@ const ThreadListItem = ({
       {renderThread && (
         <ThreadListItemPrimitive.Root className="group flex min-w-0 items-center rounded-lg transition-colors hover:bg-[#e9e5dc] data-[active]:bg-[#e7e1d6]">
           <ThreadListItemPrimitive.Trigger
-            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2.5 pl-5 pr-2.5 text-left text-[13px] text-[#69645b] hover:text-[#393630] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none data-[active]:font-medium data-[active]:text-[#393630]"
+            className="flex min-w-0 flex-1 items-start gap-2.5 rounded-lg py-2.5 pl-5 pr-2.5 text-left text-[13px] text-[#69645b] hover:text-[#393630] focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none data-[active]:font-medium data-[active]:text-[#393630]"
             onClick={onNavigate}
           >
             <MessageSquareIcon
-              className="size-3.5 shrink-0 text-[#a29b8e] group-data-[active]:text-[#b76d4b]"
+              className="mt-0.5 size-3.5 shrink-0 text-[#a29b8e] group-data-[active]:text-[#b76d4b]"
               aria-hidden="true"
             />
-            <span className="min-w-0 flex-1 truncate">
-              <ThreadListItemPrimitive.Title fallback="新对话" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate leading-4">
+                <ThreadListItemPrimitive.Title fallback="新对话" />
+              </span>
+              {metadata?.lastUserTurnAt && (
+                <ConversationTimestamp
+                  value={metadata.lastUserTurnAt}
+                  variant="activity"
+                  accessibleLabel="最近提问时间"
+                  className="mt-1 block text-[10px] font-normal leading-3 text-[#777166] tabular-nums"
+                />
+              )}
             </span>
             {isPinned && <PinIcon className="size-3 shrink-0 text-[#b76d4b]" aria-label="已置顶" />}
             {importPending && (
@@ -512,14 +516,6 @@ const ThreadListItem = ({
                 className="shrink-0 rounded-full bg-[#f8e9e4] px-1.5 py-0.5 text-[9px] font-normal text-[#9c4037]"
               >
                 不可用
-              </span>
-            )}
-            {expiryLabel && expiresDate && (
-              <span
-                title={`会话将于 ${expiresDate.toLocaleString("zh-CN")} 到期`}
-                className="shrink-0 text-[9px] font-normal text-[#9b6651]"
-              >
-                {expiryLabel}
               </span>
             )}
           </ThreadListItemPrimitive.Trigger>

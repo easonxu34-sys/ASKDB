@@ -2,6 +2,9 @@ name: askdb-local-test
 
 services:
   agent:
+    # wren-core-py publishes a Linux x86_64 wheel but no Linux ARM64 wheel.
+    # Docker Desktop emulates this on Apple Silicon to avoid a slow Rust source build.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: askdb-agent/Dockerfile
@@ -32,9 +35,9 @@ services:
     environment:
       ASKDB_AGENT_URL: http://agent:8000
       ASKDB_AGENT_INTERNAL_HTTP_HOSTS: agent
-      ASKDB_WEB_ORIGIN: https://${CLOUDFLARE_TUNNEL_HOSTNAME:?Set CLOUDFLARE_TUNNEL_HOSTNAME in .env.docker}
+      ASKDB_WEB_ORIGIN: ${ASKDB_WEB_ORIGIN:-http://localhost:3001}
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3000"
     depends_on:
       agent:
         condition: service_healthy
@@ -51,10 +54,11 @@ services:
     restart: unless-stopped
 
   tunnel:
+    profiles: [cloudflare]
     image: cloudflare/cloudflared:latest
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env.docker}
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     # Configure this named tunnel's published route in Cloudflare to http://web:3000.
     depends_on:
       web:

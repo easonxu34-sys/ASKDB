@@ -14,12 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 def initialize_memory_before_serving(store: Any) -> None:
-    """Replay deletions and run overdue cleanup before the API accepts traffic."""
+    """Replay deletions and recover stale work before the API accepts traffic."""
     store.assert_journal_ready()
     store.assert_deletion_participant_ready()
     store.fail_stale_turns(stale_after=timedelta(minutes=15))
-    while store.expire_inactive_threads(limit=500):
-        pass
     store.purge_expired_tombstones()
     participant = getattr(store, "deletion_participant", None)
     expire_candidates = getattr(participant, "expire_candidates", None)
@@ -59,7 +57,6 @@ async def _sweep_once(
     await asyncio.to_thread(
         store.fail_stale_turns, stale_after=timedelta(minutes=15), limit=500
     )
-    await asyncio.to_thread(store.expire_inactive_threads, limit=100)
     await asyncio.to_thread(store.purge_expired_tombstones)
     participant = getattr(store, "deletion_participant", None)
     expire_candidates = getattr(participant, "expire_candidates", None)
@@ -78,7 +75,7 @@ async def run_memory_sweeper(
     interval_seconds: int = 300,
     publication_sweeper: Callable[[], Awaitable[Any]] | None = None,
 ) -> None:
-    """Run retention and deletion recovery serially in the app process."""
+    """Run memory cleanup and deletion recovery serially in the app process."""
     while True:
         await asyncio.sleep(interval_seconds)
         try:

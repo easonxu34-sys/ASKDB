@@ -358,7 +358,6 @@ class EncryptedDeletionJournal:
                 actor_id = payload.get("actor_id")
                 if event_type not in {
                     "thread_delete",
-                    "thread_expire",
                     "business_rule_revoke",
                     "query_example_revoke",
                 }:
@@ -458,7 +457,7 @@ class EncryptedDeletionJournal:
                             or (
                                 existing.actor_id is None
                                 and actor_id is not None
-                                and event_type in {"thread_delete", "thread_expire"}
+                                and event_type == "thread_delete"
                             )
                         )
                     )

@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { AdminGate } from "@/components/auth/admin-gate";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { Button } from "@/components/ui/button";
-import { BookOpenIcon, BrainIcon } from "lucide-react";
+import { ArrowUpRightIcon, BookOpenIcon, BrainIcon } from "lucide-react";
 import { fetchCurrentUser, type AuthUser } from "@/lib/auth-api";
 import { fetchDataSourceCatalog, type DataSourceCatalog } from "@/lib/data-sources";
 import {
@@ -252,7 +253,7 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
             </div>
           )}
           <p className="mt-5 border-t border-[#eee8de] pt-4 font-sans text-[11px] leading-5 text-[#8d867b]">
-            {adminMode ? "审核通过只代表内容审核完成。查询示例需激活语料版本；业务规则需发布到 Wren 新版本。" : "提交内容由服务端按当前账号和数据源权限隔离。待审核、被拒绝或尚未发布的内容不会用于回答。"}
+            {adminMode ? "审核通过只代表内容审核完成。查询示例需激活语料版本；业务规则需发布到新的数据源版本。" : "提交内容由服务端按当前账号和数据源权限隔离。待审核、被拒绝或尚未发布的内容不会用于回答。"}
           </p>
         </section>
       </div>
@@ -324,17 +325,26 @@ function BusinessRuleCard({ candidate, user, isAdmin, sourceName, working, runAc
   const [clarificationQuestion, setClarificationQuestion] = useState("请补充这条口径的适用范围和判断条件。");
   const id = candidate.business_rule_id;
   const mine = candidate.submitted_by === user?.user_id;
+  const publishedContentRemoved =
+    candidate.publication_status === "active" && !candidate.term && !candidate.definition;
   const transition = { expected_version: candidate.version };
   return <article className="rounded-xl border border-[#eae4da] bg-white/75 p-4 sm:p-5">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2"><Badge>{sourceName}</Badge><StatusPair review={candidate.review_status} publication={candidate.publication_status} /></div>
-      <h2 className="mt-3 font-serif text-lg leading-6 text-[#403c35]">{candidate.term || "规则内容已移除"}</h2>
-      <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#6b655c]">{candidate.definition || "规则正文已移除。"}</p>
+      <h2 className="mt-3 font-serif text-lg leading-6 text-[#403c35]">{candidate.term || (publishedContentRemoved ? "业务规则已发布" : "规则内容已移除")}</h2>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#6b655c]">{candidate.definition || (publishedContentRemoved ? "当前生效正文以数据源的活动版本为准；此提交记录保留来源和审核信息。" : "规则正文已移除。")}</p>
+      {publishedContentRemoved && isAdmin && <Link
+        href={`/settings/wren?data_source_id=${encodeURIComponent(candidate.data_source_id)}&revision=active#business-rules`}
+        className="mt-2 inline-flex items-center gap-1 font-sans text-xs font-medium text-[#a45f40] underline underline-offset-4 transition-colors hover:text-[#82452f] focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:ring-offset-2"
+      >
+        查看当前活动版本
+        <ArrowUpRightIcon aria-hidden="true" className="size-3.5" />
+      </Link>}
       {candidate.mdl_references.length > 0 && <p className="mt-3 font-sans text-[11px] text-[#837b70]">关联：{candidate.mdl_references.join(" · ")}</p>}
       {candidate.has_exact_term_conflict && <p className="mt-3 rounded-lg bg-[#fff8e8] px-3 py-2 text-xs text-[#8a6534]">发现同名规则，需要管理员核对或要求补充说明。</p>}
       {candidate.clarification_question && <p className="mt-3 rounded-lg bg-[#f5f2ec] px-3 py-2 text-xs leading-5 text-[#615b51]">管理员请补充：{candidate.clarification_question}</p>}
       <p className="mt-2 font-sans text-[10px] text-[#979084]">提交于 {new Date(candidate.created_at).toLocaleString("zh-CN")} · 到期 {new Date(candidate.expires_at).toLocaleDateString("zh-CN")}</p>
-      {candidate.review_reason_code && <p className="mt-2 text-xs text-[#925841]">处理说明：{candidate.review_reason_code}</p>}
+      {candidate.review_reason_code && <p className="mt-2 text-xs text-[#925841]">审核说明：{candidate.review_reason_code === "admin_approved" ? "管理员已审核通过" : candidate.review_reason_code}</p>}
     </div>
     <div className="mt-5 flex flex-col gap-4 border-t border-[#eee8de] pt-4 sm:flex-row sm:items-center sm:justify-between">
       {mine && candidate.review_status === "pending" && <div className="flex shrink-0 flex-col items-start gap-1.5">
@@ -352,9 +362,9 @@ function BusinessRuleCard({ candidate, user, isAdmin, sourceName, working, runAc
             </select>
             <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "reject", { ...transition, reason_code: reason }), "已拒绝此业务规则。")}>拒绝</ActionButton>
           </>}
-          {isAdmin && candidate.review_status === "pending" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "approve", transition), "审核已通过；还需要发布到新的 Wren 版本后才会生效。")}>审核通过</ActionButton>}
-          {isAdmin && candidate.review_status === "approved" && candidate.publication_status !== "active" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => publishRule(candidate), "发布任务已提交。")}>发布到 Wren</ActionButton>}
-          {isAdmin && candidate.publication_status === "active" && <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "revoke", { idempotency_key: makeActionKey() }), "已撤销；线上召回已立即停止，Wren 正在移除。")}>撤销生效内容</ActionButton>}
+          {isAdmin && candidate.review_status === "pending" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "approve", transition), "审核已通过；还需要发布到新的数据源版本后才会生效。")}>审核通过</ActionButton>}
+          {isAdmin && candidate.review_status === "approved" && candidate.publication_status !== "active" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => publishRule(candidate), "发布任务已提交。")}>发布到数据源</ActionButton>}
+          {isAdmin && candidate.publication_status === "active" && <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "revoke", { idempotency_key: makeActionKey() }), "已撤销；线上召回已立即停止，正在从当前版本移除。")}>撤销生效内容</ActionButton>}
           {mine && candidate.review_status === "needs_clarification" && <ClarificationForm candidate={candidate} runAction={runAction} working={working} />}
         </div>
         {isAdmin && candidate.review_status === "pending" && <div id={`clarification-panel-${id}`} hidden={!askingClarification} className="w-full sm:ml-auto sm:max-w-xl">

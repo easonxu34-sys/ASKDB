@@ -1,8 +1,49 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
+
+
+class SerializedWrenToolkit:
+    """Serialize operations that may touch a cached Wren connector."""
+
+    def __init__(self, toolkit: Any) -> None:
+        self._toolkit = toolkit
+        self.operation_lock = RLock()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._toolkit, name)
+
+    @contextmanager
+    def operation(self) -> Iterator[None]:
+        with self.operation_lock:
+            yield
+
+    def dry_plan(self, sql: str) -> str:
+        with self.operation_lock:
+            return self._toolkit.dry_plan(sql)
+
+    def dry_run(self, sql: str) -> None:
+        with self.operation_lock:
+            self._toolkit.dry_run(sql)
+
+    def query(self, sql: str, limit: int | None = None) -> Any:
+        with self.operation_lock:
+            return self._toolkit.query(sql, limit=limit)
+
+
+@contextmanager
+def serialized_wren_operation(toolkit: Any) -> Iterator[None]:
+    """Use the toolkit lock, while keeping lightweight test doubles usable."""
+    operation = getattr(toolkit, "operation", None)
+    if callable(operation):
+        with operation():
+            yield
+        return
+    yield
 
 
 def build_wren_toolkit(
@@ -26,7 +67,9 @@ def build_wren_toolkit(
     # the toolkit package.
     from wren_langchain import WrenToolkit  # noqa: PLC0415
 
-    return WrenToolkit.from_project(
-        project_dir,
-        profile=profile_name,
+    return SerializedWrenToolkit(
+        WrenToolkit.from_project(
+            project_dir,
+            profile=profile_name,
+        )
     )

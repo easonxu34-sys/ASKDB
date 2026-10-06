@@ -1,7 +1,11 @@
 import {
+  chartCategoryKey,
   createRecommendedChartView,
   validateChartView,
+  CHART_COLOR_PALETTES,
   type ChartValueFormat,
+  type ChartColorSpec,
+  type ChartPaletteId,
   type ChartViewConfiguration,
   type EChartsChartArtifact,
   type SuccessfulQueryArtifact,
@@ -13,6 +17,8 @@ import {
   formatDecimal,
   sumDecimalValues,
 } from "./chart-decimal.ts";
+
+export { chartCategoryKey, resolvePieCategoryLabel } from "./chat-output.ts";
 
 type QueryShape = SuccessfulQueryArtifact & {
   resultId: string;
@@ -33,6 +39,32 @@ const CNY_LABELS = {
   ten_thousand_yuan: "万元",
   hundred_million_yuan: "亿元",
 } as const;
+function echartColor(color: ChartColorSpec) {
+  if (color.mode === "solid") return color.hex;
+  const directions = {
+    horizontal: [0, 0, 1, 0],
+    vertical: [0, 0, 0, 1],
+    diagonal_down: [0, 0, 1, 1],
+    diagonal_up: [0, 1, 1, 0],
+  } as const;
+  const [x, y, x2, y2] = directions[color.direction];
+  return {
+    type: "linear",
+    x,
+    y,
+    x2,
+    y2,
+    colorStops: [
+      { offset: 0, color: color.start_hex },
+      { offset: 1, color: color.end_hex },
+    ],
+    global: false,
+  };
+}
+
+function chartStyle(color: ChartColorSpec) {
+  return { color: echartColor(color), opacity: color.opacity / 100 };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -229,7 +261,7 @@ function tooltipHtml(
   return `${dimension}${values}`;
 }
 
-function isTruncated(query: QueryShape) {
+export function isChartQueryTruncated(query: SuccessfulQueryArtifact) {
   return (
     query.truncated === true ||
     query.rows.length > 1000 ||
@@ -255,34 +287,55 @@ export function buildEChartsOption(
   const view = validation.view;
   if (!view) return null;
 
-  const rows = sortRows(query, view);
+  const sortedRows = sortRows(query, view);
+  const rows = view.current_result_top_n
+    ? sortedRows.slice(0, view.current_result_top_n.count)
+    : sortedRows;
   const labels = rows.map(({ row }) => safeLabel(row[view.dimension_field]));
   const categoryPositions = rows.map((_, index) => index);
   const visibleMetrics = view.metric_fields.filter(
     (field) => !view.hidden_metric_fields.includes(field),
   );
   const axisFormat = sharedAxisFormat(view, visibleMetrics);
-  const series = visibleMetrics.map((field) => ({
-    name: displayName(view, field),
-    type: view.chart_type === "line" ? "line" : "bar",
-    data: rows.map(({ row }) => {
-      return exactPlotNumber(row[field]) ?? null;
-    }),
-    label: {
-      show: view.show_data_labels,
-      position:
-        view.chart_type === "bar" && view.bar_orientation === "horizontal" ? "right" : "top",
-      formatter: (params: unknown) => {
-        const value = isRecord(params) ? params.value : params;
-        const sourceValue =
-          isRecord(params) && typeof params.dataIndex === "number"
-            ? rows[params.dataIndex]?.row[field]
-            : value;
-        return formatChartValue(sourceValue, view.format_by_field[field]);
+  const paletteId = (view.color_palette_id ?? "system_default") as ChartPaletteId;
+  const paletteColors = CHART_COLOR_PALETTES[paletteId] ?? CHART_COLOR_PALETTES.classic;
+  const series = visibleMetrics.map((field, index) => {
+    const customColor = view.color_by_metric?.[field];
+    const paletteColor =
+      paletteId === "system_default" ? undefined : paletteColors[index % paletteColors.length];
+    const style = customColor
+      ? chartStyle(customColor)
+      : paletteColor
+        ? { color: paletteColor, opacity: 1 }
+        : undefined;
+    return {
+      name: displayName(view, field),
+      type: view.chart_type === "line" ? "line" : "bar",
+      data: rows.map(({ row }) => {
+        return exactPlotNumber(row[field]) ?? null;
+      }),
+      ...(style
+        ? {
+            itemStyle: style,
+            ...(view.chart_type === "line" ? { lineStyle: style } : {}),
+          }
+        : {}),
+      label: {
+        show: view.show_data_labels,
+        position:
+          view.chart_type === "bar" && view.bar_orientation === "horizontal" ? "right" : "top",
+        formatter: (params: unknown) => {
+          const value = isRecord(params) ? params.value : params;
+          const sourceValue =
+            isRecord(params) && typeof params.dataIndex === "number"
+              ? rows[params.dataIndex]?.row[field]
+              : value;
+          return formatChartValue(sourceValue, view.format_by_field[field]);
+        },
       },
-    },
-    ...(view.chart_type === "line" ? { showSymbol: rows.length <= 60, connectNulls: false } : {}),
-  }));
+      ...(view.chart_type === "line" ? { showSymbol: rows.length <= 60, connectNulls: false } : {}),
+    };
+  });
   const tooltip = {
     trigger: view.chart_type === "pie" ? "item" : "axis",
     formatter: (params: unknown) => tooltipHtml(rows, view, visibleMetrics, params),
@@ -292,12 +345,34 @@ export function buildEChartsOption(
     const field = visibleMetrics[0];
     const total = sumDecimalValues(rows.map(({ row }) => row[field]));
     if (!total || total.coefficient <= BigInt("0")) return null;
-    const data = rows.map(({ row }) => ({
-      name: safeLabel(row[view.dimension_field]),
-      value: exactPlotNumber(row[field]) ?? null,
-    }));
+    const piePaletteColors = paletteId === "system_default"
+      ? CHART_COLOR_PALETTES.classic
+      : paletteColors;
+    const defaultColorByKey = new Map<string, string>();
+    query.rows.slice(0, 1000).forEach(({ [view.dimension_field]: value }) => {
+      const key = chartCategoryKey(value);
+      if (key && !defaultColorByKey.has(key)) {
+        defaultColorByKey.set(key, piePaletteColors[defaultColorByKey.size % piePaletteColors.length]);
+      }
+    });
+    const data = rows.map(({ row }) => {
+      const categoryKey = chartCategoryKey(row[view.dimension_field]);
+      const colorSpec = categoryKey
+        ? view.pie_category_colors?.by_category_key[categoryKey]
+        : undefined;
+      const defaultColor = categoryKey ? defaultColorByKey.get(categoryKey) : undefined;
+      const color = colorSpec
+        ? chartStyle(colorSpec)
+        : defaultColor
+          ? { color: defaultColor, opacity: 1 }
+          : undefined;
+      return {
+        name: safeLabel(row[view.dimension_field]),
+        value: exactPlotNumber(row[field]) ?? null,
+        ...(color ? { itemStyle: color } : {}),
+      };
+    });
     return {
-      title: { text: view.title, left: "center", textStyle: { fontSize: 14, fontWeight: 500 } },
       tooltip: {
         ...tooltip,
         formatter: (params: unknown) => {
@@ -315,7 +390,7 @@ export function buildEChartsOption(
           name: displayName(view, field),
           type: "pie",
           radius: ["0%", "68%"],
-          center: ["50%", "54%"],
+          center: ["50%", "49%"],
           label: {
             show: view.show_data_labels,
             formatter: (params: unknown) => {
@@ -334,8 +409,6 @@ export function buildEChartsOption(
     };
   }
 
-  const dimensionName = displayName(view, view.dimension_field);
-  const metricName = visibleMetrics.map((field) => displayName(view, field)).join(" / ");
   const commonAxisLabel = {
     hideOverlap: true,
     formatter: (_value: unknown, index: number) => labels[index] ?? "",
@@ -345,15 +418,13 @@ export function buildEChartsOption(
       ? {
           xAxis: {
             type: "value",
-            name: metricName,
-            scale: true,
+            scale: false,
             axisLabel: {
               formatter: (value: unknown) => formatChartValue(value, axisFormat),
             },
           },
           yAxis: {
             type: "category",
-            name: dimensionName,
             data: categoryPositions,
             inverse: true,
             axisLabel: commonAxisLabel,
@@ -362,33 +433,30 @@ export function buildEChartsOption(
       : {
           xAxis: {
             type: "category",
-            name: dimensionName,
             data: categoryPositions,
             axisLabel: commonAxisLabel,
           },
           yAxis: {
             type: "value",
-            name: metricName,
-            scale: true,
+            scale: view.chart_type === "line",
             axisLabel: {
               formatter: (value: unknown) => formatChartValue(value, axisFormat),
             },
           },
         };
   return {
-    title: { text: view.title, left: "left", textStyle: { fontSize: 14, fontWeight: 500 } },
     tooltip,
     legend: { show: view.show_legend, type: "scroll", bottom: 0 },
     grid: {
       left: 12,
       right: 16,
-      top: 42,
+      top: 28,
       bottom: view.show_legend ? 50 : 28,
       containLabel: true,
     },
     ...axis,
     series,
-    ...(isTruncated(query)
+    ...(isChartQueryTruncated(query)
       ? { aria: { enabled: true, description: "图表仅展示部分查询结果" } }
       : {}),
   };

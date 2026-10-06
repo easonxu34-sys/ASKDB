@@ -65,9 +65,6 @@ def _thread_payload(thread: ConversationThread) -> dict[str, Any]:
         "is_pinned": thread.is_pinned,
         "archived_at": thread.archived_at,
         "last_user_turn_at": thread.last_user_turn_at,
-        "expires_at": thread.expires_at,
-        "retention_paused": thread.retention_paused,
-        "retention_remaining_seconds": thread.retention_remaining_seconds,
         "metadata_revision": thread.metadata_revision,
         "history_import_pending": thread.history_import_pending,
     }

@@ -61,6 +61,10 @@ import {
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { getDuplicateWrenRuleIndexes } from "@/lib/wren-rule-validation";
 import {
+  getWrenRuleDisplayName,
+  getWrenRuleOrigin,
+} from "@/lib/wren-rule-provenance";
+import {
   baseFingerprint,
   createModelsForSelection,
   defaultConnection,
@@ -72,7 +76,7 @@ import {
   sourceTables,
 } from "@/lib/wren-source-model";
 
-const WREN_APPLY_FAILURE_FALLBACK = "Wren 配置应用失败，请修正配置后重试。";
+const WREN_APPLY_FAILURE_FALLBACK = "配置应用失败，请修正配置后重试。";
 
 const emptySemantic = (): WrenSemanticConfig => ({
   tables: [],
@@ -92,6 +96,33 @@ const runtimeReasonLabels: Record<string, string> = {
   ONLINE_RECALL_DISABLED: "在线召回未启用，查询前置判断拿不到这些规则",
   RECALL_DISABLED: "服务端在线召回开关已关闭",
 };
+
+function WrenRuleOriginBadge({ rule }: { rule: Pick<WrenRule, "name"> }) {
+  const isSessionSubmitted = getWrenRuleOrigin(rule) === "session";
+
+  return (
+    <span
+      title={
+        isSessionSubmitted
+          ? "由会话提交；来源会话删除或到期时会撤销"
+          : "直接维护在当前数据源的语义配置中"
+      }
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-medium ${
+        isSessionSubmitted
+          ? "bg-[#edf1e8] text-[#597253]"
+          : "bg-[#f3ede5] text-[#866342]"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`size-1.5 rounded-full ${
+          isSessionSubmitted ? "bg-[#748466]" : "bg-[#a47751]"
+        }`}
+      />
+      {isSessionSubmitted ? "会话提交" : "数据源自定义"}
+    </span>
+  );
+}
 
 type OperationFeedback = {
   status: "success" | "error";
@@ -121,10 +152,10 @@ const phaseLabels: Record<string, string> = {
   queued: "等待开始",
   testing_connection: "测试数据库连接",
   introspecting: "读取表结构",
-  validating: "校验 Wren 配置",
+  validating: "校验配置",
   building: "构建语义模型",
   initializing_runtime: "启动查询运行环境",
-  active: "已生效",
+  active: "应用完成",
   failed: "应用失败",
 };
 
@@ -273,11 +304,11 @@ function formatRevisionDate(value: string) {
 }
 
 function revisionStatusLabel(status: string, isActive: boolean) {
-  if (isActive) return "当前生效";
+  if (isActive) return "当前版本";
   if (status === "draft") return "草稿";
   if (status === "failed") return "失败";
   if (status === "retired") return "历史版本";
-  if (status === "active") return "已生效";
+  if (status === "active") return "已应用";
   return status || "未知状态";
 }
 
@@ -425,7 +456,7 @@ function RevisionPreview({
             )}
             {isActive && (
               <span className="inline-flex h-9 items-center rounded-lg bg-[#e7eee2] px-3 text-xs font-medium text-[#527249]">
-                当前生效
+                当前版本
               </span>
             )}
           </div>
@@ -520,12 +551,17 @@ function RevisionPreview({
         )}
       </Section>
 
-      <Section title={`业务规则 · ${rules.length}`}>
+      <Section id="business-rules" title={`业务规则 · ${rules.length}`}>
         {rules.length ? (
           <div className="space-y-2">
             {rules.map((rule, index) => (
               <details key={`${rule.name}-${index}`} className="rounded-xl border border-[#ebe6dd] bg-white/70 px-3 py-2.5">
-                <summary className="cursor-pointer text-xs font-medium text-[#514b42]">{rule.name || "未命名规则"}</summary>
+                <summary className="cursor-pointer text-xs font-medium text-[#514b42]">
+                  <span className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate">{getWrenRuleDisplayName(rule)}</span>
+                    <WrenRuleOriginBadge rule={rule} />
+                  </span>
+                </summary>
                 <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#77736b]">{rule.content}</p>
               </details>
             ))}
@@ -634,7 +670,7 @@ export function DataSourcesPage() {
   const actionBlockReason = working
     ? "操作正在处理中，请稍候。"
     : operation?.status === "running"
-      ? "Wren 配置正在处理中，请先刷新操作状态。"
+      ? "配置正在处理中，请先刷新操作状态。"
       : !displayName.trim()
         ? "请先填写数据源名称。"
         : !activeFieldGroup
@@ -809,7 +845,12 @@ export function DataSourcesPage() {
         setConnectors(connectorResponse.connectors);
         setDefaultSourceId(response.default_data_source_id);
         setCatalogStatus(catalog.migration_status);
+        const requestedSourceId = new URLSearchParams(window.location.search).get("data_source_id");
+        const requestedSource = response.data_sources.find(
+          (item) => item.data_source.id === requestedSourceId,
+        );
         const targetId =
+          requestedSource?.data_source.id ??
           response.default_data_source_id ??
           catalog.default_data_source_id ??
           response.data_sources[0]?.data_source.id;
@@ -818,7 +859,7 @@ export function DataSourcesPage() {
         else startNewSource();
       })
       .catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : "读取 Wren 数据源失败。");
+        if (active) setError(cause instanceof Error ? cause.message : "读取数据源失败。");
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -969,7 +1010,7 @@ export function DataSourcesPage() {
         setOperationFeedback({
           status: "success",
           title: "草稿已保存",
-          message: `“${saved.data_source.display_name}”的草稿已保存，当前生效版本未变；点击“应用配置”并等待成功后，新会话才会使用更新后的规则。`,
+          message: `“${saved.data_source.display_name}”的草稿已保存，当前版本未变；点击“应用配置”并等待成功后，新会话才会使用更新后的规则。`,
         });
       },
       { failureTitle: "保存失败" },
@@ -1060,7 +1101,7 @@ export function DataSourcesPage() {
           setOperation(current);
         }
         if (current.status === "running")
-          throw new Error("Wren 仍在构建。可稍后刷新页面查看应用状态。");
+          throw new Error("数据源配置仍在构建。稍后刷新页面查看应用状态。");
         if (current.status === "failed") {
           throw new Error(current.message || WREN_APPLY_FAILURE_FALLBACK);
         }
@@ -1114,7 +1155,7 @@ export function DataSourcesPage() {
     });
   }
 
-  async function previewRevision(revisionId: string) {
+  const previewRevision = useCallback(async (revisionId: string) => {
     if (!selectedId) return;
     const sourceId = selectedId;
     const requestId = ++revisionPreviewRequest.current;
@@ -1140,7 +1181,18 @@ export function DataSourcesPage() {
     } finally {
       if (requestId === revisionPreviewRequest.current) setRevisionLoadingId(null);
     }
-  }
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!detail || detail.data_source.id !== selectedId) return;
+    const params = new URLSearchParams(window.location.search);
+    if (
+      params.get("revision") !== "active" ||
+      params.get("data_source_id") !== selectedId ||
+      !detail.data_source.active_revision_id
+    ) return;
+    void previewRevision(detail.data_source.active_revision_id);
+  }, [detail?.data_source.active_revision_id, detail?.data_source.id, previewRevision, selectedId]);
 
   function returnToDraft() {
     revisionPreviewRequest.current += 1;
@@ -1332,6 +1384,22 @@ export function DataSourcesPage() {
     revisionPreview.revision.id === selectedRevisionId
       ? revisionPreview
       : null;
+
+  useEffect(() => {
+    if (!currentRevisionPreview) return;
+    const url = new URL(window.location.href);
+    if (
+      url.hash !== "#business-rules" ||
+      url.searchParams.get("data_source_id") !== currentRevisionPreview.data_source.id
+    ) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("business-rules")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [currentRevisionPreview?.data_source.id, currentRevisionPreview?.revision.id]);
   return (
     <main className="min-h-dvh bg-[#f5f2eb] text-[#393630]">
       <SettingsPageHeader
@@ -1347,11 +1415,11 @@ export function DataSourcesPage() {
               ) : (
                 <ActivityIcon className="size-3.5" />
               )}
-              {detail.data_source.runtime_status === "ready"
-                ? "运行中"
-                  : detail.data_source.enabled
-                    ? "未应用"
-                    : "已停用"}
+              {!detail.data_source.enabled
+                ? "已停用"
+                : detail.data_source.runtime_status === "ready"
+                  ? "运行中"
+                  : "未就绪"}
             </span>
         )}
       />
@@ -1391,6 +1459,17 @@ export function DataSourcesPage() {
               {sources.map((source) => {
                 const selected = source.data_source.id === selectedId;
                 const hasActiveRevision = Boolean(source.data_source.active_revision_id);
+                const isRunning =
+                  hasActiveRevision &&
+                  source.data_source.enabled &&
+                  source.data_source.runtime_status === "ready";
+                const sourceStatusLabel = !hasActiveRevision
+                  ? "未就绪"
+                  : !source.data_source.enabled
+                    ? "已停用"
+                    : isRunning
+                      ? "运行中"
+                      : "未就绪";
                 return (
                   <button
                     key={source.data_source.id}
@@ -1402,11 +1481,15 @@ export function DataSourcesPage() {
                       );
                     }}
                     className={`min-w-44 flex-1 rounded-xl border-l-2 px-3 py-3 text-left transition focus-visible:ring-2 focus-visible:ring-[#c57650] lg:min-w-0 ${
-                      hasActiveRevision ? "border-l-[#6a8a5b]" : "border-l-transparent"
+                      isRunning
+                        ? "border-l-[#6a8a5b]"
+                        : hasActiveRevision
+                          ? "border-l-[#c7bda9]"
+                          : "border-l-transparent"
                     } ${
                       selected
                         ? "bg-[#ebe5d9]"
-                        : hasActiveRevision
+                        : isRunning
                           ? "bg-[#eef2e9] hover:bg-[#e7eee2]"
                           : "hover:bg-[#f0ede6]"
                     }`}
@@ -1421,11 +1504,17 @@ export function DataSourcesPage() {
                           默认
                         </span>
                       )}
-                      {hasActiveRevision && (
-                        <span className="shrink-0 rounded-full bg-[#e0ead9] px-1.5 py-0.5 text-[10px] font-semibold text-[#527249]">
-                          已生效
-                        </span>
-                      )}
+                      <span
+                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                          isRunning
+                            ? "bg-[#e0ead9] text-[#527249]"
+                            : sourceStatusLabel === "已停用"
+                              ? "bg-[#eeeae2] text-[#77736b]"
+                              : "bg-[#f2e7dc] text-[#8c6149]"
+                        }`}
+                      >
+                        {sourceStatusLabel}
+                      </span>
                     </span>
                     <span className="mt-1.5 block truncate pl-[22px] text-[10px] text-[#89847a]">
                       {connectors.find((item) => item.type === source.data_source.connector_type)?.label ??
@@ -1446,14 +1535,33 @@ export function DataSourcesPage() {
                 <span className="text-[10px] text-[#989286]">{revisionRows.length}</span>
               </div>
               {activeRevision && (
-                <div className="mb-1.5">
-                  <RevisionNavigationItem
-                    revision={activeRevision}
-                    isActive
-                    selected={selectedRevisionId === activeRevision.id}
-                    loading={Boolean(working) || revisionLoadingId === activeRevision.id}
-                    onSelect={() => void previewRevision(activeRevision.id)}
-                  />
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <div className="min-w-0 flex-1">
+                    <RevisionNavigationItem
+                      revision={activeRevision}
+                      isActive
+                      selected={selectedRevisionId === activeRevision.id}
+                      loading={Boolean(working) || revisionLoadingId === activeRevision.id}
+                      onSelect={() => void previewRevision(activeRevision.id)}
+                    />
+                  </div>
+                  <div className="shrink-0">
+                    <ActionButton
+                      onClick={() => void toggleEnabled()}
+                      disabled={disabled}
+                      variant={detail.data_source.enabled ? "danger" : "outline"}
+                      title={detail.data_source.enabled ? "停用数据源" : "重新启用数据源"}
+                    >
+                      {detail.data_source.enabled ? (
+                        <Trash2Icon className="size-3.5" />
+                      ) : (
+                        <CheckCircle2Icon className="size-3.5" />
+                      )}
+                      <span className="whitespace-nowrap">
+                        {detail.data_source.enabled ? "停用数据源" : "重新启用"}
+                      </span>
+                    </ActionButton>
+                  </div>
                 </div>
               )}
               {otherRevisionRows.length ? (
@@ -1978,7 +2086,7 @@ export function DataSourcesPage() {
                   selectedId && (
                   <span className="ml-auto flex items-center gap-1 text-[10px] text-[#638252]">
                     <CheckCircle2Icon className="size-3" />
-                    已有已生效版本
+                    已有当前版本
                   </span>
                 )}
             </div>
@@ -1992,7 +2100,7 @@ export function DataSourcesPage() {
           <Section
             id="database-tables"
             title="选择数据库表"
-            description="先读取数据库或数仓的元数据，再勾选要交给 Wren 查询的表。这里只读取表和字段定义，不扫描业务数据。"
+            description="先读取数据库或数仓的元数据，再勾选可用于查询的表。这里只读取表和字段定义，不扫描业务数据。"
           >
             {tableOptions.length === 0 ? (
               <div className="rounded-xl border border-dashed border-[#ddd5c8] px-4 py-5 text-center">
@@ -2411,16 +2519,26 @@ export function DataSourcesPage() {
           <Section
             id="business-rules"
             title={`业务规则 · ${semantic.rules.length}`}
-            description="补充业务口径、指标定义或查询注意事项，作为语义上下文。"
+            description="补充业务口径、指标定义或查询注意事项，并查看每条规则的建立来源。"
             collapsible
             initiallyOpen={semantic.rules.length === 0}
           >
             <div className="space-y-3">
+              <div
+                role="note"
+                className="rounded-lg border border-[#ebe6dd] bg-[#f7f5ef] px-3 py-2.5 text-xs leading-5 text-[#77736b]"
+              >
+                <p>来源标签说明规则如何建立；规则发布后，都作用于当前数据源下有权限的会话。</p>
+                <p className="mt-1 text-[#89847a]">会话提交的规则会随来源会话删除或到期而撤销。</p>
+              </div>
               {semantic.rules.map((rule, index) => (
                 <div
                   key={`rule-${index}`}
                   className="rounded-xl border border-[#ebe6dd] bg-white/65 p-3"
                 >
+                  <div className="mb-2">
+                    <WrenRuleOriginBadge rule={rule} />
+                  </div>
                   <div className="flex gap-2">
                     <input
                       aria-label="规则名称"

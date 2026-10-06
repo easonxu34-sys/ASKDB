@@ -78,14 +78,11 @@ class ConversationThread:
     source_id: str
     created_at: datetime
     last_user_turn_at: datetime
-    expires_at: datetime
     history_import_pending: bool = False
     source_name: str | None = None
     title: str | None = None
     is_pinned: bool = False
     archived_at: datetime | None = None
-    retention_paused: bool = False
-    retention_remaining_seconds: int | None = None
     metadata_revision: int = 1
     record_status: str = "active"
 
@@ -120,7 +117,6 @@ class ThreadContext:
     summary: str | None
     summary_version: int
     turns: tuple[ConversationTurn, ...]
-    expires_at: datetime
 
 
 @dataclass(frozen=True)

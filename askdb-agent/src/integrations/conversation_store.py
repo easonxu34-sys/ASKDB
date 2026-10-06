@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import math
 import os
 import re
 import sqlite3
@@ -67,20 +66,16 @@ _UNSET = object()
 
 def _thread_from_row(row: sqlite3.Row) -> ConversationThread:
     archived_at = row["archived_at"]
-    remaining = row["retention_remaining_seconds"]
     return ConversationThread(
         thread_id=row["thread_id"],
         source_id=row["data_source_id"],
         created_at=_parse_timestamp(row["created_at"]),
         last_user_turn_at=_parse_timestamp(row["last_user_turn_at"]),
-        expires_at=_parse_timestamp(row["expires_at"]),
         history_import_pending=bool(row["history_import_pending"]),
         source_name=row["source_name"],
         title=row["title"],
         is_pinned=bool(row["is_pinned"]),
         archived_at=_parse_timestamp(archived_at) if archived_at else None,
-        retention_paused=archived_at is not None,
-        retention_remaining_seconds=remaining,
         metadata_revision=row["metadata_revision"],
         record_status=row["status"],
     )
@@ -143,7 +138,6 @@ class ConversationMemoryStore:
         database_path: Path,
         *,
         clock: Callable[[], datetime] | None = None,
-        retention: timedelta = timedelta(days=30),
         tombstone_retention: timedelta = timedelta(days=30),
         deletion_journal: EncryptedDeletionJournal | None = None,
         rule_preview: Callable[[sqlite3.Connection, str, str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
@@ -152,7 +146,6 @@ class ConversationMemoryStore:
     ) -> None:
         self.database_path = Path(database_path).expanduser().resolve()
         self.clock = clock or (lambda: datetime.now(UTC))
-        self.retention = retention
         self.tombstone_retention = tombstone_retention
         self.deletion_journal = deletion_journal
         self.rule_preview = rule_preview
@@ -216,9 +209,9 @@ class ConversationMemoryStore:
     ) -> ConversationThread:
         row = connection.execute(
             """SELECT b.thread_id, b.data_source_id, s.display_name AS source_name,
-                      t.status, t.created_at, t.last_user_turn_at, t.expires_at,
+                      t.status, t.created_at, t.last_user_turn_at,
                       t.title, t.is_pinned, t.archived_at,
-                      t.retention_remaining_seconds, t.metadata_revision,
+                      t.metadata_revision,
                       EXISTS(
                           SELECT 1 FROM agent_thread_history_imports AS history_import
                           WHERE history_import.thread_id=t.thread_id
@@ -395,7 +388,6 @@ class ConversationMemoryStore:
         ).hexdigest()
         now = self._now()
         thread_id = uuid.uuid4().hex
-        expires_at = now + self.retention
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -447,9 +439,9 @@ class ConversationMemoryStore:
             )
             connection.execute(
                 """INSERT INTO agent_conversation_threads
-                   (thread_id, status, created_at, last_user_turn_at, expires_at)
-                   VALUES (?, 'active', ?, ?, ?)""",
-                (thread_id, now.isoformat(), now.isoformat(), expires_at.isoformat()),
+                   (thread_id, status, created_at, last_user_turn_at)
+                   VALUES (?, 'active', ?, ?)""",
+                (thread_id, now.isoformat(), now.isoformat()),
             )
             connection.execute(
                 """INSERT INTO agent_thread_creation_requests
@@ -529,7 +521,6 @@ class ConversationMemoryStore:
         normalized_query = (q or "").strip().casefold()
         if len(normalized_query) > 120:
             raise ValueError("thread search query is too long")
-        now = self._now()
         connection = self._connect()
         try:
             connection.execute("BEGIN")
@@ -547,10 +538,9 @@ class ConversationMemoryStore:
                 else 0
             )
             view_filter = (
-                "t.status='active' AND t.archived_at IS NULL AND t.expires_at>?"
+                "t.status='active' AND t.archived_at IS NULL"
                 if view == "recent"
-                else "t.status='active' AND t.archived_at IS NOT NULL "
-                "AND t.retention_remaining_seconds>0"
+                else "t.status='active' AND t.archived_at IS NOT NULL"
             )
             ordering = (
                 "askdb_casefold(COALESCE(s.display_name, '')) COLLATE BINARY, "
@@ -562,8 +552,8 @@ class ConversationMemoryStore:
             rows = connection.execute(
                 f"""SELECT b.thread_id, b.data_source_id,
                           s.display_name AS source_name, t.status, t.created_at,
-                          t.last_user_turn_at, t.expires_at, t.title, t.is_pinned,
-                          t.archived_at, t.retention_remaining_seconds,
+                          t.last_user_turn_at, t.title, t.is_pinned,
+                          t.archived_at,
                           t.metadata_revision,
                           EXISTS(
                               SELECT 1 FROM agent_thread_history_imports AS history_import
@@ -580,11 +570,12 @@ class ConversationMemoryStore:
                           OR instr(askdb_casefold(COALESCE(s.display_name, '')), ?)>0)
                    ORDER BY {ordering} LIMIT ? OFFSET ?""",
                 (
-                    (owner_user_id, now.isoformat(), normalized_query,
-                     normalized_query, normalized_query, limit + 1, offset)
-                    if view == "recent"
-                    else (owner_user_id, normalized_query, normalized_query,
-                          normalized_query, limit + 1, offset)
+                    owner_user_id,
+                    normalized_query,
+                    normalized_query,
+                    normalized_query,
+                    limit + 1,
+                    offset,
                 ),
             ).fetchall()
             connection.commit()
@@ -650,8 +641,7 @@ class ConversationMemoryStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
-            now = self._now()
-            self._require_live_metadata_thread(current, now)
+            self._require_live_metadata_thread(current)
             if current.metadata_revision != expected_metadata_revision:
                 raise ThreadMetadataConflict(current)
 
@@ -685,13 +675,8 @@ class ConversationMemoryStore:
             connection.close()
 
     @staticmethod
-    def _require_live_metadata_thread(thread: ConversationThread, now: datetime) -> None:
+    def _require_live_metadata_thread(thread: ConversationThread) -> None:
         if thread.record_status != "active":
-            raise ThreadStateConflict(thread)
-        if thread.archived_at is not None:
-            if (thread.retention_remaining_seconds or 0) <= 0:
-                raise ThreadStateConflict(thread)
-        elif thread.expires_at <= now:
             raise ThreadStateConflict(thread)
 
     def archive_thread(
@@ -708,16 +693,14 @@ class ConversationMemoryStore:
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
             if current.metadata_revision != expected_metadata_revision:
                 raise ThreadMetadataConflict(current)
-            self._require_live_metadata_thread(current, now)
+            self._require_live_metadata_thread(current)
             if current.archived_at is not None:
                 raise ThreadStateConflict(current)
-            remaining = max(1, math.ceil((current.expires_at - now).total_seconds()))
             connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET archived_at=?, retention_remaining_seconds=?,
-                       metadata_revision=metadata_revision+1
+                   SET archived_at=?, metadata_revision=metadata_revision+1
                    WHERE thread_id=? AND metadata_revision=? AND status='active'""",
-                (now.isoformat(), remaining, thread_id, expected_metadata_revision),
+                (now.isoformat(), thread_id, expected_metadata_revision),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
             updated = self._get_thread_projection(connection, thread_id, owner_user_id)
@@ -736,23 +719,20 @@ class ConversationMemoryStore:
         owner_user_id: str,
         expected_metadata_revision: int,
     ) -> ConversationThread:
-        now = self._now()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
             if current.metadata_revision != expected_metadata_revision:
                 raise ThreadMetadataConflict(current)
-            self._require_live_metadata_thread(current, now)
-            if current.archived_at is None or current.retention_remaining_seconds is None:
+            self._require_live_metadata_thread(current)
+            if current.archived_at is None:
                 raise ThreadStateConflict(current)
-            expires_at = now + timedelta(seconds=current.retention_remaining_seconds)
             connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET archived_at=NULL, retention_remaining_seconds=NULL, expires_at=?,
-                       metadata_revision=metadata_revision+1
+                   SET archived_at=NULL, metadata_revision=metadata_revision+1
                    WHERE thread_id=? AND metadata_revision=? AND status='active'""",
-                (expires_at.isoformat(), thread_id, expected_metadata_revision),
+                (thread_id, expected_metadata_revision),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
             updated = self._get_thread_projection(connection, thread_id, owner_user_id)
@@ -771,12 +751,10 @@ class ConversationMemoryStore:
             raise ValueError("thread state batch size is outside the supported range")
         ids = tuple(dict.fromkeys(thread_ids))
         placeholders = ",".join("?" for _ in ids)
-        now = self._now()
         connection = self._connect()
         try:
             rows = connection.execute(
-                f"""SELECT b.thread_id, t.status, t.expires_at, t.archived_at,
-                          t.retention_remaining_seconds
+                f"""SELECT b.thread_id, t.status, t.archived_at
                    FROM chat_thread_data_sources AS b
                    JOIN agent_conversation_threads AS t USING(thread_id)
                    WHERE b.owner_user_id=? AND b.thread_id IN ({placeholders})""",
@@ -787,17 +765,11 @@ class ConversationMemoryStore:
         found: dict[str, str] = {}
         for row in rows:
             if row["status"] in {"deleted", "expired"}:
-                status = row["status"]
+                status = "deleted"
             elif row["archived_at"] is not None:
-                status = (
-                    "archived"
-                    if (row["retention_remaining_seconds"] or 0) > 0
-                    else "expired"
-                )
-            elif _parse_timestamp(row["expires_at"]) > now:
-                status = "active"
+                status = "archived"
             else:
-                status = "expired"
+                status = "active"
             found[row["thread_id"]] = status
         return tuple(ThreadState(thread_id, found.get(thread_id, "unavailable")) for thread_id in thread_ids)
 
@@ -999,14 +971,12 @@ class ConversationMemoryStore:
         owner_user_id: str,
         *,
         require_source_grant: bool,
-        allow_expired: bool = False,
     ) -> sqlite3.Row:
         row = connection.execute(
             """SELECT b.data_source_id, b.owner_user_id, s.display_name AS source_name,
                       t.status, t.summary,
                       t.summary_version, t.created_at, t.last_user_turn_at,
-                      t.expires_at, t.deleted_at, t.archived_at,
-                      t.retention_remaining_seconds, t.title, t.is_pinned,
+                      t.deleted_at, t.archived_at, t.title, t.is_pinned,
                       t.metadata_revision
                FROM chat_thread_data_sources AS b
                JOIN agent_conversation_threads AS t USING(thread_id)
@@ -1016,12 +986,6 @@ class ConversationMemoryStore:
         ).fetchone()
         if row is None or row["status"] != "active" or row["deleted_at"] is not None:
             raise ThreadNotFound("thread unavailable")
-        if not allow_expired:
-            if row["archived_at"] is not None:
-                if (row["retention_remaining_seconds"] or 0) <= 0:
-                    raise ThreadNotFound("thread expired")
-            elif _parse_timestamp(row["expires_at"]) <= self._now():
-                raise ThreadNotFound("thread expired")
         if require_source_grant:
             account = connection.execute(
                 "SELECT role, is_active FROM auth_users WHERE id=?", (owner_user_id,)
@@ -1108,7 +1072,6 @@ class ConversationMemoryStore:
                 )
                 for item in reversed(turns)
             ),
-            expires_at=_parse_timestamp(row["expires_at"]),
         )
 
     def begin_turn(
@@ -1200,21 +1163,11 @@ class ConversationMemoryStore:
                    VALUES (?, ?, ?, 'user', ?, ?, ?)""",
                 (uuid.uuid4().hex, thread_id, next_sequence, turn_key, content, now.isoformat()),
             )
-            if owned_thread["archived_at"] is not None:
-                remaining = max(1, math.ceil(self.retention.total_seconds()))
-                connection.execute(
-                    """UPDATE agent_conversation_threads
-                       SET last_user_turn_at=?, retention_remaining_seconds=?
-                       WHERE thread_id=?""",
-                    (now.isoformat(), remaining, thread_id),
-                )
-            else:
-                expires_at = now + self.retention
-                connection.execute(
-                    """UPDATE agent_conversation_threads
-                       SET last_user_turn_at=?, expires_at=? WHERE thread_id=?""",
-                    (now.isoformat(), expires_at.isoformat(), thread_id),
-                )
+            connection.execute(
+                """UPDATE agent_conversation_threads
+                   SET last_user_turn_at=? WHERE thread_id=?""",
+                (now.isoformat(), thread_id),
+            )
             self._bump_thread_list_revision(connection, owner_user_id)
             connection.commit()
             return TurnStart(True, "running", user_sequence=next_sequence)
@@ -1400,7 +1353,6 @@ class ConversationMemoryStore:
                 thread_id,
                 owner_user_id,
                 require_source_grant=False,
-                allow_expired=True,
             )
             rule_ids, labels = self._preview_linked_rules(
                 connection, thread_id, thread["data_source_id"]
@@ -1463,7 +1415,6 @@ class ConversationMemoryStore:
         owner_user_id: str,
         impact_version: str,
         idempotency_key: str,
-        event_type: str = "thread_delete",
     ) -> ThreadDeletionOperation:
         from integrations.deletion_journal import _canonical
 
@@ -1521,7 +1472,6 @@ class ConversationMemoryStore:
                 thread_id,
                 owner_user_id,
                 require_source_grant=False,
-                allow_expired=True,
             )
             impact = connection.execute(
                 """SELECT impact_hash, expires_at, consumed_at
@@ -1557,23 +1507,17 @@ class ConversationMemoryStore:
                 raise ThreadDeletionConflict("deletion impact changed; preview again")
 
             event_id = f"thread-delete:{idempotency_hash}"
-            if event_type not in {"thread_delete", "thread_expire"}:
-                raise ValueError("unsupported thread deletion event")
             release_barrier = self._acquire_suppression_mutation_barrier(thread["data_source_id"])
             try:
                 event = journal.append(
                     event_id=event_id,
-                    event_type=event_type,
+                    event_type="thread_delete",
                     source_id=thread["data_source_id"],
                     thread_id=thread_id,
                     item_type="business_rule",
                     item_ids=tuple(sorted(set(rule_ids))),
                     request_hash=request_hash,
-                    actor_id=(
-                        owner_user_id
-                        if event_type == "thread_delete"
-                        else "system:thread-expiry"
-                    ),
+                    actor_id=owner_user_id,
                     created_at=now,
                 )
             except DeletionJournalUnavailable:
@@ -1813,7 +1757,7 @@ class ConversationMemoryStore:
             return
         if event.sequence != applied + 1:
             raise DeletionJournalUnavailable("journal event is not the next contiguous sequence")
-        if event.event_type in {"thread_delete", "thread_expire"} and event.thread_id:
+        if event.event_type == "thread_delete" and event.thread_id:
             timestamp = event.created_at.isoformat()
             owner = connection.execute(
                 "SELECT owner_user_id FROM chat_thread_data_sources WHERE thread_id=?",
@@ -1832,7 +1776,7 @@ class ConversationMemoryStore:
                        deleted_at=?, tombstone_until=?
                    WHERE thread_id=?""",
                 (
-                    "expired" if event.event_type == "thread_expire" else "deleted",
+                    "deleted",
                     timestamp,
                     (event.created_at + self.tombstone_retention).isoformat(),
                     event.thread_id,
@@ -1854,7 +1798,7 @@ class ConversationMemoryStore:
                     event.created_at.isoformat(),
                 ),
             )
-        if event.event_type in {"thread_delete", "thread_expire"} and event.thread_id:
+        if event.event_type == "thread_delete" and event.thread_id:
             if self.deletion_participant is not None:
                 self.deletion_participant.apply(connection, event)
             elif self._has_rule_deletion_schema(connection):
@@ -1868,7 +1812,7 @@ class ConversationMemoryStore:
                 raise ThreadDeletionParticipantUnavailable(
                     "business-rule revocation participant is not configured"
                 )
-        if event.event_type in {"thread_delete", "thread_expire", "query_example_revoke"}:
+        if event.event_type in {"thread_delete", "query_example_revoke"}:
             has_query_examples = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='query_example_candidates'"
             ).fetchone() is not None
@@ -1884,7 +1828,7 @@ class ConversationMemoryStore:
                 apply_suppression = getattr(participant, "apply_suppression", None)
                 if callable(apply_suppression):
                     apply_suppression(connection, event)
-        if event.event_type in {"thread_delete", "thread_expire"} and event.thread_id:
+        if event.event_type == "thread_delete" and event.thread_id:
             key_prefix = "thread-delete:"
             idempotency_key = (
                 event.event_id[len(key_prefix):]
@@ -2011,40 +1955,6 @@ class ConversationMemoryStore:
                 raise ThreadDeletionJournalRequired("durable deletion journal is unavailable")
             return
         self.reconcile_journal()
-
-    def expire_inactive_threads(self, *, now: datetime | None = None, limit: int = 100) -> int:
-        if self.deletion_journal is None:
-            raise ThreadDeletionJournalRequired("durable deletion journal is required")
-        moment = now or self._now()
-        connection = self._connect()
-        try:
-            rows = connection.execute(
-                """SELECT b.thread_id, b.owner_user_id
-                   FROM chat_thread_data_sources AS b
-                   JOIN agent_conversation_threads AS t USING(thread_id)
-                   WHERE t.status='active' AND t.archived_at IS NULL AND t.expires_at<=?
-                   ORDER BY t.expires_at LIMIT ?""",
-                (moment.isoformat(), limit),
-            ).fetchall()
-        finally:
-            connection.close()
-        expired = 0
-        for row in rows:
-            try:
-                impact = self.create_deletion_impact(
-                    thread_id=row["thread_id"], owner_user_id=row["owner_user_id"]
-                )
-                self.delete_thread(
-                    thread_id=row["thread_id"],
-                    owner_user_id=row["owner_user_id"],
-                    impact_version=impact.impact_version,
-                    idempotency_key=f"expire:{row['thread_id']}:{impact.impact_version}",
-                    event_type="thread_expire",
-                )
-                expired += 1
-            except ThreadDeletionConflict:
-                continue
-        return expired
 
     def purge_expired_tombstones(
         self, *, now: datetime | None = None, limit: int = 100

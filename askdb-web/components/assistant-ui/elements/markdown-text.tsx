@@ -4,6 +4,7 @@ import "@assistant-ui/react-markdown/styles/dot.css";
 
 import {
   type CodeHeaderProps,
+  type SyntaxHighlighterProps,
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
@@ -15,13 +16,80 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { SqlDisclosure } from "./sql-disclosure";
+
+type MarkdownAstNode = {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: MarkdownAstNode[];
+};
+
+const rehypeNumericFont = () => (tree: unknown) => {
+  if (typeof tree !== "object" || tree === null || !("children" in tree)) {
+    return;
+  }
+
+  const visit = (parent: MarkdownAstNode, insideCode = false) => {
+    if (!Array.isArray(parent.children)) return;
+
+    const children: MarkdownAstNode[] = [];
+    const protectNumbers = insideCode || parent.tagName === "code" || parent.tagName === "pre";
+
+    for (const child of parent.children) {
+      if (child.type === "text" && typeof child.value === "string") {
+        if (protectNumbers) {
+          children.push(child);
+          continue;
+        }
+
+        const parts: MarkdownAstNode[] = [];
+        let lastIndex = 0;
+        for (const match of child.value.matchAll(/[+-]?\d+(?:[,./:-]\d+)*(?:[%％])?/g)) {
+          const value = match[0];
+          const index = match.index ?? 0;
+          if (index > lastIndex) {
+            parts.push({ type: "text", value: child.value.slice(lastIndex, index) });
+          }
+          parts.push({
+            type: "element",
+            tagName: "span",
+            properties: { className: ["aui-md-numeric", "font-sans", "tabular-nums"] },
+            children: [{ type: "text", value }],
+          });
+          lastIndex = index + value.length;
+        }
+
+        if (lastIndex === 0) {
+          children.push(child);
+        } else {
+          if (lastIndex < child.value.length) {
+            parts.push({ type: "text", value: child.value.slice(lastIndex) });
+          }
+          children.push(...parts);
+        }
+        continue;
+      }
+
+      visit(child, protectNumbers);
+      children.push(child);
+    }
+
+    parent.children = children;
+  };
+
+  visit(tree as MarkdownAstNode);
+};
 
 const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeNumericFont]}
       className="aui-md"
       components={defaultComponents}
+      componentsByLanguage={codeBlocksByLanguage}
       defer
     />
   );
@@ -51,6 +119,14 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
       </TooltipIconButton>
     </div>
   );
+};
+
+const SqlCodeHeader: FC<CodeHeaderProps> = () => null;
+
+const SqlCodeBlock: FC<SyntaxHighlighterProps> = ({ code }) => <SqlDisclosure code={code} />;
+
+const codeBlocksByLanguage = {
+  sql: { CodeHeader: SqlCodeHeader, SyntaxHighlighter: SqlCodeBlock },
 };
 
 const defaultComponents = memoizeMarkdownComponents({

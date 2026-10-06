@@ -11,6 +11,7 @@ from sqlglot import exp
 
 from domain.memory_recall import QueryParameterSpec, QueryParameterType
 from domain.query_policy import SQLGLOT_DIALECTS, validate_read_query
+from integrations.wren import serialized_wren_operation
 
 
 class SqlTemplateError(ValueError):
@@ -210,8 +211,9 @@ def validate_query_example_template(
         connector_type=connector_type,
     )
     try:
-        planned_sql = toolkit.dry_plan(bound_sql)
-        toolkit.dry_run(bound_sql)
+        with serialized_wren_operation(toolkit):
+            planned_sql = toolkit.dry_plan(bound_sql)
+            toolkit.dry_run(bound_sql)
     except Exception as exc:
         # Never leak provider errors, SQL values, or connector details to API clients.
         raise SqlTemplateError("Wren rejected the query-example template") from exc
@@ -234,8 +236,9 @@ def validate_bound_query_for_use(
         connector_type=connector_type,
     )
     try:
-        planned_sql = toolkit.dry_plan(bound_sql)
-        toolkit.dry_run(bound_sql)
+        with serialized_wren_operation(toolkit):
+            planned_sql = toolkit.dry_plan(bound_sql)
+            toolkit.dry_run(bound_sql)
     except Exception as exc:
         raise SqlTemplateError("Wren rejected the bound query-example SQL") from exc
     return ValidatedSqlTemplate(sql=bound_sql, planned_sql=planned_sql)

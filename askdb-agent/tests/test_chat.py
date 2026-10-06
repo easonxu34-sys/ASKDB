@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 from application.chart_context import QueryArtifactContext
-from application.chat import stream_chat_events
+from application.chat import _chart_requested_for_turn, stream_chat_events
 from tools.chart import create_chart_tool
 
 
@@ -75,6 +75,14 @@ def token_text(events):
     return "".join(payload["text"] for event, payload in events if event == "token")
 
 
+def test_confirmed_chart_edit_message_requests_chart_but_display_edit_does_not():
+    confirmed_message = "统计去年各地区的销售额\n\n请根据以上原始指令查询数据，并生成图表。"
+    assert _chart_requested_for_turn([{"role": "user", "content": confirmed_message}])
+    assert not _chart_requested_for_turn(
+        [{"role": "user", "content": "标题改成各地区销售额，并使用蓝色。"}]
+    )
+
+
 def test_query_results_are_emitted_but_tool_messages_are_not_user_text() -> None:
     runtime = FakeRuntime(
         [
@@ -123,8 +131,13 @@ def test_chart_event_follows_its_query_result_and_preserves_final_answer():
 
     events = collect_events(runtime)
 
-    assert [event for event, _ in events] == ["result", "chart", "token"]
-    assert events[1][1]["artifact"] == chart
+    assert [event for event, _ in events if event in {"result", "chart", "token"}] == [
+        "result",
+        "chart",
+        "token",
+    ]
+    chart_event = next(payload for event, payload in events if event == "chart")
+    assert chart_event["artifact"] == chart
     assert token_text(events) == "图表已生成。"
     context, request = runtime.turn_contexts[0]
     assert request.requested_chart_type is None
@@ -159,7 +172,8 @@ def test_chart_request_emits_artifact_when_agent_skips_render_chart():
     chart_events = [payload for event, payload in events if event == "chart"]
     assert len(chart_events) == 1
     assert chart_events[0]["artifact"]["chart_type"] == "bar"
-    assert chart_events[0]["artifact"]["source_result_id"] == events[0][1]["output"]["data"]["result_id"]
+    query_event = next(payload for event, payload in events if event == "result")
+    assert chart_events[0]["artifact"]["source_result_id"] == query_event["output"]["data"]["result_id"]
     assert token_text(events) == "柱状图已生成。"
 
 
@@ -253,7 +267,8 @@ def test_chart_unavailable_is_emitted_without_failing_the_turn():
 
     events = collect_events(runtime)
 
-    assert events[0] == ("chart", {"unavailable": {"kind": "chart_unavailable", "reason": "unsupported"}})
+    chart_event = next((event, payload) for event, payload in events if event == "chart")
+    assert chart_event == ("chart", {"unavailable": {"kind": "chart_unavailable", "reason": "unsupported"}})
     assert token_text(events) == "查询结果已整理。"
 
 

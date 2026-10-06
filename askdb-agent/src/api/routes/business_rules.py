@@ -286,7 +286,7 @@ async def approve_candidate(
         )
         return {
             "candidate": _view(candidate),
-            "message": "审核已通过，等待发布到新的 Wren 版本后才会进入召回。",
+            "message": "审核已通过，等待发布到新的版本后才会进入召回。",
         }
     except Exception as exc:
         _raise_safe(exc)

@@ -246,7 +246,7 @@ class BusinessRuleMemoryStore:
         mdl_digest: str,
     ) -> sqlite3.Row:
         row = connection.execute(
-            """SELECT b.data_source_id, b.owner_user_id, t.status, t.expires_at,
+            """SELECT b.data_source_id, b.owner_user_id, t.status,
                       u.role, u.is_active, s.enabled, s.active_revision_id,
                       s.runtime_status, r.status AS revision_status, r.mdl_digest
                FROM chat_thread_data_sources AS b
@@ -260,8 +260,6 @@ class BusinessRuleMemoryStore:
         ).fetchone()
         if row is None or row["status"] != "active" or not row["is_active"]:
             raise BusinessRuleNotFound("thread or source is unavailable")
-        if _time(row["expires_at"]) <= self._now():
-            raise BusinessRuleNotFound("thread has expired")
         if not row["enabled"] or row["runtime_status"] != "ready":
             raise BusinessRuleNotFound("source is unavailable")
         if row["role"] not in {"admin", "member"}:
@@ -400,15 +398,7 @@ class BusinessRuleMemoryStore:
             )
 
             rule_id = uuid.uuid4().hex
-            expires_at = min(
-                now + timedelta(days=90),
-                _time(
-                    connection.execute(
-                        "SELECT expires_at FROM agent_conversation_threads WHERE thread_id=?",
-                        (thread_id,),
-                    ).fetchone()[0]
-                ),
-            )
+            expires_at = now + timedelta(days=90)
             connection.execute(
                 """INSERT INTO business_rule_candidates
                    (business_rule_id, data_source_id, term, definition, mdl_references_json,
@@ -484,7 +474,7 @@ class BusinessRuleMemoryStore:
         if row["source_thread_id"] is None:
             raise BusinessRuleNotFound("candidate no longer has an active source thread")
         thread = connection.execute(
-            """SELECT b.data_source_id, b.owner_user_id, t.status, t.expires_at,
+            """SELECT b.data_source_id, b.owner_user_id, t.status,
                       u.role, u.is_active, s.enabled, s.runtime_status
                FROM chat_thread_data_sources AS b
                JOIN agent_conversation_threads AS t USING(thread_id)
@@ -500,7 +490,6 @@ class BusinessRuleMemoryStore:
             or thread["role"] not in {"admin", "member"}
             or not thread["enabled"]
             or thread["runtime_status"] != "ready"
-            or _time(thread["expires_at"]) <= self._now()
         ):
             raise BusinessRuleNotFound("candidate is unavailable")
         if thread["role"] == "member" and connection.execute(
@@ -1125,7 +1114,6 @@ class BusinessRuleMemoryStore:
                 raise BusinessRuleConflict("target Wren revision is not bound to this publication operation")
             row = connection.execute(
                 """SELECT candidate.*, thread.status AS thread_status,
-                          thread.expires_at AS thread_expires_at,
                           source.enabled AS source_enabled,
                           source.runtime_status AS source_runtime_status,
                           source.active_revision_id AS active_revision_id,
@@ -1145,7 +1133,6 @@ class BusinessRuleMemoryStore:
                 or row["publication_status"] != "publishing"
                 or not row["source_thread_id"]
                 or row["thread_status"] != "active"
-                or _time(row["thread_expires_at"]) <= now
                 or not row["source_enabled"]
                 or row["source_runtime_status"] != "ready"
                 or row["active_revision_id"] != wren_revision_id
@@ -1386,7 +1373,7 @@ class BusinessRuleMemoryStore:
                 """SELECT candidate.*, source.enabled, source.runtime_status,
                           source.active_revision_id, revision.status AS revision_status,
                           revision.mdl_digest AS active_mdl_digest,
-                          thread.status AS thread_status, thread.expires_at
+                          thread.status AS thread_status
                    FROM business_rule_candidates AS candidate
                    JOIN wren_data_sources AS source ON source.id=candidate.data_source_id
                    JOIN wren_revisions AS revision
@@ -1681,7 +1668,7 @@ class BusinessRuleMemoryStore:
                     AND origin.business_rule_id=suppression.item_id
                    WHERE suppression.item_type='business_rule'
                      AND suppression.reason IN
-                         ('thread_delete','thread_expire','business_rule_revoke')
+                         ('thread_delete','business_rule_revoke')
                      AND origin.business_rule_id IS NULL
                    ORDER BY suppression.event_sequence, suppression.item_id LIMIT ?""",
                 (limit,),
@@ -1852,14 +1839,14 @@ class BusinessRuleMemoryStore:
 
     def apply(self, connection: sqlite3.Connection, event: JournalEvent) -> None:
         now = event.created_at
-        if event.event_type in {"thread_delete", "thread_expire"} and event.thread_id:
+        if event.event_type == "thread_delete" and event.thread_id:
             candidates = connection.execute(
                 """SELECT * FROM business_rule_candidates
                    WHERE data_source_id=? AND source_thread_id=?""",
                 (event.source_id, event.thread_id),
             ).fetchall()
             actor_id = event.actor_id or "system:thread-deletion"
-            target_status = "expired" if event.event_type == "thread_expire" else "withdrawn"
+            target_status = "withdrawn"
             for row in candidates:
                 if row["publication_status"] == "publishing":
                     # A Wren build may have reached the activation boundary while

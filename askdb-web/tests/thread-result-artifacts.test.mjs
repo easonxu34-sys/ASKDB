@@ -5,16 +5,19 @@ import { saveResultArtifact } from "../lib/thread-result-artifacts.mjs";
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
+  const writes = [];
   return {
     getItem(key) {
       return values.get(key) ?? null;
     },
     setItem(key, value) {
+      writes.push({ key, value });
       values.set(key, value);
     },
     read(key) {
       return values.get(key);
     },
+    writes,
   };
 }
 
@@ -53,4 +56,36 @@ test("reports local storage quota failures", () => {
   };
 
   assert.equal(saveResultArtifact(storage, "key", "turn", { id: 1 }, 1024), false);
+});
+
+test("evicts a whole old turn, including its chart override and undo history", () => {
+  const overrideWithHistory = {
+    kind: "chart_view_override",
+    schema_version: 2,
+    source_result_id: "result-old",
+    view: { title: "edited" },
+    undo_history: [{ view: { title: "before" }, summary: "manual edit", origin: "manual" }],
+  };
+  const initial = {
+    oldTurn: [overrideWithHistory],
+    newerTurn: [{ id: "keep" }],
+  };
+  const expected = JSON.stringify({
+    newerTurn: [{ id: "keep" }],
+    currentTurn: [{ id: "new" }],
+  });
+  const storage = memoryStorage({ key: JSON.stringify(initial) });
+
+  assert.equal(
+    saveResultArtifact(
+      storage,
+      "key",
+      "currentTurn",
+      { id: "new" },
+      new TextEncoder().encode(expected).byteLength,
+    ),
+    true,
+  );
+  assert.deepEqual(JSON.parse(storage.read("key")), JSON.parse(expected));
+  assert.equal(storage.writes.length, 1);
 });

@@ -10,9 +10,6 @@ export type ThreadMetadata = {
   is_pinned: boolean;
   archived_at: string | null;
   last_user_turn_at: string;
-  expires_at: string;
-  retention_paused: boolean;
-  retention_remaining_seconds: number | null;
   metadata_revision: number;
   history_import_pending: boolean;
 };
@@ -25,7 +22,7 @@ export type ThreadPage = {
 
 export type ThreadState = {
   thread_id: string;
-  status: "active" | "archived" | "deleted" | "expired" | "unavailable";
+  status: "active" | "archived" | "deleted" | "unavailable";
 };
 
 type ApiProblem = {
@@ -137,7 +134,7 @@ export async function fetchThreadStates(threadIds: string[]): Promise<ThreadStat
   return body.states.filter((item): item is ThreadState =>
     Boolean(item && typeof item === "object" &&
       typeof (item as ThreadState).thread_id === "string" &&
-      ["active", "archived", "deleted", "expired", "unavailable"].includes((item as ThreadState).status)),
+      ["active", "archived", "deleted", "unavailable"].includes((item as ThreadState).status)),
   );
 }
 

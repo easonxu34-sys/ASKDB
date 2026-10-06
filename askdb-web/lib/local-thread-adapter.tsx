@@ -14,11 +14,14 @@ import { reconcileThreadModelSelection } from "@/lib/model-selection";
 import type { ModelSelectionCatalog } from "@/lib/model-selection";
 import {
   formatQueryResults,
+  chartViewsEqual,
+  createRecommendedChartView,
   getChartMessageParts,
   getChartUnavailableMessages,
   getSuccessfulQueryArtifacts,
-  isChartViewOverrideCandidate,
   readChartArtifact,
+  validateChartView,
+  type ChartViewEditOrigin,
   type ChartViewConfiguration,
 } from "@/lib/chat-output";
 import {
@@ -33,6 +36,10 @@ import {
 import { getThreadGroupPageState } from "@/lib/thread-grouping.mjs";
 import { saveResultArtifact } from "@/lib/thread-result-artifacts.mjs";
 import {
+  commitChartViewChange as commitChartViewChangeInCache,
+  undoChartViewChange as undoChartViewChangeInCache,
+} from "@/lib/chart-edit-history.mjs";
+import {
   extractLegacyResultArtifact,
   MAX_IMPORTED_HISTORY_BYTES,
   MAX_IMPORTED_TURNS,
@@ -42,7 +49,7 @@ import {
 const THREADS_KEY = (userId: string) => `askdb:user:${encodeURIComponent(userId)}:chat:threads`;
 const THREAD_CACHE_VERSION_KEY = (userId: string) =>
   `askdb:user:${encodeURIComponent(userId)}:chat-cache-version`;
-const THREAD_CACHE_VERSION = "2";
+const THREAD_CACHE_VERSION = "3";
 const MESSAGES_KEY = (userId: string, threadId: string) =>
   `askdb:user:${encodeURIComponent(userId)}:chat:messages:${threadId}`;
 const RESULT_ARTIFACTS_KEY = (userId: string, threadId: string) =>
@@ -61,13 +68,10 @@ type StoredThread = {
   modelProfileId?: string;
   dataSourceId?: string;
   dataSourceNameSnapshot?: string;
-  expiresAt?: string;
   historyImportPending?: boolean;
   isPinned?: boolean;
   archivedAt?: string;
   lastUserTurnAt?: string;
-  retentionPaused?: boolean;
-  retentionRemainingSeconds?: number;
   metadataRevision?: number;
 };
 
@@ -210,16 +214,11 @@ function readThreads(userId: string) {
       ...(typeof thread.dataSourceNameSnapshot === "string"
         ? { dataSourceNameSnapshot: thread.dataSourceNameSnapshot }
         : {}),
-      ...(typeof thread.expiresAt === "string" ? { expiresAt: thread.expiresAt } : {}),
       ...(thread.historyImportPending === true ? { historyImportPending: true } : {}),
       ...(typeof thread.isPinned === "boolean" ? { isPinned: thread.isPinned } : {}),
       ...(typeof thread.archivedAt === "string" ? { archivedAt: thread.archivedAt } : {}),
       ...(typeof thread.lastUserTurnAt === "string"
         ? { lastUserTurnAt: thread.lastUserTurnAt }
-        : {}),
-      ...(thread.retentionPaused === true ? { retentionPaused: true } : {}),
-      ...(Number.isSafeInteger(thread.retentionRemainingSeconds)
-        ? { retentionRemainingSeconds: thread.retentionRemainingSeconds as number }
         : {}),
       ...(Number.isSafeInteger(thread.metadataRevision)
         ? { metadataRevision: thread.metadataRevision as number }
@@ -242,15 +241,10 @@ function storedThreadFromMetadata(metadata: ThreadMetadata, existing?: StoredThr
     ...(existing?.modelProfileId ? { modelProfileId: existing.modelProfileId } : {}),
     dataSourceId: metadata.data_source_id,
     ...(metadata.data_source_name ? { dataSourceNameSnapshot: metadata.data_source_name } : {}),
-    expiresAt: metadata.expires_at,
     historyImportPending: metadata.history_import_pending,
     isPinned: metadata.is_pinned,
     ...(metadata.archived_at ? { archivedAt: metadata.archived_at } : {}),
     lastUserTurnAt: metadata.last_user_turn_at,
-    retentionPaused: metadata.retention_paused,
-    ...(metadata.retention_remaining_seconds !== null
-      ? { retentionRemainingSeconds: metadata.retention_remaining_seconds }
-      : {}),
     metadataRevision: metadata.metadata_revision,
   };
 }
@@ -288,11 +282,8 @@ function toRemoteThread(
       dataSourceId: thread.dataSourceId,
       dataSourceName: thread.dataSourceNameSnapshot,
       isPinned: thread.isPinned === true,
-      expiresAt: thread.expiresAt,
       lastUserTurnAt: thread.lastUserTurnAt,
       archivedAt: thread.archivedAt,
-      retentionPaused: thread.retentionPaused === true,
-      retentionRemainingSeconds: thread.retentionRemainingSeconds,
       metadataRevision: thread.metadataRevision,
       historyImportPending: thread.historyImportPending === true,
       showDataSourceHeading: groupState.showHeading,
@@ -366,71 +357,108 @@ export function saveThreadResultArtifact(
   }
 }
 
-export function saveThreadChartViewOverride(
+function getChartViewEditContext(
   userId: string,
   threadId: string,
-  turnId: string,
+  historyTurnId: string,
   sourceResultId: string,
-  view: ChartViewConfiguration,
-): boolean {
-  if (!turnId || !sourceResultId) return false;
-  const key = RESULT_ARTIFACTS_KEY(userId, canonicalThreadId(threadId));
-  let artifacts: Record<string, unknown[]>;
-  try {
-    const stored: unknown = JSON.parse(window.localStorage.getItem(key) ?? "{}");
-    if (
-      typeof stored !== "object" ||
-      stored === null ||
-      Array.isArray(stored) ||
-      Object.values(stored).some((value) => !Array.isArray(value))
-    )
-      return false;
-    artifacts = stored as Record<string, unknown[]>;
-  } catch {
-    return false;
+  recommendedView: ChartViewConfiguration,
+) {
+  if (!historyTurnId || !sourceResultId) return undefined;
+  const canonicalId = canonicalThreadId(threadId);
+  const artifacts = readThreadResultArtifacts(userId, canonicalId)[historyTurnId];
+  if (!artifacts) return undefined;
+  const query = artifacts
+    .flatMap((item) => getSuccessfulQueryArtifacts([item]))
+    .find((item) => item.resultId === sourceResultId);
+  const chart = artifacts
+    .map(readChartArtifact)
+    .find((item) => item?.source_result_id === sourceResultId);
+  if (!query || !chart) return undefined;
+  const actualRecommendation = createRecommendedChartView(chart, query);
+  if (!actualRecommendation || !chartViewsEqual(actualRecommendation, recommendedView)) {
+    return undefined;
   }
-
-  const override = {
-    kind: "chart_view_override",
-    schema_version: 1,
-    source_result_id: sourceResultId,
-    view,
-  } as const;
-  const existingTurnArtifacts = artifacts[turnId] ?? [];
-  const hasSourceQuery = existingTurnArtifacts.some((item) =>
-    getSuccessfulQueryArtifacts([item]).some((query) => query.resultId === sourceResultId),
-  );
-  const hasSourceChart = existingTurnArtifacts.some(
-    (item) => readChartArtifact(item)?.source_result_id === sourceResultId,
-  );
-  if (!hasSourceQuery || !hasSourceChart) return false;
-  const turnArtifacts = existingTurnArtifacts.filter((item) => {
-    if (!isChartViewOverrideCandidate(item) || typeof item !== "object" || item === null)
-      return true;
-    const wrapper = item as { artifact?: unknown; source_result_id?: unknown };
-    const candidate =
-      wrapper.artifact && typeof wrapper.artifact === "object"
-        ? (wrapper.artifact as { source_result_id?: unknown })
-        : wrapper;
-    return candidate.source_result_id !== sourceResultId;
-  });
-  const nextArtifacts: Record<string, unknown[]> = {
-    ...artifacts,
-    [turnId]: [...turnArtifacts, override],
+  const validateView = (candidate: unknown) => validateChartView(candidate, query).view;
+  const hasSourceArtifacts = (turnArtifacts: unknown[], resultId: string) =>
+    resultId === sourceResultId &&
+    turnArtifacts.some((item) =>
+      getSuccessfulQueryArtifacts([item]).some((candidate) => candidate.resultId === resultId),
+    ) &&
+    turnArtifacts.some((item) => readChartArtifact(item)?.source_result_id === resultId);
+  return {
+    key: RESULT_ARTIFACTS_KEY(userId, canonicalId),
+    query,
+    recommendedView: actualRecommendation,
+    validateView,
+    hasSourceArtifacts,
   };
-  let serialized = JSON.stringify(nextArtifacts);
-  while (new TextEncoder().encode(serialized).byteLength > MAX_RESULT_ARTIFACT_BYTES) {
-    const oldestOtherTurn = Object.keys(nextArtifacts).find((id) => id !== turnId);
-    if (!oldestOtherTurn) return false;
-    delete nextArtifacts[oldestOtherTurn];
-    serialized = JSON.stringify(nextArtifacts);
-  }
-  try {
-    window.localStorage.setItem(key, serialized);
-    return true;
-  } catch {
-    return false;
-  }
+}
+
+export function commitThreadChartViewChange(
+  userId: string,
+  threadId: string,
+  historyTurnId: string,
+  sourceResultId: string,
+  before: ChartViewConfiguration,
+  after: ChartViewConfiguration,
+  recommendedView: ChartViewConfiguration,
+  summary: string,
+  origin: ChartViewEditOrigin,
+) {
+  const context = getChartViewEditContext(
+    userId,
+    threadId,
+    historyTurnId,
+    sourceResultId,
+    recommendedView,
+  );
+  if (!context) return undefined;
+  return commitChartViewChangeInCache({
+    storage: window.localStorage,
+    key: context.key,
+    turnId: historyTurnId,
+    sourceResultId,
+    before,
+    after,
+    recommendedView: context.recommendedView,
+    summary,
+    origin,
+    validateView: context.validateView,
+    equalViews: chartViewsEqual,
+    hasSourceArtifacts: context.hasSourceArtifacts,
+    maxBytes: MAX_RESULT_ARTIFACT_BYTES,
+  });
+}
+
+export function undoThreadChartViewChange(
+  userId: string,
+  threadId: string,
+  historyTurnId: string,
+  sourceResultId: string,
+  expectedView: ChartViewConfiguration,
+  recommendedView: ChartViewConfiguration,
+) {
+  const context = getChartViewEditContext(
+    userId,
+    threadId,
+    historyTurnId,
+    sourceResultId,
+    recommendedView,
+  );
+  if (!context) return undefined;
+  return undoChartViewChangeInCache({
+    storage: window.localStorage,
+    key: context.key,
+    turnId: historyTurnId,
+    sourceResultId,
+    expectedView,
+    recommendedView: context.recommendedView,
+    validateView: context.validateView,
+    equalViews: chartViewsEqual,
+    hasSourceArtifacts: context.hasSourceArtifacts,
+    maxBytes: MAX_RESULT_ARTIFACT_BYTES,
+  });
 }
 
 export function getThreadResultArtifacts(
@@ -662,9 +690,6 @@ async function postThread(
     is_pinned?: unknown;
     archived_at?: unknown;
     last_user_turn_at?: unknown;
-    expires_at?: unknown;
-    retention_paused?: unknown;
-    retention_remaining_seconds?: unknown;
     metadata_revision?: unknown;
     detail?: { message?: unknown };
     message?: unknown;
@@ -688,9 +713,7 @@ async function postThread(
     historyImportPending: value.history_import_pending === true,
     ...(typeof value.data_source_id === "string" &&
     typeof value.last_user_turn_at === "string" &&
-    typeof value.expires_at === "string" &&
     typeof value.is_pinned === "boolean" &&
-    typeof value.retention_paused === "boolean" &&
     typeof value.metadata_revision === "number"
       ? {
           metadata: {
@@ -702,11 +725,6 @@ async function postThread(
             is_pinned: value.is_pinned,
             archived_at: typeof value.archived_at === "string" ? value.archived_at : null,
             last_user_turn_at: value.last_user_turn_at,
-            expires_at: value.expires_at,
-            retention_paused: value.retention_paused,
-            retention_remaining_seconds: Number.isSafeInteger(value.retention_remaining_seconds)
-              ? (value.retention_remaining_seconds as number)
-              : null,
             metadata_revision: value.metadata_revision,
             history_import_pending: value.history_import_pending === true,
           } satisfies ThreadMetadata,
@@ -902,14 +920,6 @@ export function getThreadDataSourceName(userId: string, threadId: string): strin
   return typeof name === "string" ? name : undefined;
 }
 
-export function getThreadExpiresAt(userId: string, threadId: string): string | undefined {
-  const canonicalId = canonicalThreadId(threadId);
-  const expiresAt = readThreads(userId).find(
-    (thread) => thread.remoteId === canonicalId || thread.remoteId === threadId,
-  )?.expiresAt;
-  return typeof expiresAt === "string" ? expiresAt : undefined;
-}
-
 export function setThreadDataSource(
   userId: string,
   threadId: string,
@@ -992,7 +1002,10 @@ function readRepository(userId: string, threadId: string): StoredRepository {
         ...entry,
         message: {
           ...entry.message,
-          createdAt: new Date(entry.message.createdAt),
+          createdAt:
+            entry.message.createdAt == null
+              ? new Date(Number.NaN)
+              : new Date(entry.message.createdAt),
         },
       })),
     };
@@ -1119,7 +1132,9 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
               role: turn.role as "user" | "assistant",
               content,
               createdAt:
-                typeof turn.created_at === "string" ? new Date(turn.created_at) : new Date(),
+                typeof turn.created_at === "string"
+                  ? new Date(turn.created_at)
+                  : new Date(Number.NaN),
             });
           }
           const repository = ExportedMessageRepository.fromArray(turns);
@@ -1192,7 +1207,7 @@ export function createLocalThreadListAdapter(userId: string): RemoteThreadListAd
       try {
         const states = await fetchThreadStates(staleIds.slice(offset, offset + 200));
         for (const state of states) {
-          if (state.status === "deleted" || state.status === "expired") {
+          if (state.status === "deleted") {
             removeLocalThread(userId, state.thread_id, state.thread_id);
           } else if (state.status === "archived") {
             updateThreadStatus(userId, state.thread_id, "archived");

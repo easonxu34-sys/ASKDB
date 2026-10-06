@@ -12,7 +12,11 @@ from api.schemas.chat import ChatRequest
 from api.dependencies import get_auth_application, require_current_user
 from api.streaming import encode_sse
 from application.auth import AuthApplication
-from api.chat_stream import ChatStreamContext, stream_chat_response
+from api.chat_stream import (
+    ChatStreamContext,
+    short_log_reference,
+    stream_chat_response,
+)
 from application.conversation_memory import sanitize_turn_text
 from application.memory_context import (
     ContextBudgetError,
@@ -57,6 +61,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _log_chat_conflict(
+    request: ChatRequest,
+    code: str,
+    *,
+    reason: str | None = None,
+) -> None:
+    logger.info(
+        "AskDB chat request rejected "
+        "(status=409 code=%s reason=%s thread_ref=%s turn_ref=%s)",
+        code,
+        reason or "NONE",
+        short_log_reference(request.thread_id),
+        short_log_reference(request.turn_id),
+    )
+
+
 @router.post("/v1/chat")
 async def chat(
     request: ChatRequest,
@@ -79,6 +99,7 @@ async def chat(
                 detail={"code": "CHAT_THREAD_NOT_FOUND", "message": "找不到此会话。"},
                 headers={"Cache-Control": "no-store"},
             )
+        _log_chat_conflict(request, "CHAT_THREAD_LEGACY_REQUIRES_NEW_THREAD")
         raise HTTPException(
             status_code=409,
             detail={
@@ -128,7 +149,12 @@ async def chat(
                 },
                 headers={"Cache-Control": "no-store"},
             ) from None
-        except ThreadHistoryImportIncomplete:
+        except ThreadHistoryImportIncomplete as exc:
+            _log_chat_conflict(
+                request,
+                "THREAD_HISTORY_IMPORT_INCOMPLETE",
+                reason=type(exc).__name__,
+            )
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -138,6 +164,7 @@ async def chat(
                 headers={"Cache-Control": "no-store"},
             ) from None
         if request.data_source_id and request.data_source_id != thread_context.source_id:
+            _log_chat_conflict(request, "CHAT_DATA_SOURCE_MISMATCH")
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -254,6 +281,7 @@ async def chat(
     except ChatLegacyThreadRequiresNew:
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+        _log_chat_conflict(request, "CHAT_THREAD_LEGACY_REQUIRES_NEW_THREAD")
         raise HTTPException(
             status_code=409,
             detail={
@@ -281,6 +309,7 @@ async def chat(
     except ChatDataSourceUnavailable:
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+        _log_chat_conflict(request, "DATA_SOURCE_UNAVAILABLE")
         raise HTTPException(
             status_code=409,
             detail={"code": "DATA_SOURCE_UNAVAILABLE", "message": "所选数据源当前不可用。"},
@@ -289,6 +318,7 @@ async def chat(
     except ChatDataSourceMismatch:
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+        _log_chat_conflict(request, "CHAT_DATA_SOURCE_MISMATCH")
         raise HTTPException(
             status_code=409,
             detail={"code": "CHAT_DATA_SOURCE_MISMATCH", "message": "此会话已绑定其他数据源，请新建会话后切换。"},
@@ -304,6 +334,7 @@ async def chat(
     except RuntimeDataSourceUnavailable:
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+        _log_chat_conflict(request, "DATA_SOURCE_UNAVAILABLE")
         raise HTTPException(
             status_code=409,
             detail={"code": "DATA_SOURCE_UNAVAILABLE", "message": "所选数据源当前不可用，请检查设置。"},
@@ -369,9 +400,18 @@ async def chat(
                 user_content=request.message.content,
                 expected_sequence=request.expected_sequence,
             )
-        except (TurnAlreadyRunning, TurnIdempotencyConflict, TurnSequenceConflict):
+        except (
+            TurnAlreadyRunning,
+            TurnIdempotencyConflict,
+            TurnSequenceConflict,
+        ) as exc:
             if lease is not None:
                 await app.state.runtime_manager.release_runtime(lease)
+            _log_chat_conflict(
+                request,
+                "THREAD_TURN_CONFLICT",
+                reason=type(exc).__name__,
+            )
             raise HTTPException(
                 status_code=409,
                 detail={"code": "THREAD_TURN_CONFLICT", "message": "会话状态已变化，请刷新后重试。"},
@@ -413,6 +453,7 @@ async def chat(
                 if turn_start.status == "running"
                 else "此轮回答未完成，请使用新的 turn_id 重试。"
             )
+            _log_chat_conflict(request, code, reason=turn_start.status)
             raise HTTPException(
                 status_code=409,
                 detail={"code": code, "message": message},

@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 
 from application.chart_context import QueryArtifactContext
 from domain.query_policy import MAX_QUERY_ROWS, validate_read_query
+from integrations.wren import serialized_wren_operation
 
 
 def create_guarded_query_tool(
@@ -21,9 +22,10 @@ def create_guarded_query_tool(
         if limit < 1 or limit > MAX_QUERY_ROWS:
             raise ValueError(f"limit must be between 1 and {MAX_QUERY_ROWS}.")
 
-        planned_sql = toolkit.dry_plan(sql)
-        toolkit.dry_run(sql)
-        table = toolkit.query(sql, limit=limit)
+        with serialized_wren_operation(toolkit):
+            planned_sql = toolkit.dry_plan(sql)
+            toolkit.dry_run(sql)
+            table = toolkit.query(sql, limit=limit)
         artifact = (context or QueryArtifactContext()).store_query(table, sql, limit)
         return {
             "ok": True,

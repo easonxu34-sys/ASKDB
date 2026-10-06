@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { Select } from "@base-ui/react/select";
 
+const EMPTY_OPTION_VALUE = "__composer_select_empty_option__";
+
 export type ComposerSelectOption = {
   value: string;
   label: string;
@@ -19,6 +21,8 @@ type ComposerSelectProps = {
   ariaLabel: string;
   id: string;
   disabled?: boolean;
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
   triggerClassName?: string;
   onValueChange: (value: string) => void;
 };
@@ -30,22 +34,29 @@ export function ComposerSelect({
   ariaLabel,
   id,
   disabled = false,
+  ariaInvalid,
+  ariaDescribedBy,
   triggerClassName,
   onValueChange,
 }: ComposerSelectProps) {
   const selected = options.find((option) => option.value === value);
+  const selectValue = value === "" && selected ? EMPTY_OPTION_VALUE : value || null;
 
   return (
     <Select.Root
-      value={value || null}
+      value={selectValue}
       disabled={disabled}
       onValueChange={(nextValue) => {
-        if (typeof nextValue === "string") onValueChange(nextValue);
+        if (typeof nextValue === "string") {
+          onValueChange(nextValue === EMPTY_OPTION_VALUE ? "" : nextValue);
+        }
       }}
     >
       <Select.Trigger
         id={id}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
         className={cn(
           "inline-flex h-8 min-w-0 max-w-[min(19rem,65vw)] items-center gap-2 rounded-lg border border-[#e5ded3] bg-white/70 px-3 text-left font-sans text-xs text-[#615b51] transition-colors hover:border-[#d8c5b1] hover:bg-[#f8f5ef] focus-visible:border-[#c57650] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c57650]/30 disabled:cursor-not-allowed disabled:opacity-55",
           triggerClassName,
@@ -88,7 +99,7 @@ export function ComposerSelect({
               {options.map((option) => (
                 <Select.Item
                   key={option.value}
-                  value={option.value}
+                  value={option.value === "" ? EMPTY_OPTION_VALUE : option.value}
                   label={[option.label, option.description].filter(Boolean).join(" ")}
                   disabled={option.disabled}
                   className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-left outline-none data-[highlighted]:bg-[#f5efe7] data-[selected]:bg-[#fbf5ee] data-[disabled]:cursor-not-allowed data-[disabled]:opacity-55"

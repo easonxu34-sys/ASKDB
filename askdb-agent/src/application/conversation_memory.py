@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 
@@ -74,21 +72,10 @@ def sanitize_turn_text(value: str, *, max_chars: int = 12_000) -> str:
 
 
 class ConversationMemoryApplication:
-    """Application-level entry point for thread persistence and retention."""
+    """Application-level entry point for conversation thread persistence."""
 
-    def __init__(self, store: Any, *, clock: Callable[[], datetime] | None = None):
+    def __init__(self, store: Any):
         self.store = store
-        self.clock = clock or (lambda: datetime.now(UTC))
 
     def create_thread(self, *, owner_user_id: str, source_id: str) -> Any:
         return self.store.create_thread(owner_user_id=owner_user_id, source_id=source_id)
-
-    def expire_inactive_threads(self, *, limit: int = 100) -> int:
-        # Expiry is run by the single-process startup/periodic coordinator. The
-        # deletion journal integration supplies durable cascade behavior before
-        # this method is enabled in the runtime path.
-        expire = getattr(self.store, "expire_inactive_threads", None)
-        if expire is None:
-            return 0
-        now = self.clock()
-        return expire(now=now, limit=limit)

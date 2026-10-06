@@ -922,7 +922,8 @@ class WrenSettingsStore:
                     )
                 candidate = connection.execute(
                     """SELECT candidate.review_status, candidate.publication_status,
-                              thread.status AS thread_status, thread.expires_at
+                              candidate.expires_at AS candidate_expires_at,
+                              thread.status AS thread_status
                        FROM business_rule_candidates AS candidate
                        JOIN agent_conversation_threads AS thread
                          ON thread.thread_id=candidate.source_thread_id
@@ -934,7 +935,11 @@ class WrenSettingsStore:
                        WHERE data_source_id=? AND item_type='business_rule' AND item_id=? LIMIT 1""",
                     (source_id, rule_id),
                 ).fetchone()
-                expiry = datetime.fromisoformat(candidate["expires_at"]) if candidate else None
+                expiry = (
+                    datetime.fromisoformat(candidate["candidate_expires_at"])
+                    if candidate
+                    else None
+                )
                 expiry = expiry.replace(tzinfo=UTC) if expiry and expiry.tzinfo is None else expiry
                 if (
                     candidate is None
