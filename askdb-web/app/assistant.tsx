@@ -7,7 +7,7 @@ import {
   useLocalRuntime,
   useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
-import { MenuIcon, SparklesIcon } from "lucide-react";
+import { MenuIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
@@ -15,6 +15,7 @@ import { ThreadListSidebar } from "@/components/assistant-ui/elements/thread-lis
 import { fetchCurrentUser, type AuthUser, authMutation } from "@/lib/auth-api";
 import { createAgentChatAdapter } from "@/lib/agent-chat-adapter";
 import { clearLocalThreadCache, createLocalThreadListAdapter } from "@/lib/local-thread-adapter";
+import { AskDbMark, AskDbWordmark } from "@/components/brand/askdb-logo";
 
 export const Assistant = () => {
   const router = useRouter();
@@ -202,8 +203,8 @@ function SignedInAssistant({ user, onLogout }: { user: AuthUser; onLogout: () =>
                 <MenuIcon className="size-4" aria-hidden="true" />
               </button>
               <div className="flex items-center gap-2 rounded-full border border-[#e7e2d8] bg-[#fbfaf7] px-3 py-1.5 text-xs text-[#77736b]">
-                <SparklesIcon className="size-3.5 text-[#c57650]" aria-hidden="true" />
-                AskDB 智能助手
+                <AskDbMark className="size-3.5 shrink-0" />
+                <span><AskDbWordmark className="text-xs" /> 智能助手</span>
               </div>
             </div>
           </header>

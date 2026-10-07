@@ -50,6 +50,7 @@ import {
   type WrenView,
 } from "@/lib/data-sources";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import {
   Dialog,
   DialogContent,
@@ -1919,29 +1920,39 @@ export function DataSourcesPage() {
               {!detail && (
                 <label className="grid gap-1.5 text-xs font-medium text-[#615b51]">
                   数据库类型
-                  <select
-                    aria-label="数据库类型"
+                  <ComposerSelect
+                    id="data-source-connector-type"
+                    ariaLabel="数据库类型"
                     value={connectorType}
-                    onChange={(event) => chooseConnector(event.target.value)}
-                    className="h-10 rounded-lg border border-[#e7e2d8] bg-white px-3 text-sm font-normal text-[#393630] outline-none focus:border-[#d8cbb9] focus:ring-2 focus:ring-[#c57650]/20"
-                  >
-                    {connectors.map((item) => (
-                      <option key={item.type} value={item.type}>{item.label}</option>
-                    ))}
-                  </select>
+                    placeholder="选择数据库类型"
+                    options={connectors.map((item) => ({ value: item.type, label: item.label }))}
+                    onValueChange={chooseConnector}
+                    triggerClassName="h-10 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-3 text-sm font-normal text-[#393630] focus-visible:border-[#d8cbb9] focus-visible:ring-[#c57650]/20"
+                  />
                 </label>
               )}
               {connectorVariants.length > 1 && (
                 <label className="grid gap-1.5 text-xs font-medium text-[#615b51]">
                   认证方式
-                  <select
+                  <ComposerSelect
+                    id="data-source-connection-variant"
+                    ariaLabel="认证方式"
                     value={activeFieldGroup?.variant ?? connectorVariants[0]}
-                    onChange={(event) => {
+                    placeholder="选择认证方式"
+                    options={connectorVariants.map((variant) => ({
+                      value: variant,
+                      label: variant === "dataset" ? "按数据集" :
+                        variant === "project" ? "按项目" :
+                          variant === "redshift_iam" ? "IAM 临时凭证" :
+                            variant === "service_principal" ? "服务主体" :
+                              variant === "token" ? "访问令牌" : variant,
+                    }))}
+                    onValueChange={(variant) => {
                       const discriminator = connectorDefinition?.field_groups
                         .flatMap((group) => group.fields)
                         .find((field) => field.name.endsWith("_type"));
                       const nextGroup = connectorDefinition?.field_groups.find(
-                        (group) => group.variant === event.target.value,
+                        (group) => group.variant === variant,
                       );
                       if (discriminator && nextGroup) {
                         const nextFields = new Set(nextGroup.fields.map((field) => field.name));
@@ -1956,7 +1967,7 @@ export function DataSourcesPage() {
                             if (next[field.name] === undefined && field.default !== null)
                               next[field.name] = field.default;
                           }
-                          next[discriminator.name] = event.target.value;
+                          next[discriminator.name] = variant;
                           return next;
                         });
                         setSecretValues((current) =>
@@ -1971,18 +1982,8 @@ export function DataSourcesPage() {
                         setNotice("认证方式已修改，请重新填写凭证并测试连接。");
                       }
                     }}
-                    className="h-10 rounded-lg border border-[#e7e2d8] bg-white px-3 text-sm font-normal text-[#393630] outline-none focus:border-[#d8cbb9] focus:ring-2 focus:ring-[#c57650]/20"
-                  >
-                    {connectorVariants.map((variant) => (
-                      <option key={variant} value={variant}>
-                        {variant === "dataset" ? "按数据集" :
-                          variant === "project" ? "按项目" :
-                            variant === "redshift_iam" ? "IAM 临时凭证" :
-                              variant === "service_principal" ? "服务主体" :
-                                variant === "token" ? "访问令牌" : variant}
-                      </option>
-                    ))}
-                  </select>
+                    triggerClassName="h-10 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-3 text-sm font-normal text-[#393630] focus-visible:border-[#d8cbb9] focus-visible:ring-[#c57650]/20"
+                  />
                 </label>
               )}
               {(activeFieldGroup?.fields ?? [])
@@ -2277,27 +2278,27 @@ export function DataSourcesPage() {
                   </nav>
                   <label className="grid gap-1.5 text-[10px] font-medium text-[#89847a] lg:hidden">
                     当前模型
-                    <select
-                      aria-label="选择要编辑的语义模型"
+                    <ComposerSelect
+                      id="semantic-model-mobile-selector"
+                      ariaLabel="选择要编辑的语义模型"
                       value={activeModel?.table ?? ""}
-                      onChange={(event) => {
-                        setActiveModelTable(event.target.value);
+                      placeholder="选择语义模型"
+                      options={[
+                        ...(activeModel && !visibleModels.some((model) => model.table === activeModel.table)
+                          ? [{ value: activeModel.table, label: `${activeModel.name || activeModel.table} · 当前编辑` }]
+                          : []),
+                        ...visibleModels.map((model) => ({
+                          value: model.table,
+                          label: `${model.name || model.table} · ${model.columns.length} 个字段`,
+                        })),
+                      ]}
+                      disabled={!activeModel && visibleModels.length === 0}
+                      onValueChange={(value) => {
+                        setActiveModelTable(value);
                         setFieldSearch("");
                       }}
-                      className="h-9 rounded-lg border border-[#e7e2d8] bg-white px-2.5 text-xs font-normal text-[#514b42] outline-none focus:border-[#d8cbb9]"
-                    >
-                      {activeModel &&
-                        !visibleModels.some((model) => model.table === activeModel.table) && (
-                          <option value={activeModel.table}>
-                            {activeModel.name || activeModel.table} · 当前编辑
-                          </option>
-                        )}
-                      {visibleModels.map((model) => (
-                        <option key={model.table} value={model.table}>
-                          {model.name || model.table} · {model.columns.length} 个字段
-                        </option>
-                      ))}
-                    </select>
+                      triggerClassName="h-9 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-2.5 text-xs font-normal text-[#514b42] focus-visible:border-[#d8cbb9]"
+                    />
                   </label>
                   {activeModel ? (
                     <div className="min-w-0 rounded-xl border border-[#ebe6dd] bg-white/65 p-3">
@@ -2430,48 +2431,46 @@ export function DataSourcesPage() {
                   <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr]">
                     <label className="grid gap-1 text-[10px] text-[#89847a]">
                       左侧模型
-                      <select
+                      <ComposerSelect
+                        id={`relationship-left-model-${index}`}
+                        ariaLabel="左侧模型"
                         value={relationship.left_model}
-                        onChange={(event) =>
-                          updateRelationship(index, { left_model: event.target.value })
-                        }
-                        className="h-9 rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
-                      >
-                        {modelNames.map((name) => (
-                          <option key={name}>{name}</option>
-                        ))}
-                      </select>
+                        placeholder="选择模型"
+                        options={modelNames.map((name) => ({ value: name, label: name }))}
+                        onValueChange={(value) => updateRelationship(index, { left_model: value })}
+                        triggerClassName="h-9 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
+                      />
                     </label>
                     <label className="grid gap-1 text-[10px] text-[#89847a]">
                       关系类型
-                      <select
+                      <ComposerSelect
+                        id={`relationship-join-type-${index}`}
+                        ariaLabel="关系类型"
                         value={relationship.join_type}
-                        onChange={(event) =>
-                          updateRelationship(index, {
-                            join_type: event.target.value as WrenRelationship["join_type"],
-                          })
-                        }
-                        className="h-9 rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
-                      >
-                        <option value="many_to_one">多对一</option>
-                        <option value="one_to_many">一对多</option>
-                        <option value="one_to_one">一对一</option>
-                        <option value="many_to_many">多对多</option>
-                      </select>
+                        placeholder="选择关系类型"
+                        options={[
+                          { value: "many_to_one", label: "多对一" },
+                          { value: "one_to_many", label: "一对多" },
+                          { value: "one_to_one", label: "一对一" },
+                          { value: "many_to_many", label: "多对多" },
+                        ]}
+                        onValueChange={(value) => updateRelationship(index, {
+                          join_type: value as WrenRelationship["join_type"],
+                        })}
+                        triggerClassName="h-9 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
+                      />
                     </label>
                     <label className="grid gap-1 text-[10px] text-[#89847a]">
                       右侧模型
-                      <select
+                      <ComposerSelect
+                        id={`relationship-right-model-${index}`}
+                        ariaLabel="右侧模型"
                         value={relationship.right_model}
-                        onChange={(event) =>
-                          updateRelationship(index, { right_model: event.target.value })
-                        }
-                        className="h-9 rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
-                      >
-                        {modelNames.map((name) => (
-                          <option key={name}>{name}</option>
-                        ))}
-                      </select>
+                        placeholder="选择模型"
+                        options={modelNames.map((name) => ({ value: name, label: name }))}
+                        onValueChange={(value) => updateRelationship(index, { right_model: value })}
+                        triggerClassName="h-9 w-full max-w-full rounded-lg border border-[#e7e2d8] bg-white px-2 text-xs text-[#514b42]"
+                      />
                     </label>
                   </div>
                   <div className="mt-2 flex gap-2">

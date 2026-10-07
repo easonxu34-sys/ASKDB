@@ -26,8 +26,7 @@ function artifactOf(item) {
 function matchingOverrides(items, sourceResultId) {
   return items.flatMap((item, index) => {
     const artifact = artifactOf(item);
-    return artifact?.kind === "chart_view_override" &&
-      artifact.source_result_id === sourceResultId
+    return artifact?.kind === "chart_view_override" && artifact.source_result_id === sourceResultId
       ? [{ index, artifact }]
       : [];
   });
@@ -43,9 +42,17 @@ function validatedView(candidate, validateView) {
 
 function readHistory(override, validateView) {
   if (!override || override.schema_version === 1) return [];
-  if (override.schema_version !== 2 && override.schema_version !== 3) return undefined;
+  if (
+    override.schema_version !== 2 &&
+    override.schema_version !== 3 &&
+    override.schema_version !== 4
+  )
+    return undefined;
   if (override.undo_history === undefined) return [];
-  if (!Array.isArray(override.undo_history) || override.undo_history.length > MAX_CHART_EDIT_HISTORY) {
+  if (
+    !Array.isArray(override.undo_history) ||
+    override.undo_history.length > MAX_CHART_EDIT_HISTORY
+  ) {
     return undefined;
   }
   const result = [];
@@ -86,11 +93,14 @@ function writeIndex(storage, key, index, turnId, maxBytes) {
 function hasUsableIdentity(options) {
   return Boolean(
     options.storage &&
-      typeof options.key === "string" && options.key &&
-      typeof options.turnId === "string" && options.turnId &&
-      typeof options.sourceResultId === "string" && options.sourceResultId &&
-      typeof options.hasSourceArtifacts === "function" &&
-      typeof options.validateView === "function",
+    typeof options.key === "string" &&
+    options.key &&
+    typeof options.turnId === "string" &&
+    options.turnId &&
+    typeof options.sourceResultId === "string" &&
+    options.sourceResultId &&
+    typeof options.hasSourceArtifacts === "function" &&
+    typeof options.validateView === "function",
   );
 }
 
@@ -107,7 +117,9 @@ function replaceOverride(index, turnId, sourceResultId, override) {
   index[turnId] = [
     ...existing.filter((item) => {
       const artifact = artifactOf(item);
-      return !(artifact?.kind === "chart_view_override" && artifact.source_result_id === sourceResultId);
+      return !(
+        artifact?.kind === "chart_view_override" && artifact.source_result_id === sourceResultId
+      );
     }),
     override,
   ];
@@ -137,7 +149,11 @@ function getWritableHistory(options) {
   const override = matches[0]?.artifact;
   if (
     override &&
-    (override.schema_version !== 1 && override.schema_version !== 2 && override.schema_version !== 3 || !isRecord(override.view))
+    ((override.schema_version !== 1 &&
+      override.schema_version !== 2 &&
+      override.schema_version !== 3 &&
+      override.schema_version !== 4) ||
+      !isRecord(override.view))
   ) {
     return undefined;
   }
@@ -186,11 +202,7 @@ export function commitChartViewChange(options) {
   if (!state) return undefined;
   const validBefore = validatedView(before, validateView);
   const validAfter = validatedView(after, validateView);
-  if (
-    !validBefore ||
-    !validAfter ||
-    !areViewsEqual(state.currentView, validBefore, equalViews)
-  ) {
+  if (!validBefore || !validAfter || !areViewsEqual(state.currentView, validBefore, equalViews)) {
     return undefined;
   }
   const undoHistory = [
@@ -199,7 +211,7 @@ export function commitChartViewChange(options) {
   ].slice(-MAX_CHART_EDIT_HISTORY);
   const override = {
     kind: "chart_view_override",
-    schema_version: 3,
+    schema_version: 4,
     source_result_id: sourceResultId,
     view: validAfter,
     undo_history: undoHistory,
@@ -235,7 +247,7 @@ export function undoChartViewChange(options) {
   const remainingHistory = state.undoHistory.slice(0, -1);
   const override = {
     kind: "chart_view_override",
-    schema_version: 3,
+    schema_version: 4,
     source_result_id: sourceResultId,
     view: previous.view,
     undo_history: remainingHistory,

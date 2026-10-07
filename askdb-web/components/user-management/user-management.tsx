@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { authMutation, fetchCurrentUser, responseError, type AdminUser, type AuthUser } from "@/lib/auth-api";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import {
   fetchDataSourceCatalog,
   isChatAvailableDataSource,
@@ -269,9 +270,18 @@ export function UserManagement() {
             <label className="sr-only" htmlFor="new-username">用户名或工号</label>
             <input id="new-username" autoComplete="off" maxLength={128} required value={username} onChange={(event) => setUsername(event.target.value)} placeholder="输入用户名或工号" className="h-11 min-w-0 rounded-xl border border-[#e3ddd2] bg-white px-3.5 text-sm outline-none focus:border-[#c57650] focus:ring-4 focus:ring-[#c57650]/10" />
             <label className="sr-only" htmlFor="new-role">账号角色</label>
-            <select id="new-role" value={role} onChange={(event) => setRole(event.target.value as "admin" | "member")} className="h-11 rounded-xl border border-[#e3ddd2] bg-white px-3 text-sm text-[#514b42] outline-none focus:border-[#c57650] focus:ring-4 focus:ring-[#c57650]/10">
-              <option value="member">普通用户</option><option value="admin">管理员</option>
-            </select>
+            <ComposerSelect
+              id="new-role"
+              ariaLabel="账号角色"
+              value={role}
+              placeholder="选择角色"
+              options={[
+                { value: "member", label: "普通用户" },
+                { value: "admin", label: "管理员" },
+              ]}
+              onValueChange={(value) => setRole(value as "admin" | "member")}
+              triggerClassName="h-11 w-full max-w-full rounded-xl border border-[#e3ddd2] bg-white px-3 text-sm text-[#514b42] focus-visible:ring-4 focus-visible:ring-[#c57650]/10"
+            />
             <button disabled={busy || !username.trim()} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#b96f4b] px-5 text-sm font-medium text-white hover:bg-[#a96040] focus-visible:ring-2 focus-visible:ring-[#30302e] disabled:cursor-wait disabled:opacity-60">
               {busy ? <LoaderCircleIcon className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <PlusIcon className="size-4" aria-hidden="true" />}创建账号
             </button>
@@ -291,7 +301,18 @@ export function UserManagement() {
                 <article key={user.id} className="rounded-2xl border border-[#e7e2d8] bg-[#fbfaf7] p-5 sm:p-6">
                   <div className="grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_10rem_8rem_auto_auto] lg:items-end">
                     <label className="block space-y-1.5"><span className="text-[11px] text-[#89847a]">用户名 / 工号</span><input maxLength={128} value={draft.username} onChange={(event) => setDrafts((old) => ({ ...old, [user.id]: { ...draft, username: event.target.value } }))} className="h-10 w-full rounded-lg border border-[#e3ddd2] bg-white px-3 text-sm outline-none focus:border-[#c57650] focus:ring-4 focus:ring-[#c57650]/10" /></label>
-                    <label className="block space-y-1.5"><span className="text-[11px] text-[#89847a]">角色</span><select value={draft.role} onChange={(event) => setDrafts((old) => ({ ...old, [user.id]: { ...draft, role: event.target.value as "admin" | "member" } }))} className="h-10 w-full rounded-lg border border-[#e3ddd2] bg-white px-3 text-sm outline-none focus:border-[#c57650] focus:ring-4 focus:ring-[#c57650]/10"><option value="member">普通用户</option><option value="admin">管理员</option></select></label>
+                    <label className="block space-y-1.5"><span className="text-[11px] text-[#89847a]">角色</span><ComposerSelect
+                      id={`user-role-${user.id}`}
+                      ariaLabel={`${user.username} 的角色`}
+                      value={draft.role}
+                      placeholder="选择角色"
+                      options={[
+                        { value: "member", label: "普通用户" },
+                        { value: "admin", label: "管理员" },
+                      ]}
+                      onValueChange={(value) => setDrafts((old) => ({ ...old, [user.id]: { ...draft, role: value as "admin" | "member" } }))}
+                      triggerClassName="h-10 w-full max-w-full rounded-lg border border-[#e3ddd2] bg-white px-3 text-sm focus-visible:ring-4 focus-visible:ring-[#c57650]/10"
+                    /></label>
                     <label className="flex h-10 items-center gap-2 text-xs text-[#625d54]"><input type="checkbox" checked={draft.is_active} onChange={(event) => setDrafts((old) => ({ ...old, [user.id]: { ...draft, is_active: event.target.checked } }))} className="size-4 accent-[#b96f4b]" />账号启用</label>
                     <button disabled={busy || !draft.username.trim()} onClick={() => void saveUser(user)} className="h-10 rounded-lg border border-[#d9c9b3] px-4 text-xs font-medium text-[#655747] hover:bg-[#f4eee2] focus-visible:ring-2 focus-visible:ring-[#c57650] disabled:opacity-50">保存设置</button>
                     <button disabled={busy} onClick={() => void resetPassword(user)} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#e3ddd2] px-3 text-xs text-[#625d54] hover:bg-[#f1eee7] focus-visible:ring-2 focus-visible:ring-[#c57650] disabled:opacity-50"><KeyRoundIcon className="size-3.5" aria-hidden="true" />重置密码</button>
@@ -306,7 +327,18 @@ export function UserManagement() {
                       {user.role === "member" && grantOptions.length > 0 && (
                         <div className="flex items-center gap-2">
                           <label className="sr-only" htmlFor={`grant-${user.id}`}>选择要分配的数据源</label>
-                          <select id={`grant-${user.id}`} value={selectedGrants[user.id] ?? ""} onChange={(event) => setSelectedGrants((old) => ({ ...old, [user.id]: event.target.value }))} className="h-8 rounded-lg border border-[#e3ddd2] bg-white px-2 text-[11px] text-[#625d54] outline-none focus:ring-2 focus:ring-[#c57650]"><option value="">分配数据源…</option>{grantOptions.map((source) => <option key={source.id} value={source.id}>{source.display_name}</option>)}</select>
+                          <ComposerSelect
+                            id={`grant-${user.id}`}
+                            ariaLabel="选择要分配的数据源"
+                            value={selectedGrants[user.id] ?? ""}
+                            placeholder="分配数据源…"
+                            options={[
+                              { value: "", label: "分配数据源…" },
+                              ...grantOptions.map((source) => ({ value: source.id, label: source.display_name })),
+                            ]}
+                            onValueChange={(value) => setSelectedGrants((old) => ({ ...old, [user.id]: value }))}
+                            triggerClassName="h-8 rounded-lg border border-[#e3ddd2] bg-white px-2 text-[11px] text-[#625d54] focus-visible:ring-[#c57650]"
+                          />
                           <button type="button" disabled={busy || !selectedGrants[user.id]} onClick={() => { const sourceId = selectedGrants[user.id]; if (sourceId) void updateGrant(user, sourceId, true).then((changed) => { if (changed) setSelectedGrants((old) => ({ ...old, [user.id]: "" })); }); }} className="h-8 rounded-lg px-2.5 text-[11px] text-[#9c6046] hover:bg-[#f1eee7] focus-visible:ring-2 focus-visible:ring-[#c57650] disabled:opacity-40">添加</button>
                         </div>
                       )}

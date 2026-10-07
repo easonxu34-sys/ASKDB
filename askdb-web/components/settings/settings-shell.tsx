@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { fetchCurrentUser, type AuthUser } from "@/lib/auth-api";
+import { AskDbMark, AskDbWordmark } from "@/components/brand/askdb-logo";
 
 type SettingsItem = {
   href: string;
@@ -90,13 +91,11 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
             href="/"
             className="flex items-center gap-3 rounded-xl px-2 py-2 focus-visible:ring-2 focus-visible:ring-[#c57650] focus-visible:outline-none"
           >
-            <span className="flex size-9 items-center justify-center rounded-xl bg-[#e8e3d8] text-[#5c554c]">
-              <DatabaseIcon className="size-[18px]" aria-hidden="true" />
+            <span className="flex size-9 shrink-0 items-center justify-center">
+              <AskDbMark className="size-6" />
             </span>
             <span>
-              <span className="block text-sm font-semibold tracking-tight text-[#35332e]">
-                AskDB
-              </span>
+              <AskDbWordmark className="block text-sm" />
               <span className="mt-0.5 block text-[11px] text-[#89847a]">个人设置</span>
             </span>
           </Link>

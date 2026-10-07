@@ -16,10 +16,6 @@ import {
   readChartArtifact,
 } from "@/lib/chat-output";
 import { readQueryProgressStep, type QueryProgressStep } from "@/lib/query-progress";
-import {
-  publishChartEditTurnCompletion,
-  publishChartEditTurnStart,
-} from "@/lib/chart-edit-flow.mjs";
 
 type AgentEvent = {
   event: string;
@@ -172,43 +168,12 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
             body: requestBody,
             signal: abortSignal,
           });
-        publishChartEditTurnStart({
-          thread_id: serverThreadId,
-          turn_id: turnId,
-          history_turn_id: historyTurnId,
-          confirmed_chart_query: getMessageText(currentUserMessage).endsWith(
-            "\n\n请根据以上原始指令查询数据，并生成图表。",
-          ),
-        });
       } catch (error) {
         progressSteps[0].status = "failed";
         yield update();
         throw error;
       }
 
-      let completionStatus: "completed" | "failed" | "cancelled" = "failed";
-      let completionPublished = false;
-      const publishCompletion = async (status: typeof completionStatus) => {
-        completionStatus = status;
-        if (completionPublished) return;
-        completionPublished = true;
-        const queryResultIds = getSuccessfulQueryArtifacts(queryResults)
-          .map((item) => item.resultId)
-          .filter((id): id is string => typeof id === "string");
-        const chartSourceResultIds = chartArtifacts
-          .map(readChartArtifact)
-          .map((item) => item?.source_result_id)
-          .filter((id): id is string => typeof id === "string");
-        await publishChartEditTurnCompletion({
-          thread_id: serverThreadId,
-          turn_id: turnId,
-          history_turn_id: historyTurnId,
-          status,
-          query_result_ids: queryResultIds,
-          chart_source_result_ids: chartSourceResultIds,
-        });
-      };
-      try {
       while (!terminalReceived) {
         let response = await sendTurn();
         // A running turn is resumed by polling the same idempotency key until the
@@ -369,7 +334,6 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
             } else if (event.event === "done") {
               terminalReceived = true;
               const successful = event.data.status === "completed";
-              await publishCompletion(successful ? "completed" : "failed");
               for (const step of progressSteps) {
                 if (step.status === "running") {
                   step.status = successful ? "completed" : "failed";
@@ -390,15 +354,6 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
           }
           eofRetries += 1;
           await abortableDelay(500, abortSignal);
-        }
-      }
-      } catch (error) {
-        if (abortSignal.aborted) await publishCompletion("cancelled");
-        else await publishCompletion("failed");
-        throw error;
-      } finally {
-        if (!completionPublished) {
-          await publishCompletion(abortSignal.aborted ? "cancelled" : completionStatus);
         }
       }
     },

@@ -75,9 +75,9 @@ def token_text(events):
     return "".join(payload["text"] for event, payload in events if event == "token")
 
 
-def test_confirmed_chart_edit_message_requests_chart_but_display_edit_does_not():
-    confirmed_message = "统计去年各地区的销售额\n\n请根据以上原始指令查询数据，并生成图表。"
-    assert _chart_requested_for_turn([{"role": "user", "content": confirmed_message}])
+def test_natural_language_chart_request_requests_chart_but_display_edit_does_not():
+    chart_request = "请统计去年各地区的销售额并生成图表。"
+    assert _chart_requested_for_turn([{"role": "user", "content": chart_request}])
     assert not _chart_requested_for_turn(
         [{"role": "user", "content": "标题改成各地区销售额，并使用蓝色。"}]
     )

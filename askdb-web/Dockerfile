@@ -6,7 +6,8 @@ WORKDIR /app
 COPY askdb-web/package.json askdb-web/pnpm-lock.yaml ./askdb-web/
 
 WORKDIR /app/askdb-web
-RUN corepack pnpm install --frozen-lockfile
+RUN --mount=type=cache,target=/pnpm/store \
+    corepack pnpm install --frozen-lockfile --store-dir=/pnpm/store
 
 COPY askdb-web/ ./
 RUN corepack pnpm build

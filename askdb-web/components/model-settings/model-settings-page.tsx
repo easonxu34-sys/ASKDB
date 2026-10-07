@@ -10,6 +10,7 @@ import {
   ServerIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { authMutation } from "@/lib/auth-api";
 import {
@@ -493,17 +494,20 @@ export function ModelSettingsPage() {
                   htmlFor="model-profile-provider"
                 >
                   供应商
-                  <select
+                  <ComposerSelect
                     id="model-profile-provider"
                     value={form.provider}
+                    ariaLabel="供应商"
                     disabled={Boolean(working)}
-                    onChange={(event) => selectProvider(event.target.value as ModelProvider)}
-                    className={inputClass}
-                  >
-                    <option value="openai">OpenAI</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="custom">自定义 OpenAI 兼容服务</option>
-                  </select>
+                    placeholder="选择供应商"
+                    options={[
+                      { value: "openai", label: "OpenAI" },
+                      { value: "deepseek", label: "DeepSeek" },
+                      { value: "custom", label: "自定义 OpenAI 兼容服务" },
+                    ]}
+                    onValueChange={(value) => selectProvider(value as ModelProvider)}
+                    triggerClassName={`${inputClass} max-w-full`}
+                  />
                 </label>
                 <label
                   className="block text-xs font-medium text-[#615b51] sm:col-span-2"
@@ -592,21 +596,24 @@ export function ModelSettingsPage() {
                   </label>
                   <label className="block text-xs font-medium text-[#615b51]" htmlFor="model-tokenizer">
                     Tokenizer 编码
-                    <select
+                    <ComposerSelect
                       id="model-tokenizer"
-                      required
                       value={form.tokenizer_id}
+                      ariaLabel="Tokenizer 编码"
+                      ariaRequired
                       disabled={Boolean(working)}
-                      onChange={(event) => updateField(
+                      placeholder="选择明确编码"
+                      options={[
+                        { value: "", label: "选择明确编码" },
+                        { value: "tiktoken:cl100k_base", label: "cl100k_base" },
+                        { value: "tiktoken:o200k_base", label: "o200k_base" },
+                      ]}
+                      onValueChange={(value) => updateField(
                         "tokenizer_id",
-                        event.target.value as ProfileForm["tokenizer_id"],
+                        value as ProfileForm["tokenizer_id"],
                       )}
-                      className={inputClass}
-                    >
-                      <option value="">选择明确编码</option>
-                      <option value="tiktoken:cl100k_base">cl100k_base</option>
-                      <option value="tiktoken:o200k_base">o200k_base</option>
-                    </select>
+                      triggerClassName={`${inputClass} max-w-full`}
+                    />
                   </label>
                   <p className="text-xs leading-5 text-[#89847a] sm:col-span-3">
                     新版会话按此预算裁剪上下文。模型名称不会自动推断编码；上下文窗口需大于输出预留。

@@ -57,6 +57,7 @@
 - 修改 `askdb-web/` 前遵守 `askdb-web/AGENTS.md`：先读取与改动组件相关的本地 Next.js 文档，再使用该版本支持的 API 和约定。
 - Web 只能通过同源 BFF 访问 Agent。浏览器不得持有 Agent token、模型 API Key、数据库密码或直接连接 Wren/数据库。
 - 保持现有响应式、可访问性和本地化约定；类型变更要沿 API schema、客户端适配器和 UI 消费路径一起核对。
+- `askdb-web/` 中所有用于选择一个值的下拉控件统一使用 `components/ui/composer-select.tsx` 的 `ComposerSelect`；禁止新增原生 `<select>` 或自制选择型下拉。公共组件缺少所需能力时先扩展它。操作菜单不属于选择型下拉，仍使用对应菜单组件。
 
 ## 8. 验证和交付
 

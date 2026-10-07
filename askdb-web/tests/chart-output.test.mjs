@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEChartsOption } from "../lib/chart-output.ts";
+import {
+  buildEChartsOption,
+  deriveChartRows,
+  getChartCompletenessState,
+} from "../lib/chart-output.ts";
 
 const query = {
   result_id: "result-1",
@@ -52,6 +56,124 @@ test("builds bar options with multiple bounded numeric series", () => {
     ["bar", "bar"],
   );
   assert.equal(option.legend.show, true);
+  const tooltip = option.tooltip.formatter([
+    { dataIndex: 0, seriesIndex: 0 },
+    { dataIndex: 0, seriesIndex: 1 },
+  ]);
+  assert.match(tooltip, /revenue/iu);
+  assert.match(tooltip, /orders/iu);
+});
+
+test("adds aligned axis zoom and category pointers only for line and bar charts", () => {
+  const manyRows = Array.from({ length: 31 }, (_, index) => ({
+    month: `2026-${String(index + 1).padStart(2, "0")}-01`,
+    region: `region-${index + 1}`,
+    revenue: index + 1,
+  }));
+  const longLine = buildEChartsOption(line, {
+    result_id: "result-1",
+    columns: ["month", "revenue"],
+    column_types: ["date32[day]", "double"],
+    rows: manyRows,
+  });
+  assert.deepEqual(
+    longLine.dataZoom.map(({ type }) => type),
+    ["inside", "slider"],
+  );
+  const zoomed = buildEChartsOption(line, { ...query, rows: manyRows }, undefined, {
+    start: 20,
+    end: 60,
+  });
+  assert.equal(zoomed.dataZoom[0].start, 20);
+  assert.equal(zoomed.dataZoom[1].end, 60);
+  assert.equal(longLine.dataZoom[0].xAxisIndex, 0);
+  assert.equal(longLine.dataZoom[1].xAxisIndex, 0);
+  const shortLine = buildEChartsOption(line, query);
+  assert.deepEqual(
+    shortLine.dataZoom.map(({ type }) => type),
+    ["inside"],
+  );
+  assert.equal(longLine.tooltip.axisPointer.type, "cross");
+
+  const horizontal = buildEChartsOption(
+    {
+      ...line,
+      chart_type: "bar",
+      x_field: "region",
+      title: "revenue by region",
+    },
+    {
+      result_id: "result-1",
+      columns: ["region", "revenue"],
+      column_types: ["string", "double"],
+      rows: manyRows,
+    },
+    {
+      chart_type: "bar",
+      dimension_field: "region",
+      metric_fields: ["revenue"],
+      hidden_metric_fields: [],
+      bar_orientation: "horizontal",
+      title: "Revenue",
+      field_labels: {},
+      sort: { mode: "original" },
+      format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+      show_data_labels: false,
+      show_legend: false,
+    },
+  );
+  assert.deepEqual(
+    horizontal.dataZoom.map(({ type }) => type),
+    ["inside", "slider"],
+  );
+  assert.equal(horizontal.dataZoom[0].yAxisIndex, 0);
+  assert.equal(horizontal.dataZoom[1].yAxisIndex, 0);
+  assert.equal(horizontal.tooltip.axisPointer.type, "shadow");
+  assert.equal(horizontal.tooltip.axisPointer.axis, "y");
+  const vertical = buildEChartsOption(
+    {
+      ...line,
+      chart_type: "bar",
+      x_field: "region",
+      title: "revenue by region",
+    },
+    {
+      result_id: "result-1",
+      columns: ["region", "revenue"],
+      column_types: ["string", "double"],
+      rows: manyRows,
+    },
+    {
+      chart_type: "bar",
+      dimension_field: "region",
+      metric_fields: ["revenue"],
+      hidden_metric_fields: [],
+      bar_orientation: "vertical",
+      title: "Revenue",
+      field_labels: {},
+      sort: { mode: "original" },
+      format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+      show_data_labels: false,
+      show_legend: false,
+    },
+  );
+  assert.equal(vertical.dataZoom[0].xAxisIndex, 0);
+  assert.equal(vertical.tooltip.axisPointer.axis, "x");
+
+  const pie = buildEChartsOption(
+    { ...line, chart_type: "pie", x_field: "region", title: "revenue by region" },
+    {
+      result_id: "result-1",
+      columns: ["region", "revenue"],
+      column_types: ["string", "double"],
+      rows: [
+        { region: "east", revenue: 2 },
+        { region: "west", revenue: 1 },
+      ],
+    },
+  );
+  assert.equal(pie.dataZoom, undefined);
+  assert.equal(pie.tooltip.axisPointer, undefined);
 });
 
 test("builds pie options from the exact categorical and numeric rows", () => {
@@ -83,7 +205,10 @@ test("builds pie options from the exact categorical and numeric rows", () => {
 test("rejects mismatched source IDs, unknown fields, and malformed values safely", () => {
   assert.equal(buildEChartsOption({ ...line, source_result_id: "other" }, query), null);
   assert.equal(buildEChartsOption({ ...line, x_field: "unknown" }, query), null);
-  const malformed = { ...query, rows: [{ month: "2026-01-01", revenue: "not-a-number", orders: 2 }] };
+  const malformed = {
+    ...query,
+    rows: [{ month: "2026-01-01", revenue: "not-a-number", orders: 2 }],
+  };
   assert.deepEqual(buildEChartsOption(line, malformed)?.series[0].data, [null]);
 });
 
@@ -134,6 +259,52 @@ test("sorts metric nulls last and preserves source order for ties", async () => 
   assert.deepEqual(option.series[0].data, [5, 5, 1, null]);
   assert.equal(option.xAxis.type, "value");
   assert.equal(option.yAxis.inverse, true);
+});
+
+test("keeps original row indexes through sorting and current-result Top N without merging duplicate categories", () => {
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "double"],
+    rows: [
+      { region: "repeat", revenue: 2 },
+      { region: "repeat", revenue: 9 },
+      { region: "west", revenue: 4 },
+    ],
+  };
+  const view = {
+    chart_type: "bar",
+    dimension_field: "region",
+    metric_fields: ["revenue"],
+    hidden_metric_fields: [],
+    bar_orientation: "vertical",
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "original" },
+    format_by_field: { revenue: { mode: "raw", decimal_places: "auto" } },
+    show_data_labels: false,
+    show_legend: false,
+  };
+
+  assert.deepEqual(
+    deriveChartRows(result, view).map(({ row, sourceRowIndex }) => [row.region, sourceRowIndex]),
+    [
+      ["repeat", 0],
+      ["repeat", 1],
+      ["west", 2],
+    ],
+  );
+  assert.deepEqual(
+    deriveChartRows(result, {
+      ...view,
+      sort: { mode: "metric", field: "revenue", direction: "desc" },
+      current_result_top_n: { field: "revenue", count: 2, direction: "desc" },
+    }).map(({ row, sourceRowIndex }) => [row.region, sourceRowIndex]),
+    [
+      ["repeat", 1],
+      ["west", 2],
+    ],
+  );
 });
 
 test("does not aggregate duplicate categories and disables invalid pie inputs", async () => {
@@ -227,10 +398,7 @@ test("formats percentages and explicit CNY units only from user-selected encodin
 
 test("formats decimal strings without binary floating point loss", async () => {
   const { formatChartValue } = await import("../lib/chart-output.ts");
-  assert.equal(
-    formatChartValue("0.0000001", { mode: "raw", decimal_places: "auto" }),
-    "0.0000001",
-  );
+  assert.equal(formatChartValue("0.0000001", { mode: "raw", decimal_places: "auto" }), "0.0000001");
   assert.equal(
     formatChartValue("123456789012345678.12345678", {
       mode: "unit_scale",
@@ -277,7 +445,10 @@ test("sorts decimal metric strings exactly and plots only exact finite numbers",
     ["unrepresentable", "larger", "smaller"],
   );
   assert.deepEqual(option.series[0].data, [null, null, null]);
-  assert.equal(option.series[0].label.formatter({ value: null, dataIndex: 1 }), "9,007,199,254,740,993.1");
+  assert.equal(
+    option.series[0].label.formatter({ value: null, dataIndex: 1 }),
+    "9,007,199,254,740,993.1",
+  );
 });
 
 test("validates and displays exact decimal pie values and shares", () => {
@@ -415,15 +586,11 @@ test("applies current-result Top N to the first 1,000 rows with stable ties", ()
   );
   assert.deepEqual(option.series[0].data, [10, 5]);
 
-  const bottom = buildEChartsOption(
-    artifact,
-    result,
-    {
-      ...view,
-      sort: { mode: "metric", field: "revenue", direction: "asc" },
-      current_result_top_n: { field: "revenue", count: 2, direction: "asc" },
-    },
-  );
+  const bottom = buildEChartsOption(artifact, result, {
+    ...view,
+    sort: { mode: "metric", field: "revenue", direction: "asc" },
+    current_result_top_n: { field: "revenue", count: 2, direction: "asc" },
+  });
   assert.deepEqual(
     bottom.xAxis.data.map((value, index) => bottom.xAxis.axisLabel.formatter(value, index)),
     ["small", "first tie"],
@@ -461,6 +628,118 @@ test("Top N ignores rows after the first 1,000 and reports every truncation sign
   assert.equal(isChartQueryTruncated({ ...query, truncated: true }), true);
   assert.equal(isChartQueryTruncated({ ...query, rowCount: 99 }), true);
   assert.equal(isChartQueryTruncated({ ...query, rows: Array(1001).fill(query.rows[0]) }), true);
+});
+
+test("classifies result completeness only from explicit truncation evidence and matching counts", () => {
+  const completeRows = [{ value: 1 }, { value: 2 }];
+  assert.equal(
+    getChartCompletenessState({ rows: completeRows, rowCount: 2, truncated: false }),
+    "not_marked_truncated",
+  );
+  assert.equal(
+    getChartCompletenessState({ rows: completeRows, rowCount: 3, truncated: false }),
+    "possibly_incomplete",
+  );
+  assert.equal(
+    getChartCompletenessState({ rows: completeRows, rowCount: 1, truncated: false }),
+    "possibly_incomplete",
+  );
+  assert.equal(
+    getChartCompletenessState({ rows: completeRows, rowCount: 2, truncated: true }),
+    "possibly_incomplete",
+  );
+  assert.equal(getChartCompletenessState({ rows: completeRows, truncated: false }), "unknown");
+  assert.equal(getChartCompletenessState({ rows: completeRows, rowCount: 2 }), "unknown");
+  assert.equal(
+    getChartCompletenessState({ rows: Array.from({ length: 1001 }, () => ({ value: 1 })) }),
+    "possibly_incomplete",
+  );
+});
+
+test("renders target and mean reference lines, tied peak points, and merged source-row areas", () => {
+  const result = {
+    result_id: "result-1",
+    columns: ["region", "revenue"],
+    column_types: ["string", "double"],
+    rows: [
+      { region: "east", revenue: 1 },
+      { region: "west", revenue: 5 },
+      { region: "north", revenue: 5 },
+      { region: "south", revenue: 2 },
+    ],
+    row_count: 4,
+    truncated: false,
+  };
+  const artifact = {
+    ...line,
+    chart_type: "bar",
+    x_field: "region",
+    title: "revenue by region",
+  };
+  const option = buildEChartsOption(artifact, result, {
+    chart_type: "bar",
+    dimension_field: "region",
+    metric_fields: ["revenue"],
+    hidden_metric_fields: [],
+    bar_orientation: "vertical",
+    title: "Revenue",
+    field_labels: {},
+    sort: { mode: "original" },
+    format_by_field: { revenue: { mode: "raw", decimal_places: 2 } },
+    show_data_labels: false,
+    show_legend: false,
+    annotations: {
+      reference_lines: [
+        {
+          id: "target",
+          metric_field: "revenue",
+          kind: "value",
+          value: "3.50",
+          scope: "returned_rows",
+          label: "目标",
+        },
+        {
+          id: "mean",
+          metric_field: "revenue",
+          kind: "mean",
+          scope: "returned_rows",
+          label: "已返回均值",
+        },
+        {
+          id: "peak",
+          metric_field: "revenue",
+          kind: "peak",
+          scope: "returned_rows",
+          label: "峰值",
+        },
+      ],
+      reference_areas: [{ id: "focus", source_row_indices: [1, 2], label: "关注区间" }],
+    },
+  });
+
+  assert.deepEqual(
+    option.series[0].markLine.data.map(({ yAxis }) => yAxis),
+    [3.5, 3.25],
+  );
+  assert.deepEqual(
+    option.series[0].markLine.data.map(({ label }) => label.position),
+    ["insideEndTop", "insideEndTop"],
+  );
+  assert.deepEqual(
+    option.series[0].markPoint.data.map(({ coord }) => coord),
+    [
+      [1, 5],
+      [2, 5],
+    ],
+  );
+  assert.equal(option.series[0].markPoint.symbolSize, 24);
+  assert.deepEqual(
+    option.series[0].markPoint.data.map(({ label }) => label.show),
+    [true, false],
+  );
+  assert.deepEqual(option.series[0].markArea.data, [
+    [{ xAxis: 1, name: "关注区间" }, { xAxis: 2 }],
+  ]);
 });
 
 test("maps fixed metric and pie category palettes to stable typed categories", async () => {

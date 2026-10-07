@@ -965,7 +965,12 @@ export function clearLocalThreadCache(userId: string) {
   const prefix = `askdb:user:${encodeURIComponent(userId)}:chat:`;
   for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
     const key = window.localStorage.key(index);
-    if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
+    // The server transcript stores assistant text, while query/chart artifacts
+    // remain a user-scoped local cache. Preserve them across logout and auth
+    // expiry so the server history can reconstruct charts after re-login.
+    if (key?.startsWith(prefix) && !key.startsWith(`${prefix}results:`)) {
+      window.localStorage.removeItem(key);
+    }
   }
   const draftPrefix = `${userId}\u0000`;
   for (const key of draftThreadPreferences.keys()) {

@@ -161,6 +161,68 @@ def load_semantic_reference_names(project_dir: Path) -> dict[str, str]:
     return references
 
 
+def load_semantic_field_descriptions(
+    project_dir: Path, requested_columns: Iterable[str]
+) -> dict[str, str]:
+    """Return bounded descriptions for uniquely named visible MDL columns."""
+    requested_by_name: dict[str, set[str]] = defaultdict(set)
+    for column_name in requested_columns:
+        if not isinstance(column_name, str):
+            continue
+        normalized = unicodedata.normalize("NFKC", column_name).casefold().strip()
+        if normalized:
+            requested_by_name[normalized].add(column_name)
+    if not requested_by_name:
+        return {}
+
+    mdl_path = _project_file(project_dir.expanduser().resolve(), "target/mdl.json")
+    try:
+        mdl = json.loads(mdl_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("compiled Wren MDL cannot be read") from exc
+    if not isinstance(mdl, dict):
+        raise ValueError("compiled Wren MDL must be an object")
+    models = mdl.get("models", [])
+    if not isinstance(models, list):
+        raise ValueError("compiled Wren MDL models must be a list")
+
+    matches: dict[str, list[str]] = defaultdict(list)
+    for model in models:
+        if not isinstance(model, dict) or model.get("isHidden") or model.get("is_hidden"):
+            continue
+        columns = model.get("columns", [])
+        if not isinstance(columns, list):
+            continue
+        for column in columns:
+            if (
+                not isinstance(column, dict)
+                or column.get("isHidden")
+                or column.get("is_hidden")
+            ):
+                continue
+            name = column.get("name")
+            if not isinstance(name, str):
+                continue
+            normalized = unicodedata.normalize("NFKC", name).casefold().strip()
+            if normalized not in requested_by_name:
+                continue
+            properties = column.get("properties")
+            properties = properties if isinstance(properties, dict) else {}
+            description = properties.get("description")
+            if not isinstance(description, str):
+                description = ""
+            safe_description = sanitize_turn_text(description, max_chars=500).strip()
+            matches[normalized].append(safe_description)
+
+    descriptions: dict[str, str] = {}
+    for normalized, result_names in requested_by_name.items():
+        candidates = matches.get(normalized, [])
+        if len(result_names) != 1 or len(candidates) != 1 or not candidates[0]:
+            continue
+        descriptions[next(iter(result_names))] = candidates[0]
+    return descriptions
+
+
 def load_semantic_rule_terms(project_dir: Path) -> tuple[str, ...]:
     """Return visible Wren rule titles for conservative exact-term collision checks."""
     project_root = project_dir.expanduser().resolve()

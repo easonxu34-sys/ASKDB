@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowRightIcon, DatabaseIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowRightIcon, LoaderCircleIcon } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { authMutation, fetchCurrentUser, isAuthUser, responseError } from "@/lib/auth-api";
 import { PasswordField } from "@/components/auth/password-field";
+import { AskDbMark, AskDbWordmark } from "@/components/brand/askdb-logo";
 
 export function LoginForm() {
   const router = useRouter();
@@ -54,11 +55,11 @@ export function LoginForm() {
           <div className="absolute -right-20 -top-24 size-80 rounded-full border border-[#d9c9b3]" />
           <div className="absolute -right-8 -top-12 size-56 rounded-full border border-[#d9c9b3]/80" />
           <div className="relative flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-2xl bg-[#d9c9b3] text-[#5c554c]">
-              <DatabaseIcon className="size-5" aria-hidden="true" />
-            </div>
+            <span className="flex size-10 shrink-0 items-center justify-center">
+              <AskDbMark className="size-6" />
+            </span>
             <div>
-              <p className="text-sm font-semibold tracking-wide">AskDB</p>
+              <p><AskDbWordmark className="text-sm" /></p>
               <p className="mt-0.5 text-[11px] tracking-[0.12em] text-[#89847a]">DATA, IN CONTEXT</p>
             </div>
           </div>
@@ -81,10 +82,10 @@ export function LoginForm() {
 
         <section className="flex min-h-[38rem] flex-col justify-between p-6 sm:p-10 lg:p-12 xl:p-14">
           <div className="flex items-center gap-3 lg:hidden">
-            <div className="flex size-9 items-center justify-center rounded-xl bg-[#e8e3d8] text-[#5c554c]">
-              <DatabaseIcon className="size-[18px]" aria-hidden="true" />
-            </div>
-            <span className="text-sm font-semibold">AskDB</span>
+            <span className="flex size-9 shrink-0 items-center justify-center">
+              <AskDbMark className="size-6" />
+            </span>
+            <AskDbWordmark className="text-sm" />
           </div>
           <div className="my-auto w-full max-w-sm self-center py-12 lg:py-0">
             <p className="text-xs font-medium tracking-[0.16em] text-[#a1694b]">欢迎回来</p>
@@ -127,7 +128,7 @@ export function LoginForm() {
             </p>
           </div>
           <footer className="flex items-center justify-between pt-6 text-[10px] text-[#aaa397]">
-            <span>AskDB</span>
+            <AskDbWordmark className="text-[10px]" />
             <span>安全登录 · 仅限组织成员</span>
           </footer>
         </section>

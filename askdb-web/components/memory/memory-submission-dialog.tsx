@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import { createIdempotencyKey, submitBusinessRule, submitQueryExample } from "@/lib/memory-api";
 import type { AuthUser } from "@/lib/auth-api";
 import { useEffect, useState } from "react";
@@ -150,9 +151,22 @@ export function MemorySubmissionDialog({
                   {parameters.map((item, index) => (
                     <div key={index} className="grid grid-cols-[minmax(0,1fr)_9rem_auto] gap-2">
                       <input aria-label={`参数 ${index + 1} 名称`} placeholder="参数名（不含冒号）" value={item.name} onChange={(event) => setParameters((items) => items.map((current, at) => at === index ? { ...current, name: event.target.value } : current))} className={fieldClass} />
-                      <select aria-label={`参数 ${index + 1} 类型`} value={item.value_type} onChange={(event) => setParameters((items) => items.map((current, at) => at === index ? { ...current, value_type: event.target.value } : current))} className={fieldClass}>
-                        {[["string", "文本"], ["integer", "整数"], ["decimal", "小数"], ["boolean", "是/否"], ["date", "日期"], ["datetime", "日期时间"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                      </select>
+                      <ComposerSelect
+                        id={`parameter-type-${index}`}
+                        ariaLabel={`参数 ${index + 1} 类型`}
+                        value={item.value_type}
+                        placeholder="选择参数类型"
+                        options={[
+                          { value: "string", label: "文本" },
+                          { value: "integer", label: "整数" },
+                          { value: "decimal", label: "小数" },
+                          { value: "boolean", label: "是/否" },
+                          { value: "date", label: "日期" },
+                          { value: "datetime", label: "日期时间" },
+                        ]}
+                        onValueChange={(value) => setParameters((items) => items.map((current, at) => at === index ? { ...current, value_type: value } : current))}
+                        triggerClassName={`h-11 max-w-full ${fieldClass}`}
+                      />
                       <Button type="button" variant="ghost" size="sm" aria-label={`删除参数 ${index + 1}`} onClick={() => setParameters((items) => items.filter((_, at) => at !== index))}>移除</Button>
                     </div>
                   ))}

@@ -32,12 +32,7 @@ class ThreadRequestBodyLimitMiddleware:
 
         path = scope.get("path", "")
         method = scope.get("method")
-        if method == "POST" and path == "/v1/chart-edits/interpret":
-            limit = 64 * 1024
-            exception = _ThreadBodyTooLarge
-            error_code = "CHART_EDIT_REQUEST_TOO_LARGE"
-            message = "图表编辑请求不能超过 64 KiB。"
-        elif method == "POST" and path == "/v1/chat":
+        if method == "POST" and path == "/v1/chat":
             limit = _MAX_CHAT_REQUEST_BYTES
             exception = _ChatBodyTooLarge
             error_code = "CHAT_REQUEST_TOO_LARGE"
@@ -70,34 +65,6 @@ class ThreadRequestBodyLimitMiddleware:
             except ValueError:
                 await self._reject(send, error_code, message)
                 return
-
-        if method == "POST" and path == "/v1/chart-edits/interpret":
-            # Bound the bytes before FastAPI's JSON parser can turn a receive
-            # exception into a generic 400. Keep the other endpoint paths intact.
-            buffered = []
-            total = 0
-            while True:
-                event = await receive()
-                if event.get("type") == "http.request":
-                    total += len(event.get("body", b""))
-                    if total > limit:
-                        await self._reject(send, error_code, message)
-                        return
-                buffered.append(event)
-                if event.get("type") != "http.request" or not event.get("more_body", False):
-                    break
-            cursor = 0
-
-            async def replay_receive():
-                nonlocal cursor
-                if cursor < len(buffered):
-                    event = buffered[cursor]
-                    cursor += 1
-                    return event
-                return await receive()
-
-            await self.app(scope, replay_receive, send)
-            return
 
         received = 0
 

@@ -36,6 +36,7 @@ import {
 import { ConversationTimestamp } from "@/components/assistant-ui/elements/conversation-time";
 import type { AuthUser } from "@/lib/auth-api";
 import { archiveThread, patchThreadMetadata, ThreadApiError } from "@/lib/thread-api";
+import { AskDbMark, AskDbWordmark } from "@/components/brand/askdb-logo";
 import { getThreadGroupKey } from "@/lib/thread-grouping.mjs";
 import { ThreadDeleteConfirmationDialog } from "@/components/threads/thread-delete-confirmation-dialog";
 
@@ -211,11 +212,11 @@ export const ThreadListSidebar = ({
       }`}
     >
       <header className="flex h-16 shrink-0 items-center gap-3 px-5">
-        <div className="flex size-9 items-center justify-center rounded-xl bg-[#e8e3d8] text-[#5c554c]">
-          <DatabaseIcon className="size-[18px]" aria-hidden="true" />
-        </div>
+        <span className="flex size-9 shrink-0 items-center justify-center">
+          <AskDbMark className="size-6" />
+        </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold tracking-tight text-[#35332e]">AskDB</p>
+          <p><AskDbWordmark className="text-sm" /></p>
           <p className="mt-0.5 text-[11px] text-[#89847a]">数据查询助手</p>
         </div>
       </header>

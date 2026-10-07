@@ -62,8 +62,14 @@ function options(storage, overrides = {}) {
     summary: "修改图表标题",
     origin: "manual",
     hasSourceArtifacts: (artifacts, resultId) =>
-      artifacts.some((item) => item.artifact?.kind === "successful_query_result" && item.artifact.result_id === resultId) &&
-      artifacts.some((item) => item.artifact?.kind === "echarts_chart" && item.artifact.source_result_id === resultId),
+      artifacts.some(
+        (item) =>
+          item.artifact?.kind === "successful_query_result" && item.artifact.result_id === resultId,
+      ) &&
+      artifacts.some(
+        (item) =>
+          item.artifact?.kind === "echarts_chart" && item.artifact.source_result_id === resultId,
+      ),
     validateView: (candidate) =>
       candidate && typeof candidate === "object" && typeof candidate.title === "string"
         ? candidate
@@ -91,13 +97,11 @@ test("commits a view and its undo record together, then undoes in one write", ()
   assert.equal(committed.undoHistory[0].view.title, "AI recommendation");
   assert.equal(storage.writes.length, 1);
   const saved = JSON.parse(storage.read(cacheKey))[turnId].at(-1);
-  assert.equal(saved.schema_version, 2);
+  assert.equal(saved.schema_version, 4);
   assert.equal(saved.view.title, "Edited chart");
   assert.equal(saved.undo_history.length, 1);
 
-  const undone = undoChartViewChange(
-    options(storage, { expectedView: after }),
-  );
+  const undone = undoChartViewChange(options(storage, { expectedView: after }));
   assert.equal(undone.view.title, "AI recommendation");
   assert.equal(undone.undoHistory.length, 0);
   assert.equal(storage.writes.length, 2);
@@ -123,11 +127,11 @@ test("keeps only the latest 20 history entries", () => {
 test("upgrades a v1 override by preserving its current view and starting undo history", () => {
   const legacyView = view("Legacy custom view");
   const legacyOverride = {
-        kind: "chart_view_override",
-        schema_version: 1,
-        source_result_id: sourceResultId,
-        view: legacyView,
-      };
+    kind: "chart_view_override",
+    schema_version: 1,
+    source_result_id: sourceResultId,
+    view: legacyView,
+  };
   const storage = memoryStorage({
     [cacheKey]: JSON.stringify({ [turnId]: [...sourceArtifacts, legacyOverride] }),
   });
@@ -142,13 +146,73 @@ test("upgrades a v1 override by preserving its current view and starting undo hi
   assert.equal(committed.undoHistory.length, 1);
 });
 
+test("upgrades a v3 override with history to schema four and preserves undo", () => {
+  const previous = view("AI recommendation");
+  const current = view("Edited chart");
+  const override = {
+    kind: "chart_view_override",
+    schema_version: 3,
+    source_result_id: sourceResultId,
+    view: current,
+    undo_history: [{ view: previous, summary: "修改图表标题", origin: "manual" }],
+  };
+  const storage = memoryStorage({
+    [cacheKey]: JSON.stringify({ [turnId]: [...sourceArtifacts, override] }),
+  });
+  const committed = commitChartViewChange(
+    options(storage, {
+      before: current,
+      after: view("Edited again"),
+      recommendedView: previous,
+    }),
+  );
+
+  assert.equal(committed.undoHistory.length, 2);
+  const saved = JSON.parse(storage.read(cacheKey))[turnId].at(-1);
+  assert.equal(saved.schema_version, 4);
+  assert.equal(saved.undo_history[0].view.title, "AI recommendation");
+  assert.equal(saved.undo_history[1].view.title, "Edited chart");
+
+  const undone = undoChartViewChange(
+    options(storage, { expectedView: view("Edited again"), recommendedView: previous }),
+  );
+  assert.equal(undone.view.title, "Edited chart");
+  assert.equal(JSON.parse(storage.read(cacheKey))[turnId].at(-1).schema_version, 4);
+});
+
+test("persists reference annotations and undo restores the previous annotation set", () => {
+  const storage = startingStorage();
+  const before = view("AI recommendation");
+  const after = {
+    ...view("AI recommendation"),
+    annotations: {
+      reference_lines: [
+        {
+          id: "mean_revenue",
+          metric_field: "revenue",
+          kind: "mean",
+          scope: "viewport",
+          label: "窗口均值",
+        },
+      ],
+      reference_areas: [{ id: "focus_area", source_row_indices: [2, 3], label: "关注区间" }],
+    },
+  };
+  const committed = commitChartViewChange(options(storage, { before, after }));
+  assert.ok(committed);
+  assert.deepEqual(committed.view.annotations, after.annotations);
+  assert.equal(committed.undoHistory[0].view.annotations, undefined);
+
+  const undone = undoChartViewChange(options(storage, { expectedView: after }));
+  assert.deepEqual(undone.view, before);
+  assert.equal(JSON.parse(storage.read(cacheKey))[turnId].at(-1).view.annotations, undefined);
+});
+
 test("restoring the recommendation is a new reversible commit", () => {
   const storage = startingStorage();
   const recommendation = view("AI recommendation");
   const edited = view("Edited chart");
-  commitChartViewChange(
-    options(storage, { before: recommendation, after: edited }),
-  );
+  commitChartViewChange(options(storage, { before: recommendation, after: edited }));
   const restored = commitChartViewChange(
     options(storage, {
       before: edited,
@@ -200,7 +264,10 @@ test("keeps cache keys, turns, and result IDs isolated", () => {
   );
   assert.ok(committed);
   assert.equal(JSON.parse(storage.read(cacheKey))[turnId].length, 2);
-  assert.equal(JSON.parse(storage.read("another-thread"))[turnId].at(-1).view.title, "Other thread");
+  assert.equal(
+    JSON.parse(storage.read("another-thread"))[turnId].at(-1).view.title,
+    "Other thread",
+  );
   assert.equal(
     commitChartViewChange(
       options(storage, { sourceResultId: "other-result", after: view("Wrong result") }),
@@ -208,9 +275,7 @@ test("keeps cache keys, turns, and result IDs isolated", () => {
     undefined,
   );
   assert.equal(
-    commitChartViewChange(
-      options(storage, { turnId: "other-turn", after: view("Wrong turn") }),
-    ),
+    commitChartViewChange(options(storage, { turnId: "other-turn", after: view("Wrong turn") })),
     undefined,
   );
 });
@@ -227,10 +292,7 @@ test("quota, byte-cap and failed undo writes leave the artifact index unchanged"
 
   const tooSmallStorage = startingStorage();
   const tooSmallOriginal = tooSmallStorage.read(cacheKey);
-  assert.equal(
-    commitChartViewChange(options(tooSmallStorage, { maxBytes: 20 })),
-    undefined,
-  );
+  assert.equal(commitChartViewChange(options(tooSmallStorage, { maxBytes: 20 })), undefined);
   assert.equal(tooSmallStorage.read(cacheKey), tooSmallOriginal);
 
   const storage = startingStorage();
@@ -263,6 +325,9 @@ test("undo rejects stale views and corrupted history without changing the cache"
   index[turnId].at(-1).undo_history[0].view = { title: 42 };
   storage.setItem(cacheKey, JSON.stringify(index));
   const corrupted = storage.read(cacheKey);
-  assert.equal(undoChartViewChange(options(storage, { expectedView: view("Edited chart") })), undefined);
+  assert.equal(
+    undoChartViewChange(options(storage, { expectedView: view("Edited chart") })),
+    undefined,
+  );
   assert.equal(storage.read(cacheKey), corrupted);
 });

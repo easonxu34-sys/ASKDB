@@ -1,10 +1,10 @@
 "use client";
 
-import { forwardRef, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useAui } from "@assistant-ui/react";
-import { Maximize2Icon, Minimize2Icon, PencilLineIcon } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useAui, useAuiState } from "@assistant-ui/react";
+import { Maximize2Icon, Minimize2Icon, PencilLineIcon, RotateCcwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ComposerSelect, type ComposerSelectOption } from "@/components/ui/composer-select";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import {
   Dialog,
   DialogClose,
@@ -16,20 +16,19 @@ import {
 } from "@/components/ui/dialog";
 import {
   chartViewsEqual,
-  applyChartEditIntent,
+  chartTypeLabel,
   CHART_COLOR_PALETTES,
   CHART_PALETTE_IDS,
   normalizeChartViewChange,
-  type ChartMessagePart,
   type ChartColorDirection,
   type ChartColorSpec,
   type ChartPaletteId,
   type ChartSolidColorSpec,
+  type ChartYAxisSide,
   getArrowFieldKind,
   getChartFieldCandidates,
   getChartMessageParts,
   summarizeChartViewChange,
-  type ChartPaletteToken,
   type ChartType,
   type ChartViewConfiguration,
   type ChartViewEditOrigin,
@@ -40,33 +39,27 @@ import {
   validateChartView,
 } from "@/lib/chat-output";
 import { deriveSourceTurnKey } from "@/lib/agent-chat-adapter";
-import {
-  commitThreadChartViewChange,
-  getThreadModelProfileId,
-  getThreadResultArtifacts,
-  undoThreadChartViewChange,
-} from "@/lib/local-thread-adapter";
+import { commitThreadChartViewChange, undoThreadChartViewChange } from "@/lib/local-thread-adapter";
 import { requestCsrfToken } from "@/lib/auth-api";
-import {
-  CHART_EDIT_TURN_COMPLETION_EVENT,
-  CHART_EDIT_TURN_START_EVENT,
-  buildChartEditRequest,
-  confirmChartEditQuery,
-  completeStagedChartEdit,
-  interpretChartEdit,
-  isChartEditContextCurrent,
-} from "@/lib/chart-edit-flow.mjs";
-import { readChartEditError, readChartEditIntent } from "@/lib/chart-edit-request.mjs";
-import { shouldRefreshModelSelection } from "@/lib/model-selection";
-import { fetchChatModelOptions, type ChatModelCatalog } from "@/lib/model-profiles";
 import {
   buildEChartsOption,
   chartCategoryKey,
+  deriveChartRows,
+  formatChartValue,
+  getChartCompletenessState,
   getChartUnitWarning,
   isChartQueryTruncated,
   resolvePieCategoryLabel,
 } from "@/lib/chart-output";
+import ChartCanvas from "./chart-canvas";
+import type { ChartCanvasHandle } from "./chart-canvas";
 import { SqlDisclosure } from "./sql-disclosure";
+import { calculateChartStatistics, type ChartViewport } from "@/lib/chart-statistics";
+import { buildChartCsv, getChartCsvFilename } from "@/lib/chart-export";
+import {
+  buildChartSelectionContext,
+  fillComposerWithChartSelection,
+} from "@/lib/chart-interactions";
 
 type ChartResultProps = {
   artifact: EChartsChartArtifact;
@@ -85,91 +78,6 @@ type ChartResultProps = {
 type ChartViewDraft = Omit<ChartViewConfiguration, "format_by_field"> & {
   format_by_field: Record<string, unknown>;
 };
-
-type ChartEditIntent = {
-  status: "apply" | "query_required" | "clarify";
-  patch?: Record<string, unknown> | null;
-  current_result_operation?: {
-    kind: "top_n";
-    field: string;
-    count: number;
-    direction: "asc" | "desc";
-    scope: "current_result";
-  } | null;
-  category_color_operations?: Array<{ category_label: string; color: ChartPaletteToken }>;
-  query_proposal?: { operation: string } | null;
-  clarification?: { code: string } | null;
-};
-
-type ChartEditProposal = {
-  originalInstruction: string;
-  intent: ChartEditIntent;
-  exactMessage: string;
-  operationLabel: string;
-  sourceResultId: string;
-  sourceTurnKey: string;
-  sourceMessageId: string;
-  threadId: string;
-  baseView: ChartViewConfiguration;
-};
-
-type StagedChartEdit = {
-  threadId: string;
-  intent: ChartEditProposal["intent"];
-  sourceResultId: string;
-  sourceTurnKey: string;
-  sourceMessageId: string;
-  baseView: ChartViewConfiguration;
-  confirmedTurnId?: string;
-  confirmedHistoryTurnId?: string;
-};
-
-type ChartEditCompletionReport = {
-  thread_id: string;
-  turn_id: string;
-  history_turn_id: string;
-  status: "completed" | "failed" | "cancelled";
-  query_result_ids: string[];
-  chart_source_result_ids: string[];
-};
-
-type ChartEditCompletionEvent = CustomEvent<{
-  report: ChartEditCompletionReport;
-  waitUntil: (promise: Promise<unknown>) => void;
-}>;
-
-type ChartEditTurnStartEvent = CustomEvent<{
-  thread_id: string;
-  turn_id: string;
-  history_turn_id: string;
-  confirmed_chart_query: boolean;
-}>;
-
-const chartEditClarifications: Record<string, string> = {
-  top_n_scope_required: "请说明排名范围。当前图表编辑只支持对已返回结果进行排名。",
-  top_n_metric_required: "请先选择一个可见的数值指标，再说明按它进行 Top N 或 Bottom N。",
-  source_unit_required: "请说明该数值当前使用的单位。",
-  field_not_in_result: "请求的字段不在当前查询结果中，请改用图表中的字段。",
-  category_not_in_result: "请求的类别不在当前结果中，请改用图表中显示的类别。",
-  category_ambiguous: "该类别标签对应多个不同值，请提供能区分它们的完整标签。",
-  conflicting_category_color: "同一类别被指定了不同颜色，请为它保留一个颜色。",
-  chart_type_incompatible: "这项编辑与当前图表类型不兼容，请先调整图表类型或编辑内容。",
-  conflicting_sort: "Top N 与单独指定的排序冲突，请明确要保留哪一种排序。",
-  operation_unsupported: "无法安全应用这项图表编辑，请换一种说法。",
-};
-
-function getQueryOperationLabel(intent: ChartEditProposal["intent"]) {
-  const operation = intent.query_proposal?.operation;
-  return operation === "database_filter"
-    ? "需要重新查询并筛选数据"
-    : operation === "full_data_top_n"
-      ? "需要查询全量数据后排名"
-      : operation === "aggregation"
-        ? "需要重新聚合数据"
-        : operation === "period_comparison"
-          ? "需要查询并比较不同期间"
-          : "需要重新查询数据";
-}
 
 const textControlClass =
   "h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
@@ -311,13 +219,18 @@ function ColorSpecEditor({
               options={colorDirections}
               placeholder="渐变方向"
               triggerClassName="h-8 w-full max-w-none"
-              onValueChange={(value) => onChange({ ...color, direction: value as ChartColorDirection })}
+              onValueChange={(value) =>
+                onChange({ ...color, direction: value as ChartColorDirection })
+              }
             />
           )}
           <div
             aria-hidden="true"
             className="h-2.5 rounded-full border border-border/70"
-            style={{ backgroundImage: `linear-gradient(${gradientDirection}, ${color.start_hex}, ${color.end_hex})`, opacity: color.opacity / 100 }}
+            style={{
+              backgroundImage: `linear-gradient(${gradientDirection}, ${color.start_hex}, ${color.end_hex})`,
+              opacity: color.opacity / 100,
+            }}
           />
         </>
       )}
@@ -340,80 +253,6 @@ function ColorSpecEditor({
   );
 }
 
-const EChartCanvas = forwardRef<
-  HTMLDivElement,
-  {
-    option: Record<string, unknown> | null;
-    ariaLabel: string;
-    className: string;
-  }
->(function EChartCanvas({ option, ariaLabel, className }, forwardedRef) {
-  const localRef = useRef<HTMLDivElement>(null);
-  const [renderFailed, setRenderFailed] = useState(false);
-
-  useEffect(() => {
-    const element = localRef.current;
-    setRenderFailed(false);
-    if (!element || !option) return;
-    let disposed = false;
-    let chart: import("echarts").ECharts | undefined;
-    let observer: ResizeObserver | undefined;
-    const resize = () => chart?.resize();
-    void import("echarts")
-      .then((echarts) => {
-        if (disposed) return;
-        try {
-          chart = echarts.init(element, undefined, { renderer: "canvas" });
-          chart.setOption(option as import("echarts").EChartsOption, {
-            notMerge: true,
-            lazyUpdate: false,
-          });
-          if (typeof ResizeObserver !== "undefined") {
-            observer = new ResizeObserver(resize);
-            observer.observe(element);
-          } else {
-            window.addEventListener("resize", resize);
-          }
-        } catch {
-          chart?.dispose();
-          chart = undefined;
-          setRenderFailed(true);
-        }
-      })
-      .catch(() => setRenderFailed(true));
-
-    return () => {
-      disposed = true;
-      observer?.disconnect();
-      window.removeEventListener("resize", resize);
-      chart?.dispose();
-    };
-  }, [option]);
-
-  if (renderFailed) {
-    return (
-      <div
-        className="flex items-center rounded-lg border border-border/70 px-3 py-2 text-xs text-muted-foreground"
-        role="status"
-      >
-        图表渲染失败，查询结果表格仍可查看。
-      </div>
-    );
-  }
-  return (
-    <div
-      ref={(node) => {
-        localRef.current = node;
-        if (typeof forwardedRef === "function") forwardedRef(node);
-        else if (forwardedRef) forwardedRef.current = node;
-      }}
-      className={className}
-      role="img"
-      aria-label={ariaLabel}
-    />
-  );
-});
-
 function RecordFieldError({ id, error }: { id: string; error?: string }) {
   if (!error) return null;
   return (
@@ -424,7 +263,60 @@ function RecordFieldError({ id, error }: { id: string; error?: string }) {
 }
 
 function getChartTypeLabel(type: ChartType) {
-  return type === "line" ? "折线图" : type === "bar" ? "柱状图" : "饼图";
+  return chartTypeLabel(type);
+}
+
+function getChartCanvasSourceKey(
+  sourceResultId: string,
+  threadId: string | undefined,
+  view: Pick<
+    ChartViewConfiguration,
+    | "chart_type"
+    | "dimension_field"
+    | "sort"
+    | "current_result_top_n"
+    | "bar_stack_mode"
+    | "step_position"
+    | "scatter_fields"
+    | "heatmap_fields"
+  >,
+) {
+  const sort =
+    view.sort.mode === "original"
+      ? ["original"]
+      : [view.sort.mode, view.sort.field, view.sort.direction];
+  return JSON.stringify([
+    threadId ?? "",
+    sourceResultId,
+    view.chart_type,
+    view.dimension_field,
+    sort,
+    view.current_result_top_n ?? null,
+    view.bar_stack_mode ?? null,
+    view.step_position ?? null,
+    view.scatter_fields ?? null,
+    view.heatmap_fields ?? null,
+  ]);
+}
+
+function createChartAnnotationId(prefix: string) {
+  return `${prefix}_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+}
+
+function chartCompletenessLabel(query: SuccessfulQueryArtifact) {
+  const state = getChartCompletenessState(query);
+  return state === "possibly_incomplete"
+    ? "查询结果可能不完整"
+    : state === "not_marked_truncated"
+      ? "本次结果未标记截断"
+      : "完整性未明确";
+}
+
+function chartCategoryDisplayLabel(value: unknown) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "（空值）";
 }
 
 function getFormatMode(format: unknown) {
@@ -455,6 +347,7 @@ export function ChartResult({
   sourceMessageId,
 }: ChartResultProps) {
   const aui = useAui();
+  const composerText = useAuiState((state) => state.thread.composer.text);
   const controlIdPrefix = `chart-${useId().replace(/:/g, "")}`;
   const cardRef = useRef<HTMLElement>(null);
   const [savedView, setSavedView] = useState(view);
@@ -462,65 +355,25 @@ export function ChartResult({
   const [savedUndoHistory, setSavedUndoHistory] = useState(undoHistory);
   const [draft, setDraft] = useState<ChartViewDraft>(view as ChartViewDraft);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [draftOrigin, setDraftOrigin] = useState<ChartViewEditOrigin>("manual");
-  const naturalPreviewRef = useRef<{
-    sourceResultId: string;
-    sourceMessageId?: string;
-    threadId?: string;
-    view: ChartViewConfiguration;
-  } | null>(null);
   const [persisting, setPersisting] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [displayNotice, setDisplayNotice] = useState(overrideNotice ?? "");
-  const [naturalInstruction, setNaturalInstruction] = useState("");
-  const [chartEditModelCatalog, setChartEditModelCatalog] = useState<ChatModelCatalog | null>(null);
-  const [chartEditModelCatalogError, setChartEditModelCatalogError] = useState("");
-  const [chartEditModelLoading, setChartEditModelLoading] = useState(false);
-  const [chartEditModelReloadKey, setChartEditModelReloadKey] = useState(0);
-  const [chartEditModelProfileId, setChartEditModelProfileId] = useState("");
-  const [interpreting, setInterpreting] = useState(false);
-  const [sendingProposal, setSendingProposal] = useState(false);
-  const [chartEditProposal, setChartEditProposal] = useState<ChartEditProposal | null>(null);
-  const [stagedEditLabel, setStagedEditLabel] = useState("");
-  const stagedEditRef = useRef<StagedChartEdit | null>(null);
-  const interpretingRef = useRef(false);
-  const chartEditModelManuallySelectedRef = useRef(false);
-  const chartEditModelThreadIdRef = useRef(threadId);
-  const stagedTimeoutRef = useRef<number | undefined>(undefined);
-  const editContextRef = useRef({
-    sourceResultId: artifact.source_result_id,
-    sourceMessageId,
-    threadId,
-    view: savedView,
-  });
   const [fullScreen, setFullScreen] = useState(false);
   const [fullScreenError, setFullScreenError] = useState("");
+  const [targetMetricField, setTargetMetricField] = useState("");
+  const [targetValue, setTargetValue] = useState("");
+  const [targetLabel, setTargetLabel] = useState("目标值");
+  const [selectedSourceRowIndices, setSelectedSourceRowIndices] = useState<number[]>([]);
+  const [selectionSourceKey, setSelectionSourceKey] = useState("");
+  const [brushMode, setBrushMode] = useState(false);
+  const [selectionDialogOpen, setSelectionDialogOpen] = useState(false);
+  const [keyboardRowIndex, setKeyboardRowIndex] = useState("");
+  const [savedViewportState, setSavedViewportState] = useState<
+    ChartViewport & { sourceKey: string }
+  >({ sourceKey: "", start: 0, end: 100 });
+  const chartCanvasRef = useRef<ChartCanvasHandle>(null);
   const isEmpty = queryArtifact.rows.length === 0;
   const canEdit = Boolean(persistenceAvailable && userId && threadId && sourceMessageId);
-  const chartEditModelMatchesThread = chartEditModelThreadIdRef.current === threadId;
-  const availableChartEditModels =
-    chartEditModelCatalog?.profiles.filter((profile) => profile.available) ?? [];
-  const selectedChartEditModelIsAvailable = availableChartEditModels.some(
-    (profile) => profile.id === chartEditModelProfileId,
-  );
-  const chartEditModelOptions: ComposerSelectOption[] = [
-    ...(!selectedChartEditModelIsAvailable
-      ? [
-          {
-            value: "",
-            label: chartEditModelCatalogError
-              ? "模型列表暂不可用"
-              : chartEditModelLoading || !chartEditModelCatalog
-                ? "正在读取可用模型…"
-                : "没有可用模型",
-          },
-        ]
-      : []),
-    ...availableChartEditModels.map((profile) => ({
-      value: profile.id,
-      label: `${profile.name} · ${profile.model}${profile.id === chartEditModelCatalog?.default_profile_id ? "（默认）" : ""}`,
-    })),
-  ];
   const fieldCandidates = useMemo(() => getChartFieldCandidates(queryArtifact), [queryArtifact]);
   const temporalDimension =
     getArrowFieldKind(
@@ -530,22 +383,74 @@ export function ChartResult({
     () => validateChartView(draft, queryArtifact),
     [draft, queryArtifact],
   );
+  const savedCanvasSourceKey = getChartCanvasSourceKey(
+    artifact.source_result_id,
+    threadId,
+    savedView,
+  );
+  const savedViewport =
+    savedViewportState.sourceKey === savedCanvasSourceKey
+      ? { start: savedViewportState.start, end: savedViewportState.end }
+      : { start: 0, end: 100 };
   const savedOption = useMemo(
-    () => buildEChartsOption(artifact, queryArtifact, savedView),
-    [artifact, queryArtifact, savedView],
+    () => buildEChartsOption(artifact, queryArtifact, savedView, savedViewport),
+    [artifact, queryArtifact, savedView, savedViewport.start, savedViewport.end],
+  );
+  const savedRows = useMemo(
+    () => deriveChartRows(queryArtifact, savedView),
+    [queryArtifact, savedView],
   );
   const previewOption = useMemo(
     () => buildEChartsOption(artifact, queryArtifact, draft),
     [artifact, queryArtifact, draft],
+  );
+  const previewRows = useMemo(() => deriveChartRows(queryArtifact, draft), [queryArtifact, draft]);
+  const previewCanvasSourceKey = getChartCanvasSourceKey(
+    artifact.source_result_id,
+    threadId,
+    draft,
+  );
+  const visibleSelection =
+    selectionSourceKey === savedCanvasSourceKey ? selectedSourceRowIndices : [];
+  const returnedStatistics = useMemo(
+    () => calculateChartStatistics(queryArtifact, savedView, "returned_rows"),
+    [queryArtifact, savedView],
+  );
+  const viewportStatistics = useMemo(
+    () => calculateChartStatistics(queryArtifact, savedView, "viewport", savedViewport, savedRows),
+    [queryArtifact, savedView, savedViewport.start, savedViewport.end, savedRows],
   );
   const unitWarning = getChartUnitWarning(savedView);
   const pieValidation = validateChartView(
     {
       ...draft,
       chart_type: "pie",
-      ...(draft.sort.mode === "metric" && draft.metric_fields.length > 1
-        ? { sort: { mode: "original" as const } }
-        : {}),
+      dimension_field:
+        getArrowFieldKind(
+          queryArtifact.columnTypes?.[queryArtifact.columns.indexOf(draft.dimension_field)] ?? "",
+        ) === "categorical"
+          ? draft.dimension_field
+          : (fieldCandidates.find(({ kind }) => kind === "categorical")?.name ?? ""),
+      metric_fields: draft.metric_fields
+        .filter((field) =>
+          fieldCandidates.some(
+            (candidate) => candidate.name === field && candidate.kind === "numeric",
+          ),
+        )
+        .slice(0, 1),
+      hidden_metric_fields: [],
+      sort: { mode: "original" },
+      color_by_metric: undefined,
+      pie_category_colors: undefined,
+      current_result_top_n: undefined,
+      bar_orientation: undefined,
+      bar_stack_mode: undefined,
+      y_axis_by_metric: undefined,
+      y_axis_names: undefined,
+      step_position: undefined,
+      scatter_fields: undefined,
+      heatmap_fields: undefined,
+      annotations: { reference_lines: [], reference_areas: [] },
     },
     queryArtifact,
   );
@@ -558,6 +463,22 @@ export function ChartResult({
   const visibleMetrics = selectedMetrics.filter(
     (field) => !draft.hidden_metric_fields.includes(field),
   );
+  const supportsMultipleYAxis =
+    draft.chart_type === "line" ||
+    draft.chart_type === "area" ||
+    draft.chart_type === "step_line" ||
+    (draft.chart_type === "bar" &&
+      draft.bar_orientation !== "horizontal" &&
+      (draft.bar_stack_mode ?? "grouped") === "grouped");
+  const supportsYAxisNames =
+    draft.chart_type === "line" ||
+    draft.chart_type === "area" ||
+    draft.chart_type === "step_line" ||
+    (draft.chart_type === "bar" && draft.bar_orientation !== "horizontal");
+  const hasVisibleRightYAxis = visibleMetrics.some(
+    (field) => draft.y_axis_by_metric?.[field] === "right",
+  );
+  const editableYAxisSides: ChartYAxisSide[] = hasVisibleRightYAxis ? ["left", "right"] : ["left"];
   const pieColorChoices = useMemo(() => {
     const seen = new Set<string>();
     return queryArtifact.rows.flatMap((row) => {
@@ -573,15 +494,22 @@ export function ChartResult({
       return [
         {
           key,
-          label:
-            resolution.status === "ambiguous"
-              ? `${label} · ${typeof value}`
-              : label,
+          label: resolution.status === "ambiguous" ? `${label} · ${typeof value}` : label,
         },
       ];
     });
   }, [queryArtifact, draft.dimension_field]);
-  const activeFields = [...new Set([draft.dimension_field, ...selectedMetrics].filter(Boolean))];
+  const activeFields = [
+    ...new Set(
+      [
+        draft.dimension_field,
+        ...(draft.chart_type === "heatmap" && draft.heatmap_fields
+          ? [draft.heatmap_fields.y_field]
+          : []),
+        ...selectedMetrics,
+      ].filter(Boolean),
+    ),
+  ];
 
   useEffect(() => {
     const onFullScreenChange = () => setFullScreen(document.fullscreenElement === cardRef.current);
@@ -589,106 +517,27 @@ export function ChartResult({
     return () => document.removeEventListener("fullscreenchange", onFullScreenChange);
   }, []);
 
-  useEffect(
-    () => () => {
-      if (stagedTimeoutRef.current !== undefined) window.clearTimeout(stagedTimeoutRef.current);
-      stagedEditRef.current = null;
-    },
-    [],
-  );
+  useEffect(() => {
+    setSelectedSourceRowIndices([]);
+    setSelectionSourceKey(savedCanvasSourceKey);
+    setBrushMode(false);
+    setSelectionDialogOpen(false);
+    setKeyboardRowIndex("");
+  }, [savedCanvasSourceKey]);
 
   useEffect(() => {
-    editContextRef.current = {
-      sourceResultId: artifact.source_result_id,
-      sourceMessageId,
-      threadId,
-      view: savedView,
+    if (!brushMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const axis =
+        savedView.chart_type === "bar" && savedView.bar_orientation === "horizontal" ? "y" : "x";
+      chartCanvasRef.current?.setBrushMode(false, axis);
+      setBrushMode(false);
+      setDisplayNotice("已退出框选模式。");
     };
-    setChartEditProposal((current) =>
-      current &&
-      (current.sourceResultId !== artifact.source_result_id ||
-        current.sourceMessageId !== sourceMessageId ||
-        current.threadId !== threadId ||
-        !chartViewsEqual(current.baseView, savedView))
-        ? null
-        : current,
-    );
-  }, [artifact.source_result_id, sourceMessageId, threadId, savedView]);
-
-  useEffect(() => {
-    const onTurnStart = (event: Event) => {
-      const detail = (event as ChartEditTurnStartEvent).detail;
-      const staged = stagedEditRef.current;
-      if (!detail?.confirmed_chart_query || !staged || detail.thread_id !== staged.threadId) return;
-      staged.confirmedTurnId = detail.turn_id;
-      staged.confirmedHistoryTurnId = detail.history_turn_id;
-      if (stagedTimeoutRef.current !== undefined) window.clearTimeout(stagedTimeoutRef.current);
-      setStagedEditLabel("正在等待新查询完成；编辑暂存中，原图保持不变。");
-    };
-    const onTurnCompletion = (event: Event) => {
-      const detail = (event as ChartEditCompletionEvent).detail;
-      if (!detail || detail.report.thread_id !== threadId) return;
-      detail.waitUntil(handleChartEditCompletion(detail.report));
-    };
-    window.addEventListener(CHART_EDIT_TURN_START_EVENT, onTurnStart);
-    window.addEventListener(CHART_EDIT_TURN_COMPLETION_EVENT, onTurnCompletion);
-    return () => {
-      window.removeEventListener(CHART_EDIT_TURN_START_EVENT, onTurnStart);
-      window.removeEventListener(CHART_EDIT_TURN_COMPLETION_EVENT, onTurnCompletion);
-    };
-  }, [threadId, artifact.source_result_id, sourceMessageId, savedView, userId]);
-
-  useEffect(() => {
-    if (chartEditModelThreadIdRef.current === threadId) return;
-    chartEditModelThreadIdRef.current = threadId;
-    chartEditModelManuallySelectedRef.current = false;
-    setChartEditModelProfileId("");
-  }, [threadId]);
-
-  useEffect(() => {
-    if (!canEdit || isEmpty) return;
-    let active = true;
-    const loadModelCatalog = async () => {
-      setChartEditModelLoading(true);
-      setChartEditModelCatalogError("");
-      try {
-        const catalog = await fetchChatModelOptions();
-        if (!active) return;
-        setChartEditModelCatalog(catalog);
-        const availableProfiles = catalog.profiles.filter((profile) => profile.available);
-        const availableIds = new Set(availableProfiles.map((profile) => profile.id));
-        const threadProfileId = threadId ? getThreadModelProfileId(userId, threadId) : undefined;
-        const effectiveThreadProfileId =
-          threadProfileId && availableIds.has(threadProfileId) ? threadProfileId : undefined;
-        const defaultProfileId =
-          catalog.default_profile_id && availableIds.has(catalog.default_profile_id)
-            ? catalog.default_profile_id
-            : undefined;
-        const fallbackProfileId =
-          effectiveThreadProfileId ?? defaultProfileId ?? availableProfiles[0]?.id ?? "";
-        setChartEditModelProfileId((current) =>
-          chartEditModelManuallySelectedRef.current && availableIds.has(current)
-            ? current
-            : fallbackProfileId,
-        );
-      } catch (error) {
-        if (!active) return;
-        setChartEditModelCatalog(null);
-        setChartEditModelCatalogError(
-          error instanceof Error ? error.message : "可用模型列表读取失败，请重试。",
-        );
-        setChartEditModelProfileId("");
-      } finally {
-        if (active) setChartEditModelLoading(false);
-      }
-    };
-    void loadModelCatalog();
-    window.addEventListener("askdb:model-catalog-updated", loadModelCatalog);
-    return () => {
-      active = false;
-      window.removeEventListener("askdb:model-catalog-updated", loadModelCatalog);
-    };
-  }, [canEdit, chartEditModelReloadKey, isEmpty, threadId, userId]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [brushMode, savedView.chart_type, savedView.bar_orientation]);
 
   const propViewIdentity = `${artifact.source_result_id}:${JSON.stringify(view)}:${hasOverride}:${JSON.stringify(undoHistory)}:${overrideNotice ?? ""}`;
   const lastPropViewIdentity = useRef(propViewIdentity);
@@ -703,8 +552,6 @@ export function ChartResult({
   }, [propViewIdentity, view, hasOverride, undoHistory]);
 
   function beginEditing() {
-    naturalPreviewRef.current = null;
-    setDraftOrigin("manual");
     setDraft(savedView as ChartViewDraft);
     setSaveError("");
     setDialogOpen(true);
@@ -713,8 +560,6 @@ export function ChartResult({
   function closeEditor(nextOpen: boolean) {
     setDialogOpen(nextOpen);
     if (!nextOpen) {
-      naturalPreviewRef.current = null;
-      setDraftOrigin("manual");
       setDraft(savedView as ChartViewDraft);
       setSaveError("");
     }
@@ -725,6 +570,75 @@ export function ChartResult({
     setSaveError("");
   }
 
+  function updateStatisticAnnotation(
+    metricField: string,
+    kind: "mean" | "peak",
+    patch: { enabled?: boolean; scope?: "returned_rows" | "viewport" },
+  ) {
+    updateDraft((current) => {
+      const annotations = current.annotations ?? { reference_lines: [], reference_areas: [] };
+      const existing = annotations.reference_lines.find(
+        (line) => line.metric_field === metricField && line.kind === kind,
+      );
+      let referenceLines = annotations.reference_lines.filter(
+        (line) => !(line.metric_field === metricField && line.kind === kind),
+      );
+      if (patch.enabled === false)
+        return { ...current, annotations: { ...annotations, reference_lines: referenceLines } };
+      if (existing || patch.enabled) {
+        referenceLines = [
+          ...referenceLines,
+          {
+            id: existing?.id ?? createChartAnnotationId(kind),
+            metric_field: metricField,
+            kind,
+            scope: patch.scope ?? existing?.scope ?? "returned_rows",
+            label: existing?.label ?? (kind === "mean" ? "均值" : "峰值"),
+          },
+        ];
+      }
+      return { ...current, annotations: { ...annotations, reference_lines: referenceLines } };
+    });
+  }
+
+  function saveTargetAnnotation() {
+    const metricField = visibleMetrics.includes(targetMetricField)
+      ? targetMetricField
+      : visibleMetrics[0];
+    if (
+      !metricField ||
+      !targetValue.trim() ||
+      !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(targetValue.trim())
+    )
+      return;
+    updateDraft((current) => {
+      const annotations = current.annotations ?? { reference_lines: [], reference_areas: [] };
+      const existing = annotations.reference_lines.find(
+        (line) => line.metric_field === metricField && line.kind === "value",
+      );
+      const line = {
+        id: existing?.id ?? createChartAnnotationId("target"),
+        metric_field: metricField,
+        kind: "value" as const,
+        value: targetValue.trim(),
+        scope: existing?.scope ?? ("returned_rows" as const),
+        label: targetLabel.trim().slice(0, 80) || "目标值",
+      };
+      return {
+        ...current,
+        annotations: {
+          ...annotations,
+          reference_lines: [
+            ...annotations.reference_lines.filter(
+              (item) => !(item.metric_field === metricField && item.kind === "value"),
+            ),
+            line,
+          ],
+        },
+      };
+    });
+  }
+
   function updateFormat(field: string, format: unknown) {
     updateDraft((current) => ({
       ...current,
@@ -733,7 +647,115 @@ export function ChartResult({
   }
 
   function selectChartType(nextType: ChartType) {
-    updateDraft((current) => ({ ...current, chart_type: nextType }));
+    updateDraft((current) => {
+      const numericFields = fieldCandidates
+        .filter(({ kind }) => kind === "numeric")
+        .map(({ name }) => name);
+      const dimensionFields = fieldCandidates
+        .filter(({ kind }) => kind === "categorical" || kind === "temporal")
+        .map(({ name }) => name);
+      if (nextType === "scatter") {
+        const previous = current.scatter_fields;
+        const xField =
+          previous?.x_field && numericFields.includes(previous.x_field)
+            ? previous.x_field
+            : numericFields.includes(current.dimension_field)
+              ? current.dimension_field
+              : (numericFields[0] ?? "");
+        const yField =
+          previous?.y_field &&
+          numericFields.includes(previous.y_field) &&
+          previous.y_field !== xField
+            ? previous.y_field
+            : (numericFields.find((field) => field !== xField) ?? "");
+        const visualField =
+          previous?.visual_field &&
+          numericFields.includes(previous.visual_field) &&
+          previous.visual_field !== xField &&
+          previous.visual_field !== yField
+            ? previous.visual_field
+            : undefined;
+        return {
+          ...current,
+          chart_type: nextType,
+          dimension_field: xField,
+          metric_fields: yField ? [yField, ...(visualField ? [visualField] : [])] : [],
+          hidden_metric_fields: [],
+          sort: { mode: "original" },
+          scatter_fields: {
+            x_field: xField,
+            y_field: yField,
+            ...(visualField
+              ? {
+                  visual_field: visualField,
+                  visual_encoding: previous?.visual_encoding === "color" ? "color" : "size",
+                }
+              : {}),
+          },
+        };
+      }
+      if (nextType === "heatmap") {
+        const previous = current.heatmap_fields;
+        const xField =
+          previous?.x_field && dimensionFields.includes(previous.x_field)
+            ? previous.x_field
+            : dimensionFields.includes(current.dimension_field)
+              ? current.dimension_field
+              : (dimensionFields[0] ?? "");
+        const yField =
+          previous?.y_field &&
+          dimensionFields.includes(previous.y_field) &&
+          previous.y_field !== xField
+            ? previous.y_field
+            : (dimensionFields.find((field) => field !== xField) ?? "");
+        const valueField =
+          previous?.value_field && numericFields.includes(previous.value_field)
+            ? previous.value_field
+            : (numericFields[0] ?? "");
+        return {
+          ...current,
+          chart_type: nextType,
+          dimension_field: xField,
+          metric_fields: valueField ? [valueField] : [],
+          hidden_metric_fields: [],
+          sort: { mode: "original" },
+          heatmap_fields: {
+            x_field: xField,
+            y_field: yField,
+            value_field: valueField,
+            aggregation: previous?.aggregation ?? "none",
+          },
+        };
+      }
+      const dimensionField = dimensionFields.includes(current.dimension_field)
+        ? current.dimension_field
+        : (dimensionFields[0] ?? "");
+      const metricFields =
+        nextType === "pie"
+          ? current.metric_fields.filter((field) => numericFields.includes(field)).slice(0, 1)
+          : current.metric_fields.filter((field) => numericFields.includes(field));
+      const sort =
+        nextType === "step_line" &&
+        getArrowFieldKind(
+          queryArtifact.columnTypes?.[queryArtifact.columns.indexOf(dimensionField)] ?? "",
+        ) === "temporal"
+          ? { mode: "dimension" as const, field: dimensionField, direction: "asc" as const }
+          : nextType === "line" || nextType === "area"
+            ? current.sort
+            : { mode: "original" as const };
+      return {
+        ...current,
+        chart_type: nextType,
+        dimension_field: dimensionField,
+        metric_fields: metricFields,
+        hidden_metric_fields: current.hidden_metric_fields.filter((field) =>
+          metricFields.includes(field),
+        ),
+        sort,
+        ...(nextType === "bar" ? { bar_stack_mode: current.bar_stack_mode ?? "grouped" } : {}),
+        ...(nextType === "step_line" ? { step_position: current.step_position ?? "end" } : {}),
+      };
+    });
   }
 
   function selectDimension(field: string) {
@@ -762,6 +784,101 @@ export function ChartResult({
     });
   }
 
+  function selectMetricYAxis(field: string, side: "left" | "right") {
+    updateDraft((current) => ({
+      ...current,
+      y_axis_by_metric: {
+        ...current.y_axis_by_metric,
+        [field]: side,
+      },
+    }));
+  }
+
+  function setYAxisName(side: ChartYAxisSide, patch: { visible?: boolean; text?: string }) {
+    updateDraft((current) => ({
+      ...current,
+      y_axis_names: {
+        ...current.y_axis_names,
+        [side]: { ...current.y_axis_names?.[side], ...patch },
+      },
+    }));
+  }
+
+  function selectScatterField(role: "x_field" | "y_field" | "visual_field", field: string) {
+    updateDraft((current) => {
+      const numericFields = fieldCandidates
+        .filter(({ kind }) => kind === "numeric")
+        .map(({ name }) => name);
+      const previous = current.scatter_fields ?? { x_field: "", y_field: "" };
+      let xField = role === "x_field" ? field : previous.x_field;
+      let yField = role === "y_field" ? field : previous.y_field;
+      if (role === "x_field" && xField === yField) {
+        yField = numericFields.find((candidate) => candidate !== xField) ?? "";
+      }
+      if (role === "y_field" && yField === xField) {
+        xField = numericFields.find((candidate) => candidate !== yField) ?? "";
+      }
+      const visualField =
+        role === "visual_field"
+          ? field && field !== xField && field !== yField
+            ? field
+            : undefined
+          : previous.visual_field &&
+              previous.visual_field !== xField &&
+              previous.visual_field !== yField
+            ? previous.visual_field
+            : undefined;
+      return {
+        ...current,
+        dimension_field: xField,
+        metric_fields: yField ? [yField, ...(visualField ? [visualField] : [])] : [],
+        hidden_metric_fields: [],
+        sort: { mode: "original" },
+        scatter_fields: {
+          x_field: xField,
+          y_field: yField,
+          ...(visualField
+            ? {
+                visual_field: visualField,
+                visual_encoding: previous.visual_encoding ?? "size",
+              }
+            : {}),
+        },
+      };
+    });
+  }
+
+  function selectHeatmapField(role: "x_field" | "y_field" | "value_field", field: string) {
+    updateDraft((current) => {
+      const dimensions = fieldCandidates
+        .filter(({ kind }) => kind === "categorical" || kind === "temporal")
+        .map(({ name }) => name);
+      const previous = current.heatmap_fields ?? {
+        x_field: "",
+        y_field: "",
+        value_field: "",
+        aggregation: "none" as const,
+      };
+      let xField = role === "x_field" ? field : previous.x_field;
+      let yField = role === "y_field" ? field : previous.y_field;
+      if (role === "x_field" && xField === yField) {
+        yField = dimensions.find((candidate) => candidate !== xField) ?? "";
+      }
+      if (role === "y_field" && yField === xField) {
+        xField = dimensions.find((candidate) => candidate !== yField) ?? "";
+      }
+      const valueField = role === "value_field" ? field : previous.value_field;
+      return {
+        ...current,
+        dimension_field: xField,
+        metric_fields: valueField ? [valueField] : [],
+        hidden_metric_fields: [],
+        sort: { mode: "original" },
+        heatmap_fields: { ...previous, x_field: xField, y_field: yField, value_field: valueField },
+      };
+    });
+  }
+
   function updateMetricColor(field: string, color?: ChartColorSpec) {
     updateDraft((current) => {
       const colors = { ...(current.color_by_metric ?? {}) };
@@ -769,7 +886,9 @@ export function ChartResult({
       else delete colors[field];
       return {
         ...current,
-        ...(Object.keys(colors).length ? { color_by_metric: colors } : { color_by_metric: undefined }),
+        ...(Object.keys(colors).length
+          ? { color_by_metric: colors }
+          : { color_by_metric: undefined }),
       };
     });
   }
@@ -782,17 +901,18 @@ export function ChartResult({
       hex: palette[metricIndex % palette.length],
       opacity: 100,
     };
-    const nextColor = mode === "solid"
-      ? toSolidColor(currentColor)
-      : currentColor.mode === "linear_gradient"
-        ? currentColor
-        : {
-            mode: "linear_gradient" as const,
-            start_hex: currentColor.hex,
-            end_hex: palette[(metricIndex + 1) % palette.length],
-            direction: "horizontal" as const,
-            opacity: currentColor.opacity,
-          };
+    const nextColor =
+      mode === "solid"
+        ? toSolidColor(currentColor)
+        : currentColor.mode === "linear_gradient"
+          ? currentColor
+          : {
+              mode: "linear_gradient" as const,
+              start_hex: currentColor.hex,
+              end_hex: palette[(metricIndex + 1) % palette.length],
+              direction: "horizontal" as const,
+              opacity: currentColor.opacity,
+            };
     updateMetricColor(field, nextColor);
   }
 
@@ -856,12 +976,6 @@ export function ChartResult({
         return false;
       }
       setSavedView(saved.view);
-      editContextRef.current = {
-        sourceResultId: artifact.source_result_id,
-        sourceMessageId,
-        threadId,
-        view: saved.view,
-      };
       setSavedUndoHistory(saved.undoHistory);
       const differs = !chartViewsEqual(saved.view, recommendedView);
       setSavedHasOverride(differs);
@@ -876,276 +990,18 @@ export function ChartResult({
     }
   }
 
-  async function handleChartEditCompletion(report: ChartEditCompletionReport) {
-    const staged = stagedEditRef.current;
-    if (
-      !staged ||
-      staged.threadId !== report.thread_id ||
-      !staged.confirmedTurnId ||
-      staged.confirmedTurnId !== report.turn_id ||
-      staged.confirmedHistoryTurnId !== report.history_turn_id
-    ) return;
-    stagedEditRef.current = null;
-    if (stagedTimeoutRef.current !== undefined) window.clearTimeout(stagedTimeoutRef.current);
-    stagedTimeoutRef.current = undefined;
-    setStagedEditLabel("");
-    const sourceContext = editContextRef.current;
-    if (
-      sourceContext.sourceResultId !== staged.sourceResultId ||
-      sourceContext.sourceMessageId !== staged.sourceMessageId ||
-      sourceContext.threadId !== staged.threadId ||
-      !chartViewsEqual(sourceContext.view, staged.baseView)
-    ) {
-      setDisplayNotice("原图结果或配置已更新，暂存编辑已丢弃，原图保持不变。");
-      return;
-    }
-    const outcome = await completeStagedChartEdit(report, staged, {
-      resolveTarget: (resultId: string, completion: ChartEditCompletionReport) => {
-        const artifacts = getThreadResultArtifacts(
-          userId,
-          completion.thread_id,
-          completion.history_turn_id,
-        );
-        const matchingParts = getChartMessageParts(artifacts).filter(
-          (item) => item.data.artifact.source_result_id === resultId,
-        );
-        const part = matchingParts.length === 1 ? matchingParts[0] : undefined;
-        return part
-          ? { source_result_id: part.data.artifact.source_result_id, data: part.data }
-          : undefined;
-      },
-      apply: (
-        target: { source_result_id: string; data: ChartMessagePart["data"] },
-        intent: ChartEditIntent,
-      ) => applyChartEditIntent(target.data.recommendedView, intent, target.data.queryArtifact),
-      commit: (
-        target: { source_result_id: string; data: ChartMessagePart["data"] },
-        nextView: ChartViewConfiguration,
-      ) => {
-        const summary = summarizeChartViewChange(target.data.recommendedView, nextView);
-        const saved = commitThreadChartViewChange(
-          userId,
-          report.thread_id,
-          report.history_turn_id,
-          target.source_result_id,
-          target.data.recommendedView,
-          nextView,
-          target.data.recommendedView,
-          summary,
-          "natural_language",
-        );
-        return saved ? { summary } : undefined;
-      },
-    });
-    if (outcome.status === "applied") {
-      const summary = (outcome as { target: { source_result_id: string; data: ChartMessagePart["data"] }; view: ChartViewConfiguration }).target;
-      setDisplayNotice(`查询完成，已应用：${summarizeChartViewChange(summary.data.recommendedView, (outcome as { view: ChartViewConfiguration }).view)}。`);
-      return;
-    }
-    if (outcome.status === "no_display_changes") {
-      setDisplayNotice("查询已完成，新结果已生成；没有额外的图表配置修改。");
-      return;
-    }
-    if (outcome.status === "discarded") {
-      const reason = outcome.reason;
-      if (reason === "cancelled") setDisplayNotice("查询已取消，暂存的图表编辑已丢弃，原图保持不变。");
-      else if (reason === "failed" || reason === "timeout") setDisplayNotice("查询未成功，暂存的图表编辑已丢弃，原图保持不变。");
-      else if (reason === "result_mismatch") setDisplayNotice("新查询没有唯一匹配的图表结果，暂存编辑已丢弃，原图保持不变。");
-      else if (reason === "result_unavailable") setDisplayNotice("新查询结果或图表已过期，暂存编辑已丢弃，原图保持不变。");
-      else if (reason === "cache_failure") setDisplayNotice("图表编辑未能保存，暂存编辑已丢弃，原图保持不变。");
-      else setDisplayNotice(`${chartEditClarifications[String((outcome as { code?: unknown }).code)] ?? chartEditClarifications.operation_unsupported}暂存编辑已丢弃，原图保持不变。`);
-    }
-  }
-
-  async function requestNaturalLanguageEdit() {
-    if (
-      !threadId || !sourceMessageId || !naturalInstruction.trim() ||
-      !chartEditModelMatchesThread ||
-      !selectedChartEditModelIsAvailable || chartEditModelLoading ||
-      chartEditModelCatalogError || interpretingRef.current
-    ) return;
-    interpretingRef.current = true;
-    setInterpreting(true);
-    setSaveError("");
-    setChartEditProposal(null);
-    const requestContext = {
-      sourceResultId: artifact.source_result_id,
-      sourceMessageId,
-      threadId,
-      view: savedView,
-    };
-    try {
-      const { sourceTurnKey } = await deriveSourceTurnKey(threadId, sourceMessageId);
-      const csrfToken = await requestCsrfToken();
-      const body = buildChartEditRequest({
-        threadId,
-        modelProfileId: chartEditModelProfileId,
-        instruction: naturalInstruction,
-        chartArtifact: artifact,
-        queryArtifact,
-        view: savedView,
-      });
-      const response = await fetch("/api/chart-edits/interpret", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
-        body: JSON.stringify(body),
-      });
-      const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        const chartEditError = readChartEditError(payload);
-        console.error(
-          "[AskDB chart edit diagnostic]",
-          JSON.stringify(
-            {
-              event: "chart_edit_failure",
-              http_status: response.status,
-              code: chartEditError.code,
-              diagnostic: chartEditError.diagnostic ?? null,
-            },
-            null,
-            2,
-          ),
-        );
-        if (shouldRefreshModelSelection(chartEditError.code)) {
-          window.dispatchEvent(new Event("askdb:model-catalog-updated"));
-        }
-        throw new Error(chartEditError.message);
-      }
-      const intent = readChartEditIntent(payload);
-      const currentContext = editContextRef.current;
-      if (!isChartEditContextCurrent(requestContext, currentContext, chartViewsEqual)) {
-        throw new Error("图表结果或配置已更新，请基于当前图表重新提交编辑。");
-      }
-      await interpretChartEdit(intent, {
-        preview: (value: ChartEditIntent) => {
-          const result = applyChartEditIntent(savedView, value, queryArtifact);
-          if (result.status !== "apply") {
-            setSaveError(chartEditClarifications[result.code] ?? chartEditClarifications.operation_unsupported);
-            return;
-          }
-          naturalPreviewRef.current = requestContext;
-          setDraftOrigin("natural_language");
-          setDraft(result.view);
-          setDialogOpen(true);
-        },
-        clarify: (code: string) => {
-          setSaveError(chartEditClarifications[String(code)] ?? chartEditClarifications.operation_unsupported);
-        },
-        showQueryProposal: async (value: ChartEditIntent) => {
-          const exactMessage = await confirmChartEditQuery(value.query_proposal, naturalInstruction, (message: string) => message);
-          setChartEditProposal({
-            originalInstruction: naturalInstruction,
-            intent: value,
-            exactMessage,
-            operationLabel: getQueryOperationLabel(value),
-            sourceResultId: requestContext.sourceResultId,
-            sourceTurnKey,
-            sourceMessageId: requestContext.sourceMessageId,
-            threadId: requestContext.threadId,
-            baseView: requestContext.view,
-          });
-        },
-      });
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "无法解释此次图表编辑，请稍后重试。");
-    } finally {
-      interpretingRef.current = false;
-      setInterpreting(false);
-    }
-  }
-
-  async function confirmQueryProposal() {
-    if (!chartEditProposal || !threadId || sendingProposal) return;
-    const proposal = chartEditProposal;
-    const currentContext = editContextRef.current;
-    const originalSourceStillCached = getChartMessageParts(
-      getThreadResultArtifacts(userId, proposal.threadId, proposal.sourceTurnKey),
-    ).some((part) => part.data.artifact.source_result_id === proposal.sourceResultId);
-    if (
-      proposal.threadId !== threadId ||
-      proposal.sourceResultId !== currentContext.sourceResultId ||
-      proposal.sourceMessageId !== currentContext.sourceMessageId ||
-      !chartViewsEqual(proposal.baseView, currentContext.view) ||
-      !originalSourceStillCached
-    ) {
-      setChartEditProposal(null);
-      setSaveError("原图结果已过期或图表配置已更新，请基于当前图表重新提交编辑。");
-      return;
-    }
-    const staged: StagedChartEdit = {
-      threadId: proposal.threadId,
-      intent: proposal.intent,
-      sourceResultId: proposal.sourceResultId,
-      sourceTurnKey: proposal.sourceTurnKey,
-      sourceMessageId: proposal.sourceMessageId,
-      baseView: proposal.baseView,
-    };
-    stagedEditRef.current = staged;
-    setStagedEditLabel("正在等待新查询完成；编辑暂存中，原图保持不变。");
-    stagedTimeoutRef.current = window.setTimeout(() => {
-      if (stagedEditRef.current !== staged) return;
-      stagedEditRef.current = null;
-      stagedTimeoutRef.current = undefined;
-      setStagedEditLabel("");
-      setDisplayNotice("等待查询结果超时，暂存编辑已丢弃，原图保持不变。");
-    }, 120_000);
-    setSendingProposal(true);
-    setSaveError("");
-    try {
-      await confirmChartEditQuery(proposal.intent.query_proposal, proposal.originalInstruction, (message: string) => {
-        if (message !== proposal.exactMessage) throw new Error("图表查询提议发生变化，请重新确认。");
-        aui.composer.setText(message);
-        aui.composer.send();
-      });
-      setChartEditProposal(null);
-      setNaturalInstruction("");
-    } catch (error) {
-      stagedEditRef.current = null;
-      if (stagedTimeoutRef.current !== undefined) window.clearTimeout(stagedTimeoutRef.current);
-      stagedTimeoutRef.current = undefined;
-      setStagedEditLabel("");
-      setSaveError(error instanceof Error ? error.message : "无法发送已确认的查询请求。");
-    } finally {
-      setSendingProposal(false);
-    }
-  }
-
-  function cancelQueryProposal() {
-    setChartEditProposal(null);
-    setSaveError("");
-  }
-
   async function applyDraft() {
-    if (naturalPreviewRef.current &&
-        !isChartEditContextCurrent(naturalPreviewRef.current, editContextRef.current, chartViewsEqual)) {
-      setSaveError("图表结果或配置已更新，请取消预览并重新提交编辑。");
-      return;
-    }
     const result = validateChartView(draft, queryArtifact);
     if (!result.view) {
       setSaveError("");
       return;
     }
     const summary = summarizeChartViewChange(savedView, result.view);
-    if (await persistView(result.view, draftOrigin, summary)) {
-      if (draftOrigin === "natural_language") {
-        setNaturalInstruction("");
-        setDisplayNotice(`已应用：${summary}。`);
-      }
-      naturalPreviewRef.current = null;
-      setDraftOrigin("manual");
-      setDialogOpen(false);
-    }
+    if (await persistView(result.view, "manual", summary)) setDialogOpen(false);
   }
 
   async function restoreRecommendation() {
-    if (
-      await persistView(
-        recommendedView,
-        "restore_recommendation",
-        "恢复 AI 推荐配置",
-      )
-    ) {
+    if (await persistView(recommendedView, "restore_recommendation", "恢复 AI 推荐配置")) {
       setDialogOpen(false);
     }
   }
@@ -1190,7 +1046,159 @@ export function ChartResult({
     }
   }
 
+  function downloadChartPng() {
+    const succeeded = chartCanvasRef.current?.downloadImage(
+      `askdb-chart-${queryArtifact.rows.length}-rows.png`,
+    );
+    setDisplayNotice(
+      succeeded ? "PNG 图表快照已下载。" : "PNG 导出暂不可用，图表实例尚未就绪或浏览器拒绝了下载。",
+    );
+  }
+
+  function downloadChartCsv() {
+    const result = buildChartCsv(queryArtifact);
+    if (!result.ok) {
+      setDisplayNotice(
+        result.reason === "duplicate_columns"
+          ? "CSV 导出不可用：查询结果含重复列名，无法无损生成表头。"
+          : result.reason === "export_limit"
+            ? "CSV 导出不可用：结果超出安全导出上限。"
+            : "CSV 导出不可用：查询结果结构无效。",
+      );
+      return;
+    }
+    let url: string | undefined;
+    try {
+      const blob = new Blob([result.content], { type: "text/csv;charset=utf-8" });
+      url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = getChartCsvFilename(
+        result.rowCount,
+        getChartCompletenessState(queryArtifact),
+      );
+      link.click();
+      window.setTimeout(() => url && URL.revokeObjectURL(url), 0);
+      setDisplayNotice(
+        `CSV 已导出 ${result.rowCount} 行、${result.columnCount} 列；${chartCompletenessLabel(queryArtifact)}。`,
+      );
+    } catch {
+      if (url) URL.revokeObjectURL(url);
+      setDisplayNotice("CSV 文件无法下载，请重试。");
+    }
+  }
+
+  function normalizeSelection(indices: number[]) {
+    const displayPosition = new Map(
+      savedRows.map(({ sourceRowIndex }, position) => [sourceRowIndex, position]),
+    );
+    return [...new Set(indices)].sort(
+      (left, right) =>
+        (displayPosition.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (displayPosition.get(right) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
+
+  function selectSourceRows(indices: number[]) {
+    const normalized = normalizeSelection(indices);
+    setSelectionSourceKey(savedCanvasSourceKey);
+    setSelectedSourceRowIndices(normalized);
+    if (normalized.length > 50) {
+      setDisplayNotice(`已选 ${normalized.length} 行；追问最多引用 50 行，请缩小选区后再追问。`);
+    } else {
+      setDisplayNotice(`已选中 ${normalized.length} 行查询结果，可查看行值或填入追问。`);
+    }
+  }
+
+  function toggleBrushSelection(enabled: boolean) {
+    const axis =
+      savedView.chart_type === "bar" && savedView.bar_orientation === "horizontal" ? "y" : "x";
+    if (enabled) chartCanvasRef.current?.clearBrushSelection();
+    const changed = chartCanvasRef.current?.setBrushMode(enabled, axis);
+    if (!changed) {
+      setDisplayNotice("图表尚未就绪，暂时无法切换框选模式。");
+      return;
+    }
+    setBrushMode(enabled);
+    setDisplayNotice(
+      enabled
+        ? "框选模式已开启；拖动选择同一维度上的连续分类，按 Escape 退出。"
+        : "框选模式已关闭。",
+    );
+  }
+
+  function clearSelection() {
+    setSelectedSourceRowIndices([]);
+    setSelectionSourceKey(savedCanvasSourceKey);
+    chartCanvasRef.current?.clearBrushSelection();
+    setDisplayNotice("已清除临时选区。");
+  }
+
+  async function saveSelectionAsFocusArea() {
+    if (!canEdit || visibleSelection.length === 0 || visibleSelection.length > 1000) return;
+    const annotations = savedView.annotations ?? { reference_lines: [], reference_areas: [] };
+    if (annotations.reference_areas.length >= 32) {
+      setDisplayNotice("已达到 32 个重点区间的保存上限。");
+      return;
+    }
+    const nextView: ChartViewConfiguration = {
+      ...savedView,
+      annotations: {
+        ...annotations,
+        reference_areas: [
+          ...annotations.reference_areas,
+          {
+            id: createChartAnnotationId("area"),
+            source_row_indices: [...visibleSelection],
+            label: `关注区间（${visibleSelection.length} 行）`,
+          },
+        ],
+      },
+    };
+    if (await persistView(nextView)) setDisplayNotice("已将当前选区保存为图表重点区间。");
+  }
+
+  function fillComposerWithSelection() {
+    const context = buildChartSelectionContext(
+      queryArtifact,
+      artifact.source_result_id,
+      savedView,
+      visibleSelection,
+      chartCompletenessLabel(queryArtifact),
+    );
+    if (!context.ok) {
+      const message =
+        context.reason === "stale_result"
+          ? "图表查询结果已变化，请重新选择数据。"
+          : context.reason === "too_many_rows"
+            ? "追问最多引用 50 行，请缩小选区。"
+            : context.reason === "cell_too_long"
+              ? "选中值过长，请缩小选区或改为点选需要的行。"
+              : context.reason === "context_too_long"
+                ? "选区上下文过长，请缩小选区。"
+                : "当前选区无效，请重新选择。";
+      setDisplayNotice(message);
+      return;
+    }
+    const filled = fillComposerWithChartSelection(
+      { setText: (text) => aui.thread.composer().setText(text) },
+      composerText,
+      context.text,
+    );
+    if (!filled.ok) {
+      setDisplayNotice("现有聊天草稿与选区上下文过长，请先精简草稿或缩小选区。");
+      return;
+    }
+    setDisplayNotice("已把选区摘要填入可编辑的聊天输入框；检查或修改后，请手动点击发送。");
+  }
+
   const displayedTypeLabel = getChartTypeLabel(savedView.chart_type);
+  const supportsAxisInteraction = new Set<string>(["line", "area", "step_line", "bar"]).has(
+    savedView.chart_type,
+  );
+  const supportsReferenceAnnotations =
+    new Set<string>(["line", "area", "step_line", "bar"]).has(draft.chart_type) &&
+    !(draft.chart_type === "bar" && draft.bar_stack_mode === "percent");
   const applyDisabled = persisting || !validation.view;
 
   if (isEmpty) {
@@ -1237,6 +1245,48 @@ export function ChartResult({
                 <span>编辑图表</span>
               </Button>
             )}
+            {supportsAxisInteraction && (
+              <Button
+                type="button"
+                variant={brushMode ? "secondary" : "ghost"}
+                size="sm"
+                aria-label={brushMode ? "退出框选模式" : "进入框选模式"}
+                aria-pressed={brushMode}
+                onClick={() => toggleBrushSelection(!brushMode)}
+              >
+                {brushMode ? "退出框选" : "框选数据"}
+              </Button>
+            )}
+            {supportsAxisInteraction && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="重置图表缩放"
+                onClick={() => chartCanvasRef.current?.resetZoom()}
+              >
+                <RotateCcwIcon aria-hidden="true" />
+                <span>重置缩放</span>
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label="导出图表 PNG 图片"
+              onClick={downloadChartPng}
+            >
+              导出 PNG
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label="导出查询结果 CSV"
+              onClick={downloadChartCsv}
+            >
+              导出 CSV
+            </Button>
             <Button
               type="button"
               variant="ghost"
@@ -1254,113 +1304,171 @@ export function ChartResult({
           </div>
         </div>
         <div className="mb-2 text-[11px] text-muted-foreground">{displayedTypeLabel}</div>
-        <EChartCanvas
+        {savedView.chart_type === "bar" && savedView.bar_stack_mode === "percent" && (
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            比例分母为每个维度项中当前可见指标的合计；仅在本轮已返回行内计算。
+          </p>
+        )}
+        {savedView.chart_type === "heatmap" && savedView.heatmap_fields && (
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            热力图
+            {savedView.heatmap_fields.aggregation === "none"
+              ? "按唯一维度组合显示单行值"
+              : `按本轮已返回行${{ sum: "求和", avg: "求平均值", min: "取最小值", max: "取最大值", none: "" }[savedView.heatmap_fields.aggregation]}聚合`}
+            。空值保持为空，不会转换为 0。
+          </p>
+        )}
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          CSV 基于本轮已返回的 {queryArtifact.rows.length} 行 ·{" "}
+          {chartCompletenessLabel(queryArtifact)}
+        </p>
+        <ChartCanvas
+          ref={chartCanvasRef}
           option={savedOption}
           ariaLabel={`${savedView.title}，${displayedTypeLabel}`}
           className={`w-full min-w-0 ${fullScreen ? "h-[calc(100dvh-8rem)]" : "h-[280px]"}`}
+          sourceKey={savedCanvasSourceKey}
+          sourceRows={savedRows}
+          interactive
+          onPointClick={(sourceRowIndexes) => {
+            selectSourceRows(sourceRowIndexes);
+            setSelectionDialogOpen(true);
+          }}
+          onBrushSelection={selectSourceRows}
+          onDataZoom={(nextViewport) =>
+            setSavedViewportState((current) =>
+              current.sourceKey === savedCanvasSourceKey &&
+              current.start === nextViewport.start &&
+              current.end === nextViewport.end
+                ? current
+                : { sourceKey: savedCanvasSourceKey, ...nextViewport },
+            )
+          }
         />
-        {canEdit && (
-          <section className="mt-3 rounded-lg border border-border/70 bg-muted/20 p-3" aria-label="自然语言编辑图表">
-            <label className="block">
-              <span className={fieldLabelClass}>用自然语言编辑图表</span>
-              <input
-                className={textControlClass}
-                value={naturalInstruction}
-                maxLength={2048}
-                aria-label="自然语言图表编辑指令"
-                placeholder="例如：标题改成各地区收入，按收入取 Top 5"
-                disabled={interpreting || sendingProposal || Boolean(stagedEditRef.current)}
-                onChange={(event) => setNaturalInstruction(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void requestNaturalLanguageEdit();
-                  }
-                }}
-              />
-            </label>
-            <div className="mt-2 flex flex-wrap items-end gap-3">
-              <label className="block w-full sm:max-w-xs">
-                <span className={fieldLabelClass}>本次图表编辑模型</span>
-                <ComposerSelect
-                  id={`${controlIdPrefix}-model`}
-                  ariaLabel="本次图表编辑使用的模型"
-                  value={selectedChartEditModelIsAvailable ? chartEditModelProfileId : ""}
-                  options={chartEditModelOptions}
-                  placeholder="选择模型"
-                  triggerClassName={selectTriggerClass}
-                  disabled={
-                    !chartEditModelMatchesThread ||
-                    !chartEditModelCatalog ||
-                    chartEditModelLoading ||
-                    Boolean(chartEditModelCatalogError) ||
-                    availableChartEditModels.length === 0 || interpreting || sendingProposal ||
-                    Boolean(stagedEditRef.current)
-                  }
-                  onValueChange={(value) => {
-                    chartEditModelManuallySelectedRef.current = true;
-                    setChartEditModelProfileId(value);
-                    setSaveError("");
-                  }}
-                />
-              </label>
-              <p className="max-w-xl pb-2 text-[11px] leading-5 text-muted-foreground">
-                只用于理解这次图表指令。若模型不支持结构化输出，可切换后重试；确认重新查询时仍使用当前会话模型。
+        <div className="mt-2 space-y-1 text-[11px] text-muted-foreground" aria-label="图表统计范围">
+          <p>
+            展示 {savedRows.length}
+            {savedView.chart_type === "heatmap" ? " 个网格单元格" : " 行"} ·{" "}
+            {chartCompletenessLabel(queryArtifact)}
+          </p>
+          {savedView.chart_type !== "pie" && (
+            <>
+              <p>
+                已返回行统计：
+                {returnedStatistics
+                  .map(
+                    (statistic) =>
+                      `${savedView.field_labels[statistic.metric_field]?.trim() || statistic.metric_field} 均值 ${statistic.mean === undefined ? "无有效值" : formatChartValue(statistic.mean, savedView.format_by_field[statistic.metric_field])}，峰值 ${statistic.peak === undefined ? "无有效值" : formatChartValue(statistic.peak, savedView.format_by_field[statistic.metric_field])}（${statistic.validCount} 个有效值）`,
+                  )
+                  .join("；")}
               </p>
-            </div>
-            {chartEditModelCatalogError && (
-              <div className="mt-2 flex flex-wrap items-center gap-2" role="status">
-                <span className="text-xs text-destructive">{chartEditModelCatalogError}</span>
+              <p>
+                当前窗口 {Math.round(savedViewport.start)}%–{Math.round(savedViewport.end)}% 统计：
+                {viewportStatistics
+                  .map(
+                    (statistic) =>
+                      `${savedView.field_labels[statistic.metric_field]?.trim() || statistic.metric_field} 均值 ${statistic.mean === undefined ? "无有效值" : formatChartValue(statistic.mean, savedView.format_by_field[statistic.metric_field])}，峰值 ${statistic.peak === undefined ? "无有效值" : formatChartValue(statistic.peak, savedView.format_by_field[statistic.metric_field])}（${statistic.validCount} 个有效值）`,
+                  )
+                  .join("；")}
+              </p>
+            </>
+          )}
+        </div>
+        <div className="mt-2 max-w-md">
+          <label className="block">
+            <span className={fieldLabelClass}>键盘选择查询结果行</span>
+            <ComposerSelect
+              id={`${controlIdPrefix}-keyboard-row`}
+              ariaLabel="键盘选择查询结果行"
+              value={keyboardRowIndex}
+              options={savedRows.map(({ row, sourceRowIndex }) => ({
+                value: String(sourceRowIndex),
+                label: `${chartCategoryDisplayLabel(row[savedView.dimension_field])}${savedView.chart_type === "heatmap" && savedView.heatmap_fields ? ` × ${chartCategoryDisplayLabel(row[savedView.heatmap_fields.y_field])}` : ""} · 来源行 ${sourceRowIndex + 1}`,
+              }))}
+              placeholder={
+                savedView.chart_type === "heatmap"
+                  ? "选择网格单元并查看来源行"
+                  : "选择图表点并查看查询结果行"
+              }
+              triggerClassName="max-w-md"
+              onValueChange={(value) => {
+                const sourceRowIndex = Number(value);
+                if (!Number.isSafeInteger(sourceRowIndex)) return;
+                setKeyboardRowIndex(value);
+                const selectedRow = savedRows.find(
+                  (entry) => entry.sourceRowIndex === sourceRowIndex,
+                );
+                selectSourceRows(selectedRow?.sourceRowIndexes ?? [sourceRowIndex]);
+                setSelectionDialogOpen(true);
+              }}
+            />
+          </label>
+        </div>
+        {visibleSelection.length > 0 && (
+          <section
+            className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3"
+            aria-label="图表临时选区"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium">
+                已选中 {visibleSelection.length} 行查询结果
+                {visibleSelection.length > 50
+                  ? " · 追问上限为 50 行，请缩小选区"
+                  : ` · 来自已返回行，${chartCompletenessLabel(queryArtifact)}`}
+              </p>
+              <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={chartEditModelLoading}
-                  onClick={() => setChartEditModelReloadKey((value) => value + 1)}
+                  onClick={() => setSelectionDialogOpen(true)}
                 >
-                  {chartEditModelLoading ? "正在重试…" : "重试"}
+                  查看查询结果行
+                </Button>
+                {canEdit &&
+                  supportsAxisInteraction &&
+                  !(savedView.chart_type === "bar" && savedView.bar_stack_mode === "percent") && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={persisting || visibleSelection.length > 1000}
+                      onClick={() => void saveSelectionAsFocusArea()}
+                    >
+                      保存为重点区间
+                    </Button>
+                  )}
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={visibleSelection.length > 50}
+                  onClick={fillComposerWithSelection}
+                >
+                  填入聊天追问
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={clearSelection}>
+                  清除选区
                 </Button>
               </div>
-            )}
-            {!chartEditModelCatalogError && !chartEditModelLoading &&
-              chartEditModelCatalog && availableChartEditModels.length === 0 && (
-                <p className="mt-2 text-xs text-muted-foreground" role="status">
-                  当前没有可用模型，请检查模型设置。
-                </p>
-              )}
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                disabled={
-                  interpreting || sendingProposal || Boolean(stagedEditRef.current) ||
-                  !naturalInstruction.trim() || chartEditModelLoading ||
-                  Boolean(chartEditModelCatalogError) || !selectedChartEditModelIsAvailable ||
-                  !chartEditModelMatchesThread
-                }
-                onClick={() => void requestNaturalLanguageEdit()}
-              >
-                {interpreting ? "正在理解…" : "解释并预览"}
-              </Button>
-              {stagedEditLabel && <span role="status" className="text-xs text-muted-foreground">{stagedEditLabel}</span>}
             </div>
-            {chartEditProposal && (
-              <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3" aria-live="polite">
-                <p className="text-sm font-medium">{chartEditProposal.operationLabel}</p>
-                <p className="mt-1 text-xs text-muted-foreground">确认后将通过当前会话查询。以下是将发送的完整消息：</p>
-                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-xs leading-5">{chartEditProposal.exactMessage}</pre>
-                <div className="mt-2 flex gap-2">
-                  <Button type="button" size="sm" disabled={sendingProposal} onClick={() => void confirmQueryProposal()}>
-                    {sendingProposal ? "正在发送…" : "确认并发送"}
-                  </Button>
-                  <Button type="button" size="sm" variant="outline" disabled={sendingProposal} onClick={cancelQueryProposal}>
-                    取消
-                  </Button>
-                </div>
-              </div>
-            )}
-            {saveError && <p role="alert" className="mt-2 text-xs leading-5 text-destructive">{saveError}</p>}
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              图表维度范围：
+              {String(
+                queryArtifact.rows[visibleSelection[0]]?.[savedView.dimension_field] ?? "（空值）",
+              )}{" "}
+              至{" "}
+              {String(
+                queryArtifact.rows[visibleSelection[visibleSelection.length - 1]]?.[
+                  savedView.dimension_field
+                ] ?? "（空值）",
+              )}
+            </p>
           </section>
+        )}
+        {saveError && (
+          <p role="alert" className="mt-2 text-xs leading-5 text-destructive">
+            {saveError}
+          </p>
         )}
         {savedView.current_result_top_n && (
           <p role="status" className="mt-2 text-[11px] text-muted-foreground">
@@ -1396,6 +1504,64 @@ export function ChartResult({
         )}
       </section>
 
+      <Dialog open={selectionDialogOpen} onOpenChange={setSelectionDialogOpen}>
+        <DialogContent className="max-h-[85dvh] max-w-4xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>查询结果行</DialogTitle>
+            <DialogDescription>
+              以下是当前图表所绑定查询结果中的 {visibleSelection.length}{" "}
+              行；它们是查询返回行，不代表数据库明细记录。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60dvh] overflow-auto rounded-md border border-border/70">
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 bg-muted">
+                <tr>
+                  <th className="border-b border-border/70 px-2 py-2 text-left">来源行</th>
+                  {queryArtifact.columns.map((column, index) => (
+                    <th
+                      key={`${column}-${index}`}
+                      className="border-b border-border/70 px-2 py-2 text-left"
+                    >
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleSelection.map((sourceRowIndex) => (
+                  <tr key={sourceRowIndex}>
+                    <td className="border-b border-border/50 px-2 py-2">{sourceRowIndex + 1}</td>
+                    {queryArtifact.columns.map((column, index) => {
+                      const value = queryArtifact.rows[sourceRowIndex]?.[column];
+                      const text =
+                        value === null || value === undefined
+                          ? "（空值）"
+                          : typeof value === "string" ||
+                              typeof value === "number" ||
+                              typeof value === "boolean"
+                            ? String(value)
+                            : JSON.stringify(value);
+                      return (
+                        <td
+                          key={`${column}-${index}`}
+                          className="max-w-64 break-words border-b border-border/50 px-2 py-2"
+                        >
+                          {text}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="outline" />}>关闭</DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {canEdit && (
         <Dialog open={dialogOpen} onOpenChange={closeEditor}>
           <DialogContent
@@ -1408,13 +1574,6 @@ export function ChartResult({
                 <DialogDescription className="mt-1">
                   设置只作用于当前图表；查询表格、原始值和查询结果顺序保持不变。
                 </DialogDescription>
-                {draftOrigin === "natural_language" && (
-                  <p role="status" className="mt-2 text-xs text-muted-foreground">
-                    待应用：{validation.view
-                      ? summarizeChartViewChange(savedView, validation.view)
-                      : "请先修正图表设置"}。确认应用后保存，取消将保留原图。
-                  </p>
-                )}
               </div>
               <DialogClose
                 render={
@@ -1436,7 +1595,17 @@ export function ChartResult({
                 <fieldset>
                   <legend className={fieldLabelClass}>图表类型</legend>
                   <div className="grid grid-cols-3 gap-2">
-                    {(["line", "bar", "pie"] as ChartType[]).map((type) => {
+                    {(
+                      [
+                        "line",
+                        "area",
+                        "step_line",
+                        "bar",
+                        "pie",
+                        "scatter",
+                        "heatmap",
+                      ] as ChartType[]
+                    ).map((type) => {
                       const disabled = type === "pie" && Boolean(pieReason);
                       return (
                         <label
@@ -1479,109 +1648,422 @@ export function ChartResult({
                   <h4 id="chart-fields-title" className={fieldLabelClass}>
                     字段
                   </h4>
-                  <label className="mb-3 block">
-                    <span className={fieldLabelClass}>维度</span>
-                    <ComposerSelect
-                      id={`${controlIdPrefix}-dimension`}
-                      ariaLabel="图表维度"
-                      value={draft.dimension_field}
-                      options={fieldCandidates
-                        .filter(({ kind }) => kind === "categorical" || kind === "temporal")
-                        .map(({ name, kind }) => ({
-                          value: name,
-                          label: `${name}${kind === "temporal" ? " · 日期/时间" : " · 分类"}`,
-                        }))}
-                      placeholder="选择图表维度"
-                      triggerClassName={selectTriggerClass}
-                      ariaInvalid={Boolean(validation.errors.dimension_field)}
-                      ariaDescribedBy={
-                        validation.errors.dimension_field
-                          ? `${controlIdPrefix}-dimension-error`
-                          : undefined
-                      }
-                      onValueChange={selectDimension}
-                    />
-                    <RecordFieldError
-                      id={`${controlIdPrefix}-dimension-error`}
-                      error={validation.errors.dimension_field}
-                    />
-                  </label>
-
-                  <fieldset>
-                    <legend className={fieldLabelClass}>指标（最多 4 个）</legend>
-                    <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
-                      {fieldCandidates
-                        .filter(({ kind }) => kind === "numeric")
-                        .map(({ name }) => {
-                          const checked = selectedMetrics.includes(name);
-                          return (
-                            <label key={name} className="flex min-h-8 items-center gap-2 text-xs">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={!checked && selectedMetrics.length >= 4}
-                                onChange={(event) =>
-                                  selectMetric(name, event.currentTarget.checked)
-                                }
-                                aria-label={`选择指标 ${name}`}
-                              />
-                              <span>{name}</span>
-                            </label>
-                          );
-                        })}
-                      {fieldCandidates.every(({ kind }) => kind !== "numeric") && (
-                        <p className="px-1 py-2 text-xs text-muted-foreground">
-                          查询结果没有受支持的数值字段。
-                        </p>
+                  {draft.chart_type === "scatter" ? (
+                    <div className="space-y-3">
+                      {(["x_field", "y_field"] as const).map((role) => (
+                        <label key={role} className="block">
+                          <span className={fieldLabelClass}>
+                            {role === "x_field" ? "X 数值字段" : "Y 数值字段"}
+                          </span>
+                          <ComposerSelect
+                            id={`${controlIdPrefix}-scatter-${role}`}
+                            ariaLabel={
+                              role === "x_field" ? "散点图 X 数值字段" : "散点图 Y 数值字段"
+                            }
+                            value={draft.scatter_fields?.[role] ?? ""}
+                            options={fieldCandidates
+                              .filter(({ kind }) => kind === "numeric")
+                              .map(({ name }) => ({ value: name, label: name }))}
+                            placeholder="选择数值字段"
+                            triggerClassName={selectTriggerClass}
+                            onValueChange={(field) => selectScatterField(role, field)}
+                          />
+                        </label>
+                      ))}
+                      <label className="block">
+                        <span className={fieldLabelClass}>第三数值字段（可选）</span>
+                        <ComposerSelect
+                          id={`${controlIdPrefix}-scatter-visual-field`}
+                          ariaLabel="散点图第三数值字段"
+                          value={draft.scatter_fields?.visual_field ?? "none"}
+                          options={[
+                            { value: "none", label: "不映射" },
+                            ...fieldCandidates
+                              .filter(
+                                ({ kind, name }) =>
+                                  kind === "numeric" &&
+                                  name !== draft.scatter_fields?.x_field &&
+                                  name !== draft.scatter_fields?.y_field,
+                              )
+                              .map(({ name }) => ({ value: name, label: name })),
+                          ]}
+                          placeholder="选择映射字段"
+                          triggerClassName={selectTriggerClass}
+                          onValueChange={(field) =>
+                            selectScatterField("visual_field", field === "none" ? "" : field)
+                          }
+                        />
+                      </label>
+                      {draft.scatter_fields?.visual_field && (
+                        <label className="block">
+                          <span className={fieldLabelClass}>第三字段映射方式</span>
+                          <ComposerSelect
+                            id={`${controlIdPrefix}-scatter-visual-encoding`}
+                            ariaLabel="散点图第三字段映射方式"
+                            value={draft.scatter_fields.visual_encoding ?? "size"}
+                            options={[
+                              { value: "size", label: "气泡大小" },
+                              { value: "color", label: "颜色深浅" },
+                            ]}
+                            placeholder="选择映射方式"
+                            triggerClassName={selectTriggerClass}
+                            onValueChange={(value) =>
+                              updateDraft((current) => ({
+                                ...current,
+                                scatter_fields: current.scatter_fields
+                                  ? {
+                                      ...current.scatter_fields,
+                                      visual_encoding: value as "size" | "color",
+                                    }
+                                  : undefined,
+                              }))
+                            }
+                          />
+                        </label>
                       )}
+                      <RecordFieldError
+                        id={`${controlIdPrefix}-scatter-error`}
+                        error={validation.errors.scatter_fields}
+                      />
+                      <RecordFieldError
+                        id="chart-metrics-error"
+                        error={validation.errors.metric_fields}
+                      />
+                      <p className="text-[11px] leading-4 text-muted-foreground">
+                        每个点对应一条本轮已返回结果；无效的 X、Y 数值不绘制。
+                      </p>
                     </div>
-                    <RecordFieldError
-                      id="chart-metrics-error"
-                      error={validation.errors.metric_fields}
-                    />
-                  </fieldset>
-
-                  {selectedMetrics.length > 0 && (
-                    <fieldset className="mt-3">
-                      <legend className={fieldLabelClass}>系列显隐</legend>
-                      <div className="flex flex-wrap gap-x-4 gap-y-2">
-                        {selectedMetrics.map((field) => {
-                          const visible = !draft.hidden_metric_fields.includes(field);
-                          return (
-                            <label key={field} className="inline-flex items-center gap-2 text-xs">
-                              <input
-                                type="checkbox"
-                                checked={visible}
-                                disabled={visible && visibleMetrics.length <= 1}
-                                onChange={(event) => {
-                                  const checked = event.currentTarget.checked;
-                                  updateDraft((current) => {
-                                    const next = {
-                                      ...current,
-                                      hidden_metric_fields: checked
-                                        ? current.hidden_metric_fields.filter(
-                                            (item) => item !== field,
-                                          )
-                                        : [...current.hidden_metric_fields, field],
-                                    };
-                                    return next;
-                                  });
-                                }}
-                                aria-label={`${visible ? "显示" : "隐藏"}指标 ${field}`}
-                              />
-                              显示 {field}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
+                  ) : draft.chart_type === "heatmap" ? (
+                    <div className="space-y-3">
+                      {(["x_field", "y_field"] as const).map((role) => (
+                        <label key={role} className="block">
+                          <span className={fieldLabelClass}>
+                            {role === "x_field" ? "横轴维度" : "纵轴维度"}
+                          </span>
+                          <ComposerSelect
+                            id={`${controlIdPrefix}-heatmap-${role}`}
+                            ariaLabel={role === "x_field" ? "热力图横轴维度" : "热力图纵轴维度"}
+                            value={draft.heatmap_fields?.[role] ?? ""}
+                            options={fieldCandidates
+                              .filter(
+                                ({ kind, name }) =>
+                                  (kind === "categorical" || kind === "temporal") &&
+                                  (role === "x_field" || name !== draft.heatmap_fields?.x_field),
+                              )
+                              .map(({ name, kind }) => ({
+                                value: name,
+                                label: `${name}${kind === "temporal" ? " · 日期/时间" : " · 分类"}`,
+                              }))}
+                            placeholder="选择分类或时间字段"
+                            triggerClassName={selectTriggerClass}
+                            onValueChange={(field) => selectHeatmapField(role, field)}
+                          />
+                        </label>
+                      ))}
+                      <label className="block">
+                        <span className={fieldLabelClass}>颜色数值</span>
+                        <ComposerSelect
+                          id={`${controlIdPrefix}-heatmap-value-field`}
+                          ariaLabel="热力图数值指标"
+                          value={draft.heatmap_fields?.value_field ?? ""}
+                          options={fieldCandidates
+                            .filter(({ kind }) => kind === "numeric")
+                            .map(({ name }) => ({ value: name, label: name }))}
+                          placeholder="选择数值指标"
+                          triggerClassName={selectTriggerClass}
+                          onValueChange={(field) => selectHeatmapField("value_field", field)}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className={fieldLabelClass}>重复单元格处理</span>
+                        <ComposerSelect
+                          id={`${controlIdPrefix}-heatmap-aggregation`}
+                          ariaLabel="热力图重复单元格处理"
+                          value={draft.heatmap_fields?.aggregation ?? "none"}
+                          options={[
+                            { value: "none", label: "不聚合（要求维度组合唯一）" },
+                            { value: "sum", label: "求和" },
+                            { value: "avg", label: "平均值" },
+                            { value: "min", label: "最小值" },
+                            { value: "max", label: "最大值" },
+                          ]}
+                          placeholder="选择聚合方式"
+                          triggerClassName={selectTriggerClass}
+                          onValueChange={(aggregation) =>
+                            updateDraft((current) => ({
+                              ...current,
+                              heatmap_fields: current.heatmap_fields
+                                ? {
+                                    ...current.heatmap_fields,
+                                    aggregation: aggregation as NonNullable<
+                                      ChartViewConfiguration["heatmap_fields"]
+                                    >["aggregation"],
+                                  }
+                                : undefined,
+                            }))
+                          }
+                        />
+                      </label>
+                      <RecordFieldError
+                        id={`${controlIdPrefix}-heatmap-error`}
+                        error={validation.errors.heatmap_fields}
+                      />
+                      <RecordFieldError
+                        id="chart-metrics-error"
+                        error={validation.errors.metric_fields}
+                      />
+                      <p className="text-[11px] leading-4 text-muted-foreground">
+                        默认要求横纵维度组合唯一；聚合只使用本轮已返回行，空值不会改成 0。
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <label className="mb-3 block">
+                        <span className={fieldLabelClass}>维度</span>
+                        <ComposerSelect
+                          id={`${controlIdPrefix}-dimension`}
+                          ariaLabel="图表维度"
+                          value={draft.dimension_field}
+                          options={fieldCandidates
+                            .filter(({ kind }) => kind === "categorical" || kind === "temporal")
+                            .map(({ name, kind }) => ({
+                              value: name,
+                              label: `${name}${kind === "temporal" ? " · 日期/时间" : " · 分类"}`,
+                            }))}
+                          placeholder="选择图表维度"
+                          triggerClassName={selectTriggerClass}
+                          ariaInvalid={Boolean(validation.errors.dimension_field)}
+                          ariaDescribedBy={
+                            validation.errors.dimension_field
+                              ? `${controlIdPrefix}-dimension-error`
+                              : undefined
+                          }
+                          onValueChange={selectDimension}
+                        />
+                        <RecordFieldError
+                          id={`${controlIdPrefix}-dimension-error`}
+                          error={validation.errors.dimension_field}
+                        />
+                      </label>
+                      <fieldset>
+                        <legend className={fieldLabelClass}>指标（最多 4 个）</legend>
+                        <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
+                          {fieldCandidates
+                            .filter(({ kind }) => kind === "numeric")
+                            .map(({ name }) => {
+                              const checked = selectedMetrics.includes(name);
+                              return (
+                                <label
+                                  key={name}
+                                  className="flex min-h-8 items-center gap-2 text-xs"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={!checked && selectedMetrics.length >= 4}
+                                    onChange={(event) =>
+                                      selectMetric(name, event.currentTarget.checked)
+                                    }
+                                    aria-label={`选择指标 ${name}`}
+                                  />
+                                  <span>{name}</span>
+                                </label>
+                              );
+                            })}
+                          {fieldCandidates.every(({ kind }) => kind !== "numeric") && (
+                            <p className="px-1 py-2 text-xs text-muted-foreground">
+                              查询结果没有受支持的数值字段。
+                            </p>
+                          )}
+                        </div>
+                        <RecordFieldError
+                          id="chart-metrics-error"
+                          error={validation.errors.metric_fields}
+                        />
+                      </fieldset>
+                      {selectedMetrics.length > 0 && (
+                        <fieldset className="mt-3">
+                          <legend className={fieldLabelClass}>系列显隐</legend>
+                          <div className="flex flex-wrap gap-x-4 gap-y-2">
+                            {selectedMetrics.map((field) => {
+                              const visible = !draft.hidden_metric_fields.includes(field);
+                              return (
+                                <label
+                                  key={field}
+                                  className="inline-flex items-center gap-2 text-xs"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={visible}
+                                    disabled={visible && visibleMetrics.length <= 1}
+                                    onChange={(event) => {
+                                      const checked = event.currentTarget.checked;
+                                      updateDraft((current) => {
+                                        const hiddenMetricFields = checked
+                                          ? current.hidden_metric_fields.filter(
+                                              (item) => item !== field,
+                                            )
+                                          : [...current.hidden_metric_fields, field];
+                                        const yAxisByMetric = {
+                                          ...current.y_axis_by_metric,
+                                        };
+                                        const nextVisibleMetrics = current.metric_fields.filter(
+                                          (item) => !hiddenMetricFields.includes(item),
+                                        );
+                                        const hasVisibleRightMetric = nextVisibleMetrics.some(
+                                          (item) => yAxisByMetric[item] === "right",
+                                        );
+                                        const hasVisibleLeftMetric = nextVisibleMetrics.some(
+                                          (item) => yAxisByMetric[item] !== "right",
+                                        );
+                                        if (hasVisibleRightMetric && !hasVisibleLeftMetric) {
+                                          for (const item of nextVisibleMetrics) {
+                                            yAxisByMetric[item] = "left";
+                                          }
+                                        }
+                                        return {
+                                          ...current,
+                                          hidden_metric_fields: hiddenMetricFields,
+                                          y_axis_by_metric: yAxisByMetric,
+                                        };
+                                      });
+                                    }}
+                                    aria-label={`${visible ? "显示" : "隐藏"}指标 ${field}`}
+                                  />
+                                  显示 {field}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </fieldset>
+                      )}
+                      {supportsMultipleYAxis && selectedMetrics.length > 1 && (
+                        <fieldset className="mt-3">
+                          <legend className={fieldLabelClass}>Y 轴分配</legend>
+                          <p className="mb-2 text-[11px] leading-4 text-muted-foreground">
+                            每个指标可分配到左轴或右轴；两侧使用各自的刻度。
+                          </p>
+                          <div className="space-y-2">
+                            {selectedMetrics.map((field) => {
+                              const isHidden = draft.hidden_metric_fields.includes(field);
+                              const canMoveToRight =
+                                isHidden ||
+                                visibleMetrics.some(
+                                  (other) =>
+                                    other !== field &&
+                                    (draft.y_axis_by_metric?.[other] ?? "left") === "left",
+                                );
+                              return (
+                                <label
+                                  key={field}
+                                  className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                                >
+                                  <span>{field}</span>
+                                  <ComposerSelect
+                                    id={`${controlIdPrefix}-y-axis-${selectedMetrics.indexOf(field)}`}
+                                    ariaLabel={`指标 ${field} 的 Y 轴`}
+                                    value={draft.y_axis_by_metric?.[field] ?? "left"}
+                                    options={[
+                                      { value: "left", label: "左 Y 轴" },
+                                      {
+                                        value: "right",
+                                        label: "右 Y 轴",
+                                        disabled: !canMoveToRight,
+                                      },
+                                    ]}
+                                    placeholder="选择 Y 轴"
+                                    triggerClassName={selectTriggerClass}
+                                    onValueChange={(value) =>
+                                      selectMetricYAxis(field, value as "left" | "right")
+                                    }
+                                  />
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <RecordFieldError
+                            id={`${controlIdPrefix}-y-axis-error`}
+                            error={validation.errors.y_axis_by_metric}
+                          />
+                        </fieldset>
+                      )}
+                      {supportsYAxisNames && visibleMetrics.length > 0 && (
+                        <fieldset className="mt-3">
+                          <legend className={fieldLabelClass}>Y 轴名称</legend>
+                          <p className="mb-2 text-[11px] leading-4 text-muted-foreground">
+                            可单独隐藏或重命名每侧数值轴；名称留空时使用该轴上的指标名称。
+                          </p>
+                          {editableYAxisSides.map((side) => {
+                            const axisLabel = side === "left" ? "左 Y 轴" : "右 Y 轴";
+                            const config = draft.y_axis_names?.[side];
+                            const visible =
+                              config?.visible ??
+                              (hasVisibleRightYAxis || Boolean(config?.text?.trim()));
+                            const defaultName = visibleMetrics
+                              .filter(
+                                (field) => (draft.y_axis_by_metric?.[field] ?? "left") === side,
+                              )
+                              .map((field) => draft.field_labels[field]?.trim() || field)
+                              .join(" / ");
+                            const error = validation.errors[`y_axis_names.${side}.text`];
+                            return (
+                              <div
+                                key={side}
+                                className="mb-3 grid gap-2 sm:grid-cols-[minmax(9rem,auto)_minmax(0,1fr)] sm:items-center"
+                              >
+                                <label className="inline-flex items-center gap-2 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={visible}
+                                    onChange={(event) =>
+                                      setYAxisName(side, { visible: event.currentTarget.checked })
+                                    }
+                                    aria-label={`显示${axisLabel}名称`}
+                                  />
+                                  显示{axisLabel}名称
+                                </label>
+                                <input
+                                  className={textControlClass}
+                                  value={config?.text ?? ""}
+                                  maxLength={36}
+                                  disabled={!visible}
+                                  placeholder={`默认：${defaultName}`}
+                                  aria-label={`${axisLabel}自定义名称`}
+                                  aria-invalid={Boolean(error || validation.errors.y_axis_names)}
+                                  aria-describedby={
+                                    error
+                                      ? `${controlIdPrefix}-y-axis-name-${side}-error`
+                                      : undefined
+                                  }
+                                  onChange={(event) =>
+                                    setYAxisName(side, { text: event.currentTarget.value })
+                                  }
+                                />
+                                <RecordFieldError
+                                  id={`${controlIdPrefix}-y-axis-name-${side}-error`}
+                                  error={error}
+                                />
+                              </div>
+                            );
+                          })}
+                          <RecordFieldError
+                            id={`${controlIdPrefix}-y-axis-names-error`}
+                            error={validation.errors.y_axis_names}
+                          />
+                        </fieldset>
+                      )}
+                    </>
                   )}
 
-                  <section className="mt-3 rounded-lg border border-border/70 p-3" aria-label="配色方案">
+                  <section
+                    className="mt-3 rounded-lg border border-border/70 p-3"
+                    aria-label="配色方案"
+                  >
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <h4 className={fieldLabelClass}>配色方案</h4>
                       {(Object.keys(draft.color_by_metric ?? {}).length > 0 ||
-                        Object.keys(draft.pie_category_colors?.by_category_key ?? {}).length > 0) && (
+                        Object.keys(draft.pie_category_colors?.by_category_key ?? {}).length >
+                          0) && (
                         <button
                           type="button"
                           className="text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
@@ -1592,7 +2074,11 @@ export function ChartResult({
                       )}
                     </div>
                     <p className="mb-2 text-[11px] leading-4 text-muted-foreground">
-                      自动配色跟随色板；单独设置的指标或类别颜色会保留为自定义颜色。
+                      {draft.chart_type === "scatter"
+                        ? "色板为数值颜色映射提供连续渐变；气泡大小使用同一数值的线性尺度。"
+                        : draft.chart_type === "heatmap"
+                          ? "色板为单元格数值提供连续颜色渐变。"
+                          : "自动配色跟随色板；单独设置的指标或类别颜色会保留为自定义颜色。"}
                     </p>
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                       {CHART_PALETTE_IDS.map((paletteId) => (
@@ -1603,11 +2089,14 @@ export function ChartResult({
                           className={`min-w-0 rounded-lg border px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${(draft.color_palette_id ?? "system_default") === paletteId ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/50"}`}
                           onClick={() => updatePalette(paletteId)}
                         >
-                          <span className="block truncate text-[11px] font-medium">{paletteLabels[paletteId]}</span>
+                          <span className="block truncate text-[11px] font-medium">
+                            {paletteLabels[paletteId]}
+                          </span>
                           <span className="mt-1.5 flex gap-1" aria-hidden="true">
                             {(paletteId === "system_default" && draft.chart_type === "pie"
                               ? CHART_COLOR_PALETTES.classic
-                              : CHART_COLOR_PALETTES[paletteId]).map((color, index) => (
+                              : CHART_COLOR_PALETTES[paletteId]
+                            ).map((color, index) => (
                               <span
                                 key={`${paletteId}-${index}`}
                                 className="h-2 min-w-0 flex-1 rounded-full"
@@ -1620,83 +2109,100 @@ export function ChartResult({
                     </div>
                   </section>
 
-                  {draft.chart_type !== "pie" && visibleMetrics.length > 0 && (
-                    <fieldset className="mt-3 space-y-2">
-                      <legend className={fieldLabelClass}>指标颜色</legend>
-                      {visibleMetrics.map((field) => {
-                        const color = draft.color_by_metric?.[field];
-                        const metricIndex = Math.max(0, visibleMetrics.indexOf(field));
-                        const selectedPalette = draft.color_palette_id ?? "system_default";
-                        const palette = selectedPalette === "system_default"
-                          ? CHART_COLOR_PALETTES.classic
-                          : CHART_COLOR_PALETTES[selectedPalette];
-                        const fallbackColor = palette[metricIndex % palette.length];
-                        return (
-                          <div key={field} className="rounded-lg border border-border/70 p-3">
-                            <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
-                              <span className="truncate text-xs font-medium">{field}</span>
-                              <span
-                                className="size-4 shrink-0 rounded-full border border-border/70"
-                                style={{
-                                  background: color?.mode === "linear_gradient"
-                                    ? `linear-gradient(to right, ${color.start_hex}, ${color.end_hex})`
-                                    : color?.hex ?? fallbackColor,
-                                  opacity: color?.opacity === undefined ? 1 : color.opacity / 100,
-                                }}
-                                aria-hidden="true"
-                              />
-                            </div>
-                            <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label={`指标 ${field} 的配色模式`}>
-                              {([
-                                ["auto", "跟随色板"],
-                                ["solid", "纯色"],
-                                ["linear_gradient", "渐变"],
-                              ] as const).map(([mode, label]) => (
-                                <button
-                                  key={mode}
-                                  type="button"
-                                  aria-pressed={mode === "auto" ? !color : color?.mode === mode}
-                                  className={`${colorModeButtonClass} ${(mode === "auto" ? !color : color?.mode === mode) ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                                  onClick={() => {
-                                    if (mode === "auto") updateMetricColor(field);
-                                    else updateMetricColorMode(field, mode);
+                  {!new Set<string>(["pie", "scatter", "heatmap"]).has(draft.chart_type) &&
+                    visibleMetrics.length > 0 && (
+                      <fieldset className="mt-3 space-y-2">
+                        <legend className={fieldLabelClass}>指标颜色</legend>
+                        {visibleMetrics.map((field) => {
+                          const color = draft.color_by_metric?.[field];
+                          const metricIndex = Math.max(0, visibleMetrics.indexOf(field));
+                          const selectedPalette = draft.color_palette_id ?? "system_default";
+                          const palette =
+                            selectedPalette === "system_default"
+                              ? CHART_COLOR_PALETTES.classic
+                              : CHART_COLOR_PALETTES[selectedPalette];
+                          const fallbackColor = palette[metricIndex % palette.length];
+                          return (
+                            <div key={field} className="rounded-lg border border-border/70 p-3">
+                              <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                                <span className="truncate text-xs font-medium">{field}</span>
+                                <span
+                                  className="size-4 shrink-0 rounded-full border border-border/70"
+                                  style={{
+                                    background:
+                                      color?.mode === "linear_gradient"
+                                        ? `linear-gradient(to right, ${color.start_hex}, ${color.end_hex})`
+                                        : (color?.hex ?? fallbackColor),
+                                    opacity: color?.opacity === undefined ? 1 : color.opacity / 100,
                                   }}
-                                >
-                                  {label}
-                                </button>
-                              ))}
+                                  aria-hidden="true"
+                                />
+                              </div>
+                              <div
+                                className="grid grid-cols-3 gap-1 rounded-lg bg-muted/60 p-1"
+                                role="group"
+                                aria-label={`指标 ${field} 的配色模式`}
+                              >
+                                {(
+                                  [
+                                    ["auto", "跟随色板"],
+                                    ["solid", "纯色"],
+                                    ["linear_gradient", "渐变"],
+                                  ] as const
+                                ).map(([mode, label]) => (
+                                  <button
+                                    key={mode}
+                                    type="button"
+                                    aria-pressed={mode === "auto" ? !color : color?.mode === mode}
+                                    className={`${colorModeButtonClass} ${(mode === "auto" ? !color : color?.mode === mode) ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                    onClick={() => {
+                                      if (mode === "auto") updateMetricColor(field);
+                                      else updateMetricColorMode(field, mode);
+                                    }}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                              {color && (
+                                <ColorSpecEditor
+                                  id={`${controlIdPrefix}-metric-color-${encodeURIComponent(field)}`}
+                                  color={color}
+                                  allowGradient
+                                  onChange={(nextColor) => updateMetricColor(field, nextColor)}
+                                />
+                              )}
                             </div>
-                            {color && (
-                              <ColorSpecEditor
-                                id={`${controlIdPrefix}-metric-color-${encodeURIComponent(field)}`}
-                                color={color}
-                                allowGradient
-                                onChange={(nextColor) => updateMetricColor(field, nextColor)}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </fieldset>
-                  )}
+                          );
+                        })}
+                      </fieldset>
+                    )}
 
                   {draft.chart_type === "pie" && pieColorChoices.length > 0 && (
                     <fieldset className="mt-3 space-y-2">
                       <legend className={fieldLabelClass}>类别颜色</legend>
                       {pieColorChoices.map(({ key, label }, index) => {
                         const color = draft.pie_category_colors?.by_category_key[key];
-                        const palette = CHART_COLOR_PALETTES[draft.color_palette_id ?? "system_default"];
+                        const palette =
+                          CHART_COLOR_PALETTES[draft.color_palette_id ?? "system_default"];
                         return (
                           <div key={key} className="rounded-lg border border-border/70 p-3">
                             <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
                               <span className="truncate text-xs font-medium">{label}</span>
                               <span
                                 className="size-4 shrink-0 rounded-full border border-border/70"
-                                style={{ backgroundColor: color?.hex ?? palette[index % palette.length], opacity: color ? color.opacity / 100 : 1 }}
+                                style={{
+                                  backgroundColor: color?.hex ?? palette[index % palette.length],
+                                  opacity: color ? color.opacity / 100 : 1,
+                                }}
                                 aria-hidden="true"
                               />
                             </div>
-                            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label={`类别 ${label} 的配色模式`}>
+                            <div
+                              className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1"
+                              role="group"
+                              aria-label={`类别 ${label} 的配色模式`}
+                            >
                               <button
                                 type="button"
                                 aria-pressed={!color}
@@ -1709,11 +2215,16 @@ export function ChartResult({
                                 type="button"
                                 aria-pressed={Boolean(color)}
                                 className={`${colorModeButtonClass} ${color ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                                onClick={() => updatePieCategoryColor(key, color ?? {
-                                  mode: "solid",
-                                  hex: palette[index % palette.length],
-                                  opacity: 100,
-                                })}
+                                onClick={() =>
+                                  updatePieCategoryColor(
+                                    key,
+                                    color ?? {
+                                      mode: "solid",
+                                      hex: palette[index % palette.length],
+                                      opacity: 100,
+                                    },
+                                  )
+                                }
                               >
                                 自定义纯色
                               </button>
@@ -1724,7 +2235,8 @@ export function ChartResult({
                                 color={color}
                                 allowGradient={false}
                                 onChange={(nextColor) => {
-                                  if (nextColor.mode === "solid") updatePieCategoryColor(key, nextColor);
+                                  if (nextColor.mode === "solid")
+                                    updatePieCategoryColor(key, nextColor);
                                 }}
                               />
                             )}
@@ -1754,103 +2266,179 @@ export function ChartResult({
                       />
                     </label>
                   )}
-                </section>
-
-                <section aria-labelledby="chart-sort-title">
-                  <h4 id="chart-sort-title" className={fieldLabelClass}>
-                    排序
-                  </h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label>
-                      <span className="sr-only">排序方式</span>
+                  {draft.chart_type === "bar" && (
+                    <label className="mt-3 block">
+                      <span className={fieldLabelClass}>系列构成</span>
                       <ComposerSelect
-                        id={`${controlIdPrefix}-sort-mode`}
-                        ariaLabel="图表排序方式"
-                        value={draft.sort.mode}
+                        id={`${controlIdPrefix}-bar-stack-mode`}
+                        ariaLabel="柱状图系列构成"
+                        value={draft.bar_stack_mode ?? "grouped"}
                         options={[
-                          { value: "original", label: "查询原序" },
-                          {
-                            value: "dimension",
-                            label: "按维度",
-                            disabled: draft.chart_type === "pie",
-                          },
-                          ...(draft.chart_type !== "line"
-                            ? [{ value: "metric", label: "按指标" }]
-                            : []),
+                          { value: "grouped", label: "分组柱状图" },
+                          { value: "stacked", label: "堆叠柱状图" },
+                          { value: "percent", label: "百分比堆叠" },
                         ]}
-                        placeholder="选择排序方式"
+                        placeholder="选择柱状图系列构成"
                         triggerClassName={selectTriggerClass}
-                        onValueChange={(mode) => {
-                          updateDraft((current) => {
-                            const nextSort =
-                              mode === "dimension"
-                                ? {
-                                    mode: "dimension" as const,
-                                    field: current.dimension_field,
-                                    direction: "asc" as const,
-                                  }
-                                : mode === "metric"
-                                  ? {
-                                      mode: "metric" as const,
-                                      field: visibleMetrics[0] ?? "",
-                                      direction: "desc" as const,
-                                    }
-                                  : { mode: "original" as const };
-                            return { ...current, sort: nextSort };
-                          });
+                        onValueChange={(value) => {
+                          const barStackMode = value as "grouped" | "stacked" | "percent";
+                          updateDraft((current) => ({
+                            ...current,
+                            bar_stack_mode: barStackMode,
+                            ...(barStackMode === "percent"
+                              ? { annotations: { reference_lines: [], reference_areas: [] } }
+                              : {}),
+                          }));
                         }}
                       />
+                      {validation.errors.bar_stack_mode && (
+                        <RecordFieldError
+                          id={`${controlIdPrefix}-bar-stack-error`}
+                          error={validation.errors.bar_stack_mode}
+                        />
+                      )}
+                      {draft.bar_stack_mode === "percent" && (
+                        <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                          每行以当前可见指标之和为分母；仅对本轮已返回行计算比例。
+                        </p>
+                      )}
                     </label>
-                    {draft.sort.mode !== "original" && (
+                  )}
+                  {draft.chart_type === "step_line" && (
+                    <label className="mt-3 block">
+                      <span className={fieldLabelClass}>阶梯变化位置</span>
+                      <ComposerSelect
+                        id={`${controlIdPrefix}-step-position`}
+                        ariaLabel="阶梯线变化位置"
+                        value={draft.step_position ?? "end"}
+                        options={[
+                          { value: "start", label: "开始" },
+                          { value: "middle", label: "中间" },
+                          { value: "end", label: "结束（默认）" },
+                        ]}
+                        placeholder="选择阶梯位置"
+                        triggerClassName={selectTriggerClass}
+                        onValueChange={(value) =>
+                          updateDraft((current) => ({
+                            ...current,
+                            step_position: value as "start" | "middle" | "end",
+                          }))
+                        }
+                      />
+                    </label>
+                  )}
+                </section>
+
+                {draft.chart_type !== "scatter" && draft.chart_type !== "heatmap" && (
+                  <section aria-labelledby="chart-sort-title">
+                    <h4 id="chart-sort-title" className={fieldLabelClass}>
+                      排序
+                    </h4>
+                    <div className="grid grid-cols-2 gap-2">
                       <label>
-                        <span className="sr-only">排序方向</span>
+                        <span className="sr-only">排序方式</span>
                         <ComposerSelect
-                          id={`${controlIdPrefix}-sort-direction`}
-                          ariaLabel="图表排序方向"
-                          value={draft.sort.direction}
+                          id={`${controlIdPrefix}-sort-mode`}
+                          ariaLabel="图表排序方式"
+                          value={draft.sort.mode}
                           options={[
-                            { value: "asc", label: "升序" },
-                            { value: "desc", label: "降序" },
+                            { value: "original", label: "查询原序" },
+                            {
+                              value: "dimension",
+                              label: "按维度",
+                              disabled:
+                                draft.chart_type === "pie" ||
+                                (draft.chart_type === "step_line" && !temporalDimension),
+                            },
+                            ...(!new Set<string>(["line", "area", "step_line"]).has(
+                              draft.chart_type,
+                            )
+                              ? [{ value: "metric", label: "按指标" }]
+                              : []),
                           ]}
-                          placeholder="选择排序方向"
+                          placeholder="选择排序方式"
                           triggerClassName={selectTriggerClass}
-                          onValueChange={(value) => {
-                            const direction = value as "asc" | "desc";
+                          onValueChange={(mode) => {
+                            updateDraft((current) => {
+                              const nextSort =
+                                mode === "dimension"
+                                  ? {
+                                      mode: "dimension" as const,
+                                      field: current.dimension_field,
+                                      direction: "asc" as const,
+                                    }
+                                  : mode === "metric"
+                                    ? {
+                                        mode: "metric" as const,
+                                        field: visibleMetrics[0] ?? "",
+                                        direction: "desc" as const,
+                                      }
+                                    : { mode: "original" as const };
+                              return { ...current, sort: nextSort };
+                            });
+                          }}
+                        />
+                      </label>
+                      {draft.sort.mode !== "original" && (
+                        <label>
+                          <span className="sr-only">排序方向</span>
+                          <ComposerSelect
+                            id={`${controlIdPrefix}-sort-direction`}
+                            ariaLabel="图表排序方向"
+                            value={draft.sort.direction}
+                            options={[
+                              { value: "asc", label: "升序" },
+                              { value: "desc", label: "降序" },
+                            ]}
+                            placeholder="选择排序方向"
+                            triggerClassName={selectTriggerClass}
+                            onValueChange={(value) => {
+                              const direction = value as "asc" | "desc";
+                              updateDraft((current) => ({
+                                ...current,
+                                sort: {
+                                  ...current.sort,
+                                  direction,
+                                } as ChartViewConfiguration["sort"],
+                              }));
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                    {draft.sort.mode === "metric" && (
+                      <label className="mt-2 block">
+                        <span className={fieldLabelClass}>排序指标</span>
+                        <ComposerSelect
+                          id={`${controlIdPrefix}-sort-field`}
+                          ariaLabel="排序指标"
+                          value={draft.sort.field}
+                          options={visibleMetrics.map((field) => ({ value: field, label: field }))}
+                          placeholder="选择排序指标"
+                          triggerClassName={selectTriggerClass}
+                          onValueChange={(field) => {
                             updateDraft((current) => ({
                               ...current,
-                              sort: { ...current.sort, direction } as ChartViewConfiguration["sort"],
+                              sort: { ...current.sort, field } as ChartViewConfiguration["sort"],
                             }));
                           }}
                         />
                       </label>
                     )}
-                  </div>
-                  {draft.sort.mode === "metric" && (
-                    <label className="mt-2 block">
-                      <span className={fieldLabelClass}>排序指标</span>
-                      <ComposerSelect
-                        id={`${controlIdPrefix}-sort-field`}
-                        ariaLabel="排序指标"
-                        value={draft.sort.field}
-                        options={visibleMetrics.map((field) => ({ value: field, label: field }))}
-                        placeholder="选择排序指标"
-                        triggerClassName={selectTriggerClass}
-                        onValueChange={(field) => {
-                          updateDraft((current) => ({
-                            ...current,
-                            sort: { ...current.sort, field } as ChartViewConfiguration["sort"],
-                          }));
-                        }}
-                      />
-                    </label>
-                  )}
-                  <RecordFieldError id="chart-sort-error" error={validation.errors.sort} />
-                  {temporalDimension && draft.chart_type === "line" && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      时间维度按时间值排序；折线图不按指标重排。
-                    </p>
-                  )}
-                </section>
+                    <RecordFieldError id="chart-sort-error" error={validation.errors.sort} />
+                    {temporalDimension &&
+                      new Set<string>(["line", "area", "step_line"]).has(draft.chart_type) && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          时间维度按时间值排序；折线类图表不按指标重排。
+                        </p>
+                      )}
+                    {draft.chart_type === "step_line" && !temporalDimension && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        分类阶梯线使用查询返回顺序；若需要特定阶段顺序，请在查询中明确排序。
+                      </p>
+                    )}
+                  </section>
+                )}
 
                 <section aria-labelledby="chart-title-format-title">
                   <h4 id="chart-title-format-title" className={fieldLabelClass}>
@@ -1905,8 +2493,7 @@ export function ChartResult({
                           });
                       };
                       const formatError = validation.errors[`format_by_field.${field}`];
-                      const formatErrorId =
-                        `${controlIdPrefix}-format-${encodeURIComponent(field)}-error`;
+                      const formatErrorId = `${controlIdPrefix}-format-${encodeURIComponent(field)}-error`;
                       return (
                         <fieldset key={field} className="rounded-md border border-border/70 p-3">
                           <legend className="px-1 text-xs font-medium">{field}</legend>
@@ -2037,16 +2624,12 @@ export function ChartResult({
                               placeholder="选择小数位"
                               triggerClassName={selectTriggerClass}
                               onValueChange={(value) => {
-                                const nextPlaces =
-                                  value === "auto" ? "auto" : Number(value);
+                                const nextPlaces = value === "auto" ? "auto" : Number(value);
                                 updateFormat(field, { ...format, decimal_places: nextPlaces });
                               }}
                             />
                           </label>
-                          <RecordFieldError
-                            id={formatErrorId}
-                            error={formatError}
-                          />
+                          <RecordFieldError id={formatErrorId} error={formatError} />
                         </fieldset>
                       );
                     })}
@@ -2057,6 +2640,165 @@ export function ChartResult({
                       error={validation.errors.format_by_field}
                     />
                   )}
+                </section>
+
+                <section aria-labelledby="chart-annotations-title">
+                  <h4 id="chart-annotations-title" className={fieldLabelClass}>
+                    参考标注和统计范围
+                  </h4>
+                  {!supportsReferenceAnnotations ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      均值、峰值和目标线适用于折线、面积、阶梯线及普通柱状图；百分比堆叠以可见指标行内合计为分母。
+                    </p>
+                  ) : (
+                    <>
+                      <div className="space-y-3">
+                        {visibleMetrics.map((field) => {
+                          const annotations = draft.annotations?.reference_lines ?? [];
+                          return (
+                            <fieldset
+                              key={field}
+                              className="rounded-md border border-border/70 p-2"
+                            >
+                              <legend className="px-1 text-xs font-medium">
+                                {draft.field_labels[field]?.trim() || field}
+                              </legend>
+                              {(["mean", "peak"] as const).map((kind) => {
+                                const annotation = annotations.find(
+                                  (line) => line.metric_field === field && line.kind === kind,
+                                );
+                                return (
+                                  <div
+                                    key={kind}
+                                    className="flex flex-wrap items-center gap-2 py-1"
+                                  >
+                                    <label className="flex items-center gap-2 text-xs">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(annotation)}
+                                        onChange={(event) =>
+                                          updateStatisticAnnotation(field, kind, {
+                                            enabled: event.currentTarget.checked,
+                                          })
+                                        }
+                                      />
+                                      {kind === "mean" ? "均值参考线" : "峰值标注"}
+                                    </label>
+                                    {annotation && (
+                                      <ComposerSelect
+                                        id={`${controlIdPrefix}-annotation-${kind}-${encodeURIComponent(field)}`}
+                                        ariaLabel={`${field} ${kind === "mean" ? "均值" : "峰值"}统计范围`}
+                                        value={annotation.scope}
+                                        options={[
+                                          { value: "returned_rows", label: "已返回行" },
+                                          { value: "viewport", label: "当前缩放窗口" },
+                                        ]}
+                                        placeholder="统计范围"
+                                        triggerClassName="h-8 w-40 max-w-none"
+                                        onValueChange={(value) =>
+                                          updateStatisticAnnotation(field, kind, {
+                                            scope: value as "returned_rows" | "viewport",
+                                          })
+                                        }
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {annotations.some(
+                                (line) => line.metric_field === field && line.kind === "value",
+                              ) && (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    updateDraft((current) => ({
+                                      ...current,
+                                      annotations: {
+                                        ...(current.annotations ?? {
+                                          reference_lines: [],
+                                          reference_areas: [],
+                                        }),
+                                        reference_lines: (
+                                          current.annotations?.reference_lines ?? []
+                                        ).filter(
+                                          (line) =>
+                                            !(line.metric_field === field && line.kind === "value"),
+                                        ),
+                                      },
+                                    }))
+                                  }
+                                >
+                                  移除目标线
+                                </Button>
+                              )}
+                            </fieldset>
+                          );
+                        })}
+                      </div>
+                      {visibleMetrics.length > 0 && (
+                        <div className="mt-3 grid gap-2 rounded-md border border-border/70 p-2 sm:grid-cols-2">
+                          <label>
+                            <span className={fieldLabelClass}>目标线指标</span>
+                            <ComposerSelect
+                              id={`${controlIdPrefix}-annotation-target-metric`}
+                              ariaLabel="目标线指标"
+                              value={
+                                visibleMetrics.includes(targetMetricField)
+                                  ? targetMetricField
+                                  : visibleMetrics[0]
+                              }
+                              options={visibleMetrics.map((field) => ({
+                                value: field,
+                                label: draft.field_labels[field]?.trim() || field,
+                              }))}
+                              placeholder="选择指标"
+                              triggerClassName={selectTriggerClass}
+                              onValueChange={setTargetMetricField}
+                            />
+                          </label>
+                          <label>
+                            <span className={fieldLabelClass}>目标值</span>
+                            <input
+                              className={textControlClass}
+                              inputMode="decimal"
+                              value={targetValue}
+                              maxLength={256}
+                              aria-label="目标线数值"
+                              placeholder="例如 125.5"
+                              onChange={(event) => setTargetValue(event.currentTarget.value)}
+                            />
+                          </label>
+                          <label className="sm:col-span-2">
+                            <span className={fieldLabelClass}>目标线名称</span>
+                            <input
+                              className={textControlClass}
+                              value={targetLabel}
+                              maxLength={80}
+                              aria-label="目标线名称"
+                              onChange={(event) => setTargetLabel(event.currentTarget.value)}
+                            />
+                          </label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="sm:col-span-2 sm:justify-self-start"
+                            disabled={
+                              !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(targetValue.trim()) ||
+                              !targetLabel.trim()
+                            }
+                            onClick={saveTargetAnnotation}
+                          >
+                            添加或更新目标线
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                    统计使用原始十进制值和有效数值；“已返回行”仅指本轮返回的图表行，不代表整个业务总体。
+                  </p>
                 </section>
 
                 <section aria-labelledby="chart-labels-title">
@@ -2144,10 +2886,13 @@ export function ChartResult({
                 <SqlDisclosure code={queryArtifact.sql} />
                 <h5 className="mb-3 break-words text-sm font-semibold leading-5">{draft.title}</h5>
                 {previewOption ? (
-                  <EChartCanvas
+                  <ChartCanvas
                     option={previewOption}
                     ariaLabel={`${draft.title}，草稿预览`}
                     className="h-64 w-full min-w-0 rounded-lg border border-border/70 bg-background sm:h-80"
+                    sourceKey={`${previewCanvasSourceKey}:preview`}
+                    sourceRows={previewRows}
+                    interactive={false}
                   />
                 ) : (
                   <div

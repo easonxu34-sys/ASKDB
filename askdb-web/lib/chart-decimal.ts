@@ -57,6 +57,21 @@ export function sumDecimalValues(values: unknown[]): DecimalParts | undefined {
   return { coefficient, scale };
 }
 
+export function averageDecimalValues(values: unknown[]): string | undefined {
+  if (values.length === 0) return undefined;
+  const total = sumDecimalValues(values);
+  if (!total) return undefined;
+  const outputScale = Math.max(total.scale, 24);
+  const numerator = total.coefficient * powerOfTen(outputScale - total.scale);
+  const negative = numerator < BigInt("0");
+  const absoluteNumerator = negative ? -numerator : numerator;
+  const denominator = BigInt(values.length);
+  let quotient = absoluteNumerator / denominator;
+  const remainder = absoluteNumerator % denominator;
+  if (remainder * BigInt("2") >= denominator) quotient += BigInt("1");
+  return decimalText({ coefficient: negative ? -quotient : quotient, scale: outputScale });
+}
+
 export function decimalText(parts: DecimalParts) {
   const negative = parts.coefficient < BigInt("0");
   const digits = (negative ? -parts.coefficient : parts.coefficient).toString();

@@ -145,6 +145,125 @@ test("uses an independent chart view override while keeping the recommendation i
   assert.deepEqual(part.data.undoHistory, []);
 });
 
+test("normalizes annotations, validates their data-bound targets, and reads schema four", async () => {
+  const chatOutput = await import("../lib/chat-output.ts");
+  const query = chartQuery();
+  const artifact = {
+    kind: "echarts_chart",
+    schema_version: 1,
+    source_result_id: "result-1",
+    chart_type: "bar",
+    x_field: "region",
+    series_fields: ["revenue"],
+    title: "revenue by region",
+  };
+  const recommended = chatOutput.createRecommendedChartView(artifact, query);
+  assert.deepEqual(recommended.annotations, { reference_lines: [], reference_areas: [] });
+
+  const candidate = {
+    ...recommended,
+    annotations: {
+      reference_lines: [
+        {
+          id: "target-1",
+          metric_field: "revenue",
+          kind: "value",
+          value: "1.2500",
+          scope: "returned_rows",
+          label: "目标",
+        },
+        {
+          id: "mean-1",
+          metric_field: "revenue",
+          kind: "mean",
+          scope: "viewport",
+          label: "窗口均值",
+        },
+        {
+          id: "peak-1",
+          metric_field: "revenue",
+          kind: "peak",
+          scope: "returned_rows",
+          label: "峰值",
+        },
+      ],
+      reference_areas: [{ id: "area-1", source_row_indices: [1, 0, 1], label: "重点区间" }],
+    },
+  };
+  const validation = chatOutput.validateChartView(candidate, query);
+  assert.deepEqual(validation.errors, {});
+  assert.deepEqual(
+    validation.view.annotations.reference_lines,
+    candidate.annotations.reference_lines,
+  );
+  assert.deepEqual(validation.view.annotations.reference_areas, [
+    { id: "area-1", source_row_indices: [1, 0], label: "重点区间" },
+  ]);
+  assert.equal(chatOutput.chartViewsEqual(recommended, validation.view), false);
+  assert.equal(
+    chatOutput.readChartViewOverride({
+      kind: "chart_view_override",
+      schema_version: 4,
+      source_result_id: "result-1",
+      view: candidate,
+    }).schema_version,
+    4,
+  );
+});
+
+test("rejects annotation fields, values, scopes, and source row indexes outside the chart contract", async () => {
+  const chatOutput = await import("../lib/chat-output.ts");
+  const query = chartQuery();
+  const artifact = {
+    kind: "echarts_chart",
+    schema_version: 1,
+    source_result_id: "result-1",
+    chart_type: "bar",
+    x_field: "region",
+    series_fields: ["revenue"],
+    title: "revenue by region",
+  };
+  const recommended = chatOutput.createRecommendedChartView(artifact, query);
+  const invalid = chatOutput.validateChartView(
+    {
+      ...recommended,
+      annotations: {
+        reference_lines: [
+          {
+            id: "bad-line",
+            metric_field: "region",
+            kind: "value",
+            value: "Infinity",
+            scope: "all_rows",
+            label: "x".repeat(81),
+          },
+        ],
+        reference_areas: [{ id: "bad-area", source_row_indices: [2], label: "超范围" }],
+      },
+    },
+    query,
+  );
+  assert.ok(invalid.errors.annotations);
+
+  const tooMany = chatOutput.validateChartView(
+    {
+      ...recommended,
+      annotations: {
+        reference_lines: Array.from({ length: 9 }, (_, index) => ({
+          id: `line-${index}`,
+          metric_field: "revenue",
+          kind: "mean",
+          scope: "returned_rows",
+          label: `均值 ${index}`,
+        })),
+        reference_areas: [],
+      },
+    },
+    query,
+  );
+  assert.ok(tooMany.errors.annotations);
+});
+
 test("ignores unknown versions and invalid or mismatched overrides", async () => {
   const chatOutput = await import("../lib/chat-output.ts");
   const query = {
@@ -208,9 +327,7 @@ test("ignores unknown versions and invalid or mismatched overrides", async () =>
       schema_version: 2,
       source_result_id: "result-1",
       view: { ...recommended, color_by_metric: { revenue: "teal" } },
-      undo_history: [
-        { view: recommended, summary: "修改指标颜色", origin: "manual" },
-      ],
+      undo_history: [{ view: recommended, summary: "修改指标颜色", origin: "manual" }],
     },
   ]);
   assert.equal(v2Part.data.view.color_by_metric.revenue, "teal");
@@ -264,10 +381,7 @@ test("reports unusable recommendations without hiding the query result", async (
 test("validates fixed metric palettes and rejects CSS colors or pie metric colors", async () => {
   const { validateChartView } = await import("../lib/chat-output.ts");
   const query = chartQuery();
-  const accepted = validateChartView(
-    chartView({ color_by_metric: { revenue: "teal" } }),
-    query,
-  );
+  const accepted = validateChartView(chartView({ color_by_metric: { revenue: "teal" } }), query);
   assert.equal(accepted.view.color_by_metric.revenue, "teal");
 
   assert.ok(
@@ -279,10 +393,8 @@ test("validates fixed metric palettes and rejects CSS colors or pie metric color
       .color_by_metric,
   );
   assert.ok(
-    validateChartView(
-      chartView({ chart_type: "pie", color_by_metric: { revenue: "blue" } }),
-      query,
-    ).errors.chart_type,
+    validateChartView(chartView({ chart_type: "pie", color_by_metric: { revenue: "blue" } }), query)
+      .errors.chart_type,
   );
 });
 
@@ -300,14 +412,8 @@ test("validates typed pie category keys and detects missing or ambiguous labels"
   const stringKey = chartCategoryKey("1");
   const numericKey = chartCategoryKey(1);
   assert.notEqual(stringKey, numericKey);
-  assert.deepEqual(
-    resolvePieCategoryLabel(query, "region", "1"),
-    { status: "ambiguous" },
-  );
-  assert.deepEqual(
-    resolvePieCategoryLabel(query, "region", "missing"),
-    { status: "not_found" },
-  );
+  assert.deepEqual(resolvePieCategoryLabel(query, "region", "1"), { status: "ambiguous" });
+  assert.deepEqual(resolvePieCategoryLabel(query, "region", "missing"), { status: "not_found" });
 
   const valid = validateChartView(
     chartView({
@@ -325,10 +431,10 @@ test("validates typed pie category keys and detects missing or ambiguous labels"
     [stringKey]: "blue",
     [numericKey]: "red",
   });
-  assert.deepEqual(
-    resolvePieCategoryLabel(chartQuery(), "region", "east"),
-    { status: "matched", category_key: chartCategoryKey("east") },
-  );
+  assert.deepEqual(resolvePieCategoryLabel(chartQuery(), "region", "east"), {
+    status: "matched",
+    category_key: chartCategoryKey("east"),
+  });
   assert.ok(
     validateChartView(
       chartView({
@@ -371,12 +477,20 @@ test("validates current-result Top N field, chart type, count and matching sort"
   const invalid = [
     { ...topNView, current_result_top_n: { field: "unknown", count: 3, direction: "desc" } },
     { ...topNView, hidden_metric_fields: ["revenue"] },
-    { ...topNView, metric_fields: ["orders"], format_by_field: { orders: { mode: "raw", decimal_places: "auto" } } },
+    {
+      ...topNView,
+      metric_fields: ["orders"],
+      format_by_field: { orders: { mode: "raw", decimal_places: "auto" } },
+    },
     { ...topNView, current_result_top_n: { field: "label", count: 3, direction: "desc" } },
     { ...topNView, current_result_top_n: { field: "revenue", count: 0, direction: "desc" } },
     { ...topNView, current_result_top_n: { field: "revenue", count: 101, direction: "desc" } },
     { ...topNView, sort: { mode: "metric", field: "revenue", direction: "asc" } },
-    { ...topNView, chart_type: "line", sort: { mode: "dimension", field: "region", direction: "asc" } },
+    {
+      ...topNView,
+      chart_type: "line",
+      sort: { mode: "dimension", field: "region", direction: "asc" },
+    },
   ];
   for (const view of invalid) {
     assert.equal(validateChartView(view, query).view, undefined);
@@ -408,8 +522,7 @@ test("manual sort, chart type and ranking field changes clear Top N while displa
     undefined,
   );
   assert.equal(
-    clearTopNForManualChange(ranked, { ...ranked, metric_fields: ["orders"] })
-      .current_result_top_n,
+    clearTopNForManualChange(ranked, { ...ranked, metric_fields: ["orders"] }).current_result_top_n,
     undefined,
   );
 });
@@ -469,7 +582,11 @@ test("ignores invalid undo history without rejecting a valid current override", 
       source_result_id: "result-1",
       view: { ...recommended, title: "Saved view" },
       undo_history: [
-        { view: { ...recommended, dimension_field: "missing" }, summary: "invalid", origin: "manual" },
+        {
+          view: { ...recommended, dimension_field: "missing" },
+          summary: "invalid",
+          origin: "manual",
+        },
       ],
     },
   ]);

@@ -15,7 +15,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from api.routes.chart_edits import router as chart_edits_router
 from api.routes.chat import router as chat_router
 from api.routes.chat_options import router as chat_options_router
 from api.routes.auth import router as auth_router
@@ -238,7 +237,6 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(admin_users_router)
     app.include_router(chat_router)
-    app.include_router(chart_edits_router)
     app.include_router(chat_options_router)
     app.include_router(model_settings_router)
     app.include_router(wren_settings_router)
@@ -253,7 +251,6 @@ def create_app(
         if request.url.path.startswith((
             "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
             "/v1/settings/wren", "/v1/data-sources",
-            "/v1/chart-edits",
             "/v1/threads",
             "/v1/business-rules",
             "/v1/memories", "/v1/query-examples",
@@ -281,7 +278,6 @@ def create_app(
         if request.url.path.startswith((
             "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
             "/v1/settings/wren", "/v1/data-sources",
-            "/v1/chart-edits",
             "/v1/threads",
             "/v1/business-rules",
         )):
@@ -290,8 +286,6 @@ def create_app(
                 code, message = "AUTH_INPUT_INVALID", "登录或密码字段无效，请检查后重试。"
             elif path.startswith("/v1/admin"):
                 code, message = "ACCOUNT_INPUT_INVALID", "账号字段无效，请检查后重试。"
-            elif path.startswith("/v1/chart-edits"):
-                code, message = "CHART_EDIT_INPUT_INVALID", "图表编辑请求字段无效。"
             elif path.startswith("/v1/chat"):
                 code, message = "CHAT_REQUEST_INVALID", "聊天请求格式无效，请检查后重试。"
             elif path.startswith("/v1/threads"):

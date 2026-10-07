@@ -1,11 +1,12 @@
 "use client";
 
-import { ArrowRightIcon, DatabaseIcon, KeyRoundIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowRightIcon, KeyRoundIcon, LoaderCircleIcon } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { authMutation, fetchCurrentUser, responseError } from "@/lib/auth-api";
 import { PasswordField } from "@/components/auth/password-field";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
+import { AskDbMark, AskDbWordmark } from "@/components/brand/askdb-logo";
 
 export function PasswordForm({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
@@ -90,8 +91,10 @@ export function PasswordForm({ embedded = false }: { embedded?: boolean }) {
         {!embedded && (
           <>
             <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-2xl bg-[#e8e3d8] text-[#5c554c]"><DatabaseIcon className="size-5" aria-hidden="true" /></div>
-              <div><p className="text-sm font-semibold">AskDB</p><p className="text-[11px] text-[#89847a]">账号安全</p></div>
+              <span className="flex size-10 shrink-0 items-center justify-center">
+                <AskDbMark className="size-6" />
+              </span>
+              <div><p><AskDbWordmark className="text-sm" /></p><p className="text-[11px] text-[#89847a]">账号安全</p></div>
             </div>
             <p className="mt-10 text-xs font-medium tracking-[0.15em] text-[#a1694b]">{firstLogin ? "首次登录" : "账户设置"}</p>
             <h1 className="mt-3 font-serif text-3xl tracking-tight">{firstLogin ? "请设置新密码" : "修改密码"}</h1>

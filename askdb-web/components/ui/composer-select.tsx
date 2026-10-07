@@ -21,6 +21,7 @@ type ComposerSelectProps = {
   ariaLabel: string;
   id: string;
   disabled?: boolean;
+  ariaRequired?: boolean;
   ariaInvalid?: boolean;
   ariaDescribedBy?: string;
   triggerClassName?: string;
@@ -34,6 +35,7 @@ export function ComposerSelect({
   ariaLabel,
   id,
   disabled = false,
+  ariaRequired,
   ariaInvalid,
   ariaDescribedBy,
   triggerClassName,
@@ -55,6 +57,7 @@ export function ComposerSelect({
       <Select.Trigger
         id={id}
         aria-label={ariaLabel}
+        aria-required={ariaRequired}
         aria-invalid={ariaInvalid}
         aria-describedby={ariaDescribedBy}
         className={cn(

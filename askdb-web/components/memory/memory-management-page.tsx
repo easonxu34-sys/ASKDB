@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AdminGate } from "@/components/auth/admin-gate";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
 import { Button } from "@/components/ui/button";
+import { ComposerSelect } from "@/components/ui/composer-select";
 import { ArrowUpRightIcon, BookOpenIcon, BrainIcon } from "lucide-react";
 import { fetchCurrentUser, type AuthUser } from "@/lib/auth-api";
 import { fetchDataSourceCatalog, type DataSourceCatalog } from "@/lib/data-sources";
@@ -206,10 +207,19 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
         <div className="mx-auto max-w-5xl">
           <div className="mb-4 flex flex-wrap items-center justify-end gap-2 font-sans">
             <label htmlFor="memory-source" className="text-xs text-[#89847a]">数据源</label>
-            <select id="memory-source" value={sourceId} onChange={(event) => setSourceId(event.target.value)} disabled={sources.length === 0} className="max-w-[min(22rem,70vw)] rounded-lg border border-[#e3dbcf] bg-[#fbfaf7] px-3 py-2 text-xs text-[#514b42] outline-none focus:border-[#c57650] focus:ring-2 focus:ring-[#c57650]/20">
-              {sources.length === 0 && <option value="">没有可用数据源</option>}
-              {sources.map((source) => <option key={source.id} value={source.id}>{source.display_name}</option>)}
-            </select>
+            <ComposerSelect
+              id="memory-source"
+              ariaLabel="数据源"
+              value={sourceId}
+              disabled={sources.length === 0}
+              placeholder="选择数据源"
+              options={[
+                ...(sources.length === 0 ? [{ value: "", label: "没有可用数据源" }] : []),
+                ...sources.map((source) => ({ value: source.id, label: source.display_name })),
+              ]}
+              onValueChange={setSourceId}
+              triggerClassName="h-9 max-w-[min(22rem,70vw)] rounded-lg border border-[#e3dbcf] bg-[#fbfaf7] px-3 py-2 text-xs text-[#514b42] focus-visible:ring-[#c57650]/20"
+            />
             <Button variant="outline" size="sm" disabled={refreshing || !sourceId} onClick={() => void load(true)}>{refreshing ? "刷新中…" : "刷新"}</Button>
           </div>
           <section className="rounded-2xl border border-[#e7e0d5] bg-[#fbfaf7] p-4 shadow-[0_2px_10px_rgba(66,53,37,0.025)] sm:p-5">
@@ -220,17 +230,25 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
             </div>
             <div className="flex items-center gap-2 font-sans">
               <label htmlFor="memory-review-filter" className="text-[11px] text-[#89847a]">审核状态</label>
-              <select id="memory-review-filter" value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)} className="rounded-lg border border-[#e7e0d5] bg-[#fbfaf7] px-2.5 py-1.5 text-xs outline-none focus:border-[#c57650]">
-                <option value="">全部</option>
-                <option value="pending">待审核</option>
-                <option value="needs_clarification">等你补充</option>
-                <option value="needs_revalidation">需要重新确认</option>
-                <option value="approved">已审核通过</option>
-                <option value="rejected">已拒绝</option>
-                <option value="withdrawn">已撤回</option>
-                <option value="revoked">已撤销</option>
-                <option value="expired">已过期</option>
-              </select>
+              <ComposerSelect
+                id="memory-review-filter"
+                ariaLabel="审核状态"
+                value={reviewFilter}
+                placeholder="全部"
+                options={[
+                  { value: "", label: "全部" },
+                  { value: "pending", label: "待审核" },
+                  { value: "needs_clarification", label: "等你补充" },
+                  { value: "needs_revalidation", label: "需要重新确认" },
+                  { value: "approved", label: "已审核通过" },
+                  { value: "rejected", label: "已拒绝" },
+                  { value: "withdrawn", label: "已撤回" },
+                  { value: "revoked", label: "已撤销" },
+                  { value: "expired", label: "已过期" },
+                ]}
+                onValueChange={setReviewFilter}
+                triggerClassName="h-8 rounded-lg border border-[#e7e0d5] bg-[#fbfaf7] px-2.5 py-1.5 text-xs focus-visible:border-[#c57650]"
+              />
             </div>
           </div>
 
@@ -300,9 +318,21 @@ function QueryExampleCard({ candidate, user, isAdmin, sourceName, working, runAc
       {isAdmin && candidate.review_status === "pending" && <ActionButton busy={working === id} onClick={() => runAction(id, () => queryExampleAction(id, "approve", transition), "审核已通过，查询示例还没有生效；请在上方激活准备好的语料版本。")}>审核并准备</ActionButton>}
       {isAdmin && candidate.review_status === "needs_revalidation" && <ActionButton busy={working === id} onClick={() => runAction(id, () => queryExampleAction(id, "revalidate", transition), "已重新检查查询示例；如准备了新语料，请单独激活。")}>重新检查</ActionButton>}
       {isAdmin && ["pending", "needs_revalidation"].includes(candidate.review_status) && <>
-        <select aria-label="拒绝原因" value={reason} onChange={(event) => setReason(event.target.value)} className="h-7 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-2 font-sans text-[10px] text-[#655e54] outline-none focus:border-[#c57650]">
-          <option value="incorrect_semantics">口径不正确</option><option value="incorrect_sql">查询有误</option><option value="unsafe_template">模板不安全</option><option value="duplicate">重复提交</option><option value="other">其他</option>
-        </select>
+        <ComposerSelect
+          id={`query-example-reject-reason-${id}`}
+          ariaLabel="拒绝原因"
+          value={reason}
+          placeholder="选择拒绝原因"
+          options={[
+            { value: "incorrect_semantics", label: "口径不正确" },
+            { value: "incorrect_sql", label: "查询有误" },
+            { value: "unsafe_template", label: "模板不安全" },
+            { value: "duplicate", label: "重复提交" },
+            { value: "other", label: "其他" },
+          ]}
+          onValueChange={setReason}
+          triggerClassName="h-7 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-2 font-sans text-[10px] text-[#655e54] focus-visible:border-[#c57650]"
+        />
         <ActionButton variant="quiet" busy={working === id} onClick={() => runAction(id, () => queryExampleAction(id, "reject", { ...transition, reason_code: reason }), "已拒绝此查询示例。")}>拒绝</ActionButton>
       </>}
       {mine && candidate.review_status === "pending" && <ActionButton variant="quiet" busy={working === id} onClick={() => runAction(id, () => queryExampleAction(id, "withdraw", transition), "已撤回提交。")}>撤回</ActionButton>}
@@ -357,9 +387,22 @@ function BusinessRuleCard({ candidate, user, isAdmin, sourceName, working, runAc
             {askingClarification ? "取消补充请求" : "请求补充"}
           </button>}
           {isAdmin && candidate.review_status === "pending" && <>
-            <select aria-label="拒绝原因" value={reason} onChange={(event) => setReason(event.target.value)} className="h-10 min-w-36 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-3 font-sans text-xs text-[#655e54] outline-none transition-colors focus:border-[#c57650] focus:ring-2 focus:ring-[#c57650]/20">
-              <option value="ambiguous_definition">口径不清楚</option><option value="duplicate_term">已有同名规则</option><option value="unsupported_scope">适用范围不支持</option><option value="invalid_reference">引用无效</option><option value="conflicting_rule">与现有规则冲突</option><option value="other">其他</option>
-            </select>
+            <ComposerSelect
+              id={`business-rule-reject-reason-${id}`}
+              ariaLabel="拒绝原因"
+              value={reason}
+              placeholder="选择拒绝原因"
+              options={[
+                { value: "ambiguous_definition", label: "口径不清楚" },
+                { value: "duplicate_term", label: "已有同名规则" },
+                { value: "unsupported_scope", label: "适用范围不支持" },
+                { value: "invalid_reference", label: "引用无效" },
+                { value: "conflicting_rule", label: "与现有规则冲突" },
+                { value: "other", label: "其他" },
+              ]}
+              onValueChange={setReason}
+              triggerClassName="h-10 min-w-36 rounded-lg border border-[#e6ded2] bg-[#fbfaf7] px-3 font-sans text-xs text-[#655e54] focus-visible:border-[#c57650]"
+            />
             <ActionButton variant="quiet" className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "reject", { ...transition, reason_code: reason }), "已拒绝此业务规则。")}>拒绝</ActionButton>
           </>}
           {isAdmin && candidate.review_status === "pending" && <ActionButton className="h-10 px-4" busy={working === id} onClick={() => runAction(id, () => businessRuleAction(id, "approve", transition), "审核已通过；还需要发布到新的数据源版本后才会生效。")}>审核通过</ActionButton>}
