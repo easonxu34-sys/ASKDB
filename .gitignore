@@ -38,6 +38,9 @@ yarn-error.log*
 !**/.env.example
 /.env.docker
 !/.env.docker.example
+/.env.local
+!/.env.local.example
+/.local-deploy/
 
 # vercel
 **/.vercel/

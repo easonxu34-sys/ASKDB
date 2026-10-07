@@ -21,67 +21,68 @@ npm run dev
 
 Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只读数据库 profile。具体步骤见 [`askdb-agent/README.md`](askdb-agent/README.md)。
 
-## 本机 Docker + Tailscale Funnel 公网演示
+## 本机本地构建 + Tailscale Funnel 公网演示
 
-此方案在本机 Docker Desktop 中运行 Agent 与 Web，再由 Tailscale Funnel 提供稳定的 `*.ts.net` HTTPS 地址，无需购买域名或配置 Cloudflare。Mac 需要安装并登录 Tailscale，并确保命令行可调用 `tailscale`；Standalone 客户端可在设置中启用 CLI 集成。Tailscale 的 macOS 客户端版本对 Funnel 有限制，若命令提示当前版本不支持，再按官方 macOS 版本说明切换到支持 Funnel 的变体。首次启动时按提示启用 Funnel、MagicDNS 和 HTTPS。公网地址由本机的 Tailscale 名称生成，重启后保持不变；演示时 Mac、Docker 和 Tailscale 必须保持在线。个人免费方案受 Tailscale 使用条款限制，且 Funnel 有带宽限制。Agent 镜像固定为 `linux/amd64`，在 Apple Silicon 上由 Docker Desktop 模拟运行，以使用 Wren 的预编译 wheel；首次构建需要网络访问镜像仓库和依赖源。
+公网演示在 Mac 上把 Agent/Web 源码复制到用户级 Application Support 后本机打包和运行，不构建或运行 Docker 镜像。Tailscale Funnel 提供稳定的 `*.ts.net` HTTPS 地址，公网只进入 Web；Agent 绑定 `127.0.0.1:8001`，Web 绑定 `127.0.0.1:3001`。Mac 必须开机、保持当前用户登录并运行 Tailscale。Funnel 支持当前聊天所需的 SSE；个人免费方案仍受 Tailscale 使用条款和带宽限制。
+
+源码相同不代表容器和本机运行环境完全相同：Dockerfile 使用 Linux 容器，而 Mac 使用本机操作系统和 CPU 架构，带有本机代码的依赖会采用不同 wheel/动态库。这里直接使用本机验证过的 Wren 运行环境，并按 `uv.lock`、`pnpm-lock.yaml` 安装锁定依赖。启动需要 Python 3.13、uv、Node.js 22+、pnpm、Tailscale CLI；部分数据库驱动还需要本机的编译工具和数据库客户端库。
 
 ### 首次配置
 
-1. 安装并登录 Tailscale for macOS，并确保 `tailscale` CLI 可用。Standalone 客户端可在设置中安装 CLI 集成；macOS 客户端变体对 Funnel 的支持有限，若 Funnel 命令提示版本不支持，请按 [Tailscale macOS 版本说明](https://tailscale.com/docs/concepts/macos-variants) 切换到支持的变体。首次启动时会引导你在浏览器中批准 Funnel。
-2. 在仓库根目录复制配置并限制文件权限：
+1. 安装并登录 Tailscale for macOS，确保 `tailscale` CLI 可用。Standalone 客户端可在设置中安装 CLI 集成；macOS 客户端变体若不支持 Funnel，按 [Tailscale macOS 版本说明](https://tailscale.com/docs/concepts/macos-variants)切换到支持的变体。首次启用时按提示批准 Funnel、MagicDNS 和 HTTPS。
+2. 新安装时创建本机密钥文件：
 
    ```bash
-   cp .env.docker.example .env.docker
-   chmod 600 .env.docker
+   cp .env.local.example .env.local
+   chmod 600 .env.local
    ```
 
-   编辑 `.env.docker`：填写 `ASKDB_SETTINGS_ENCRYPTION_KEY`。启动脚本会自动从 Tailscale Funnel 读取固定 HTTPS 地址并传给 Web；无需手动填写公网域名。模型在网页设置中配置，不需要在此文件放模型 API Key。生成 Fernet 密钥的现有命令如下；请在已安装 cryptography 的 Python 环境执行，也可在安装了 Python/uv 的 Agent 开发环境中通过 `uv run python` 执行：
+   在 `.env.local` 设置 `ASKDB_SETTINGS_ENCRYPTION_KEY`。生成 Fernet 密钥可执行：
 
    ```bash
-   python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+   uv run --project askdb-agent python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
    ```
 
-   `.env.docker` 已被 Git 和 Docker 构建上下文排除；请自行保护本机文件及备份，不要将 token、模型密钥或 Fernet 密钥提交到仓库。不要设置 `WREN_PROJECT_DIR`，首次通过 UI 创建数据源。
-3. 启动 Agent 和 Web：
+   已有 Docker 部署可继续使用 `.env.docker` 中原来的 key；若同时保留 `.env.local`，两处 key 必须完全相同，不能重新生成，否则已有 SQLite 内加密的模型和数据源凭证无法解密。启动脚本只把该 key 写入 `~/Library/Application Support/ASKDB-Agent/secrets.env`（权限 `0600`）；仓库中的配置文件会被 Git 忽略。备份数据时必须同时保护数据目录和这把 key。模型凭证仍在登录后的设置页面配置。
+3. 从旧 Docker 部署切换时，先在旧容器仍存在时执行一次数据迁移；脚本会停止旧 Agent/Web、复制并检查数据，然后保留旧容器与 `agent_data` 卷作为回退副本，不构建镜像：
+
+   ```bash
+   ./scripts/migrate-docker-data-local.sh
+   ```
+
+   若是全新部署，没有旧数据卷，则跳过这一步。迁移会将 SQLite 内 Docker `/app/data/...` 的 Wren revision 路径改成本机目录，原 Docker 命名卷不修改。迁移完成后不要再让旧 Docker Agent 和本机 Agent 同时写同一份数据。
+4. 构建并启动公网版：
 
    ```bash
    ./scripts/start-test.sh
    ```
 
-   脚本从自身位置定位仓库，构建并启动 `askdb-local-test`，等待 Agent 与 Web 健康，并启用 Tailscale Funnel 的 HTTPS `:8443` 入口转发到本机 `3001`。首次启用时可能要求你在浏览器批准 Funnel。成功后会显示本机和公网地址；公网 hostname 与端口固定，重启后可继续使用。`--bg` 会让 Funnel 在后台保持运行，因此启动终端可以关闭；Mac、Docker 和 Tailscale 仍须在线。显示本地就绪不等于公网登录和 SSE 聊天已验证。可用以下命令查看此项目状态及日志；分享日志前检查是否包含敏感内容：
+   脚本把 Agent/Web 源码复制到 `~/Library/Application Support/ASKDB-Agent/app/`，在那里按锁文件构建；Python 环境、运行数据、密钥、launchd 配置和日志也放在同一私有目录。它随后注册当前用户的两个 launchd 后台服务，等待 Agent `/healthz` 和 Web 首页就绪，再把 Funnel HTTPS `:8443` 指向本机 `3001`，从 Tailscale 读取公网 origin 并写入 Web 服务配置。首次启动可能需要浏览器批准 Funnel。服务会在启动终端关闭后继续运行；用户注销或 Mac 休眠/关机时公网服务不可用。成功后会显示本机健康地址和公网地址；公网登录及受保护操作请使用 HTTPS 公网地址，本机地址仅用于健康检查。
+5. 全新部署时，在有交互 TTY 的终端创建首位管理员：
 
    ```bash
-   docker compose --env-file .env.docker ps
-   docker compose --env-file .env.docker logs --tail=100 agent web
-   ```
-4. 在本机交互式终端进入容器初始化首位管理员，保留默认 TTY，不添加 `-T`：
-
-   ```bash
-   docker compose --env-file .env.docker exec agent askdb-agent auth init-admin
+   scripts/askdb-agent-local.sh auth init-admin
    ```
 
-   输入自选用户名；系统生成的临时密码只显示一次，没有默认账号或密码。此命令仅在没有账号时成功。通过安全渠道交付临时密码，在配置的 **HTTPS 地址**登录并立即更换密码。`http://localhost:3001` 用于 Docker 页面/健康检查；登录和其他受保护操作使用公网 HTTPS 地址。
-5. 管理员在 UI 中配置模型、创建数据源、设置连接凭证并构建语义模型，再为普通用户创建账号、分配启用的数据源。真实问数需要可用模型凭证、容器可连接的数据库地址，以及数据库端授予只读权限的账号。数据库位于宿主机时，Docker Desktop 可使用 `host.docker.internal`；容器中的 `localhost` 指向容器自身。仅连接获得授权的测试数据。
+   已迁移的 Docker 数据已包含原账号，无需重新初始化。管理员临时密码只显示一次，没有默认账号密码。随后在 Web 设置页配置模型和数据源，使用只读数据库账号并构建语义模型。
 
-### 公网边界与数据保留
+### 本机数据库、运行状态和数据保留
 
-公网 hostname 的访问者能到达登录页；本方案用于授权测试数据，请限制临时链接传播。它不会自动创建管理员，也不会自动验证真实 SQL 查询、数据库权限或公网登录。Agent API 仅在 Compose 内网 `http://agent:8000` 可达，未映射宿主机端口；只有 Web 发布到 `127.0.0.1:3001`，公网入口经 Tailscale Funnel 到 Web。不要额外公开 Agent 的 8000 端口。
+Agent 在宿主机运行，因此数据库就在这台 Mac 上时，连接地址可用 `127.0.0.1` 或 `localhost`；若数据库运行在另一容器中，则使用映射到宿主机的端口或可达的主机名。Agent 仍只绑定 loopback，不能通过公网直接访问。
 
-停止服务及隧道：
+启动日志保存在 `~/Library/Application Support/ASKDB-Agent/logs/`；launchd 配置保存在该目录的 `run/`，源码副本保存在 `app/`。这些目录权限受限；分享日志前先检查是否包含敏感内容。健康检查地址为 `http://127.0.0.1:8001/healthz` 和 `http://127.0.0.1:3001/`。停止服务与 Funnel：
 
 ```bash
 ./scripts/stop-test.sh
 ```
 
-脚本仅对本项目执行 Compose `down`，关闭本项目使用的 Tailscale Funnel `:8443` 入口及遗留的 localhost.run SSH 隧道；保留 `agent_data` 命名卷（实际卷名通常为 `askdb-local-test_agent_data`）。该卷保存 SQLite 账号/会话、模型与数据源配置、Wren 文件和持久记忆；重复启动继续使用这些数据。仓库中的 `wren-project/` 只读挂载到 Agent 的 `/app/wren-template` 作为参考模板，不会被用作活动项目或写入。备份时同时保护数据卷与原 Fernet 密钥，不要在重启时重新生成密钥。
+停止脚本只卸载本部署使用的两个 launchd 标签，并关闭 Funnel `:8443`；不会按端口杀进程，也不会删除 `~/Library/Application Support/ASKDB-Agent/data`。本机数据目录保存 SQLite 账号/会话、模型与数据源配置、Wren 文件和持久记忆。备份时同时保护整个目录和 Fernet key。旧 Docker 命名卷会保留，确认本机部署正常前不要清除。
 
-以下命令是**破坏性重置**，会删除本项目命名卷，丢失账号、配置和持久记忆，仅在确定不再需要这些测试数据时执行：
+公开主机名的访问者能到达登录页，因此只使用获得授权的测试数据。状态显示健康不代表公网登录、SSE 聊天、SQL 权限或真实查询已经完成端到端验证。
 
-```bash
-docker compose --env-file .env.docker down --volumes
-```
+仓库中的 Compose 文件和 Dockerfile 暂时保留给可选的容器开发/旧部署回退；`start-test.sh` 和 `stop-test.sh` 的日常公网流程不依赖 Docker。
 
-容器内管理员恢复及安全说明见 [`askdb-agent/README.md`](askdb-agent/README.md#docker-测试部署)。
+管理员恢复及本地运行说明见 [`askdb-agent/README.md`](askdb-agent/README.md#本机本地公网部署)。
 
 ## 当前状态
 

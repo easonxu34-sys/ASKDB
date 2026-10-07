@@ -72,7 +72,7 @@ class WrenProjectBuilder:
             if isinstance(item, dict) and item.get("table")
         }
         project = {
-            "schema_version": 5,
+            "schema_version": 4,
             "name": source_id,
             "version": "1.0",
             "catalog": "wren",

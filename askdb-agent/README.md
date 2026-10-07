@@ -116,27 +116,27 @@ npm run dev
 
 Web 端默认通过 Next.js `/api/chat` 转发至 `http://127.0.0.1:8000/v1/chat`。若端口不同，在 `askdb-web/.env.local` 设置 `ASKDB_AGENT_URL`。
 
-## Docker 测试部署
+## 本机本地公网部署
 
-本机 Docker 与 Cloudflare 命名隧道的完整首次配置见[根目录 README](../README.md#本机-docker--cloudflare-公网测试)：在 Cloudflare 创建命名隧道，将公开主机名的 DNS 指向隧道并发布路由 `http://web:3000`；复制根目录 `.env.docker.example` 为 `.env.docker`，填写 Fernet 密钥、隧道 token 和 hostname，然后运行 `./scripts/start-test.sh`。首次登录后，在 Web 的模型设置页面新增模型与 API Key；模型凭证会加密保存在持久化 SQLite 配置中。Fernet 生成命令见本文“安装依赖”。Docker 镜像已包含 Python、uv 和 Wren 依赖，无需宿主机 Wren 项目；仓库中的 `wren-project/` 以只读方式挂载为 `/app/wren-template` 供参考，不会触发旧项目迁移；通过 UI 创建并持久化活动数据源项目。
+公网演示直接在 Mac 上按 `uv.lock`、`pnpm-lock.yaml` 构建 Agent 与 Web，不构建 Docker 镜像。完整首次配置、Tailscale Funnel、服务端口和运行边界见[根目录 README](../README.md#本机本地构建--tailscale-funnel-公网演示)。Agent 绑定 `127.0.0.1:8001`，Web 绑定 `127.0.0.1:3001`，只有 Web 经 Funnel HTTPS `:8443` 对外提供访问。本机 Agent 可直接连接宿主机数据库的 `localhost`/`127.0.0.1`。
 
-在仓库根目录的交互式终端中初始化管理员：
+全新部署先复制 `.env.local.example` 为 `.env.local`，并设置 Fernet key。已有 Docker 部署迁移时，首次启动前运行 `scripts/migrate-docker-data-local.sh`；该命令只停止旧 Agent/Web 并把 `agent_data` 复制到 `~/Library/Application Support/ASKDB-Agent/data`，不会构建镜像或删除旧数据卷。它也会将 SQLite 中 Docker `/app/data/...` 的 Wren revision 路径切到本机目录。必须沿用 `.env.docker` 的原 key；若同时创建 `.env.local`，两份 key 必须一致。源码与构建产物放在 `~/Library/Application Support/ASKDB-Agent/app`，SQLite、Wren 数据和持久记忆在 `data`，日志、密钥和 launchd 配置也放在该私有目录中。
 
-```bash
-docker compose --env-file .env.docker exec agent askdb-agent auth init-admin
-```
-
-不要添加 `-T`；此命令要求 TTY。用户名由操作者输入，临时密码由系统生成、仅显示一次，没有默认账号或密码。仅在尚无账号时可初始化。通过配置的 HTTPS 主机名登录并立即改密，再在模型设置/数据源页面配置服务及只读数据库账号，构建语义模型并分配用户数据源权限。容器必须能够访问模型与数据库；Docker Desktop 中访问宿主机数据库可用 `host.docker.internal`。公开主机名的访问者能到达登录页，仅使用获得授权的测试数据。localhost 页面用于本机检查，当前 Compose 的登录及受保护操作使用公网 HTTPS origin。
-
-如需受控恢复现有管理员，在同样的本机交互终端执行并按提示确认：
+本地打包完成后，在有交互 TTY 的终端初始化首位管理员：
 
 ```bash
-docker compose --env-file .env.docker exec agent askdb-agent auth recover-admin
+scripts/askdb-agent-local.sh auth init-admin
 ```
 
-Compose 的 Agent API 仅在容器内网 `http://agent:8000` 提供服务，不发布到宿主机或公网。Web 是唯一宿主机端口映射，绑定 `127.0.0.1:3000`，隧道连接 Web。Web 的内部 HTTP hostname allowlist 仅允许 `agent`，不可据此扩大公网 API 访问范围。
+仅在没有账号时初始化；临时密码只显示一次，没有默认账号或密码。需要受控恢复管理员时运行并按提示确认：
 
-`agent_data` 命名卷挂载到 `/app/data`，保存 `model-settings.sqlite3`、Wren 项目/配置及持久记忆。`./scripts/stop-test.sh` 只停止本项目并保留卷；重启沿用原卷和原 Fernet 密钥。备份需同时保护数据卷及密钥。`docker compose --env-file .env.docker down --volumes` 是破坏性重置，会删除这些数据，包括本地账号和会话；不要用它做日常停止。
+```bash
+scripts/askdb-agent-local.sh auth recover-admin
+```
+
+已有 Docker 数据迁移后会保留原账号和配置，无需重复初始化。之后在 Web 设置页面配置模型、数据源和只读数据库账号，构建语义模型并分配用户数据源权限。
+
+`scripts/stop-test.sh` 只卸载本部署的 launchd 服务，关闭 Tailscale Funnel，并保留 `~/Library/Application Support/ASKDB-Agent/data`。服务由当前用户的 launchd 会话托管；用户注销时会停止，重新启动公网服务需再次运行 `scripts/start-test.sh`。备份时同时保护整个数据目录和原 Fernet key。旧 Compose 与 Dockerfile 仅作为可选开发/回退材料；确认本机部署正常前不要删除旧 `agent_data` 卷。
 
 ## 当前进度
 
