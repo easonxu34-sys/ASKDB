@@ -4,6 +4,7 @@ import uuid
 from typing import Any
 
 from domain.chart_artifact import QueryResultArtifact
+from domain.turn_interpretation import ResolvedTurnInterpretation, RuntimeRef
 
 
 _TYPE_ALIASES = (
@@ -39,8 +40,33 @@ def parse_requested_chart_type(text: str) -> str | None:
 class QueryArtifactContext:
     """In-memory query artifacts scoped to one Agent turn."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, interpretation: ResolvedTurnInterpretation | None = None,
+                 runtime_ref: RuntimeRef | None = None, display_units: dict | None = None,
+                 apply_presentation: bool = True) -> None:
         self._results: dict[str, QueryResultArtifact] = {}
+        self._interpretation = interpretation
+        self._runtime_ref = runtime_ref
+        self._apply_presentation = apply_presentation
+        self.display_units = dict(display_units or {})
+        self.successful_analysis: list[dict] = []
+        self.applied_constraints: list[dict] = []
+        self.display_applied = False
+
+    @property
+    def interpretation(self) -> ResolvedTurnInterpretation | None:
+        return self._interpretation
+
+    @property
+    def runtime_ref(self) -> RuntimeRef | None:
+        return self._runtime_ref
+
+    @property
+    def display_unit(self) -> str | None:
+        return self.interpretation.presentation.display_unit if self.interpretation and self._apply_presentation else None
+
+    @property
+    def current_question(self) -> str:
+        return self.interpretation.question if self.interpretation else ''
 
     def store_query(self, table: Any, sql: str, limit: int) -> QueryResultArtifact:
         columns = tuple(str(column) for column in table.column_names)

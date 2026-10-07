@@ -2,6 +2,8 @@ type AgentChatRequestBase = {
   thread_id: string;
   data_source_id?: string;
   model_profile_id?: string;
+  personal_memory_response?: { request_id: string; choice_id: string };
+  bypass_personal_memory?: boolean;
 };
 
 export type AgentChatRequest = AgentChatRequestBase & {
@@ -22,8 +24,14 @@ export function sanitizeChatRequest(value: unknown): AgentChatRequest | null {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
-      "thread_id", "data_source_id", "model_profile_id",
-      "message", "turn_id", "expected_sequence",
+      "thread_id",
+      "data_source_id",
+      "model_profile_id",
+      "message",
+      "turn_id",
+      "expected_sequence",
+      "personal_memory_response",
+      "bypass_personal_memory",
     ])
   ) {
     return null;
@@ -58,14 +66,47 @@ export function sanitizeChatRequest(value: unknown): AgentChatRequest | null {
   const turnId = value.turn_id;
   const expectedSequence = value.expected_sequence;
   if (
-    !isRecord(currentMessage) || !hasOnlyKeys(currentMessage, ["role", "content"]) ||
-    currentMessage.role !== "user" || typeof currentMessage.content !== "string" ||
-    currentMessage.content.length < 1 || currentMessage.content.length > 8192 ||
-    typeof turnId !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(turnId) ||
-    !Number.isSafeInteger(expectedSequence) || (expectedSequence as number) < 0
-  ) return null;
+    !isRecord(currentMessage) ||
+    !hasOnlyKeys(currentMessage, ["role", "content"]) ||
+    currentMessage.role !== "user" ||
+    typeof currentMessage.content !== "string" ||
+    currentMessage.content.length < 1 ||
+    currentMessage.content.length > 8192 ||
+    typeof turnId !== "string" ||
+    !/^[A-Za-z0-9_-]{16,128}$/.test(turnId) ||
+    !Number.isSafeInteger(expectedSequence) ||
+    (expectedSequence as number) < 0
+  )
+    return null;
+  const confirmation = value.personal_memory_response;
+  if (
+    confirmation !== undefined &&
+    (!isRecord(confirmation) ||
+      !hasOnlyKeys(confirmation, ["request_id", "choice_id"]) ||
+      typeof confirmation.request_id !== "string" ||
+      confirmation.request_id.length < 16 ||
+      confirmation.request_id.length > 128 ||
+      typeof confirmation.choice_id !== "string" ||
+      !confirmation.choice_id ||
+      confirmation.choice_id.length > 128)
+  )
+    return null;
+  if (
+    value.bypass_personal_memory !== undefined &&
+    typeof value.bypass_personal_memory !== "boolean"
+  )
+    return null;
   return {
     ...base,
+    ...(isRecord(confirmation)
+      ? {
+          personal_memory_response: {
+            request_id: confirmation.request_id as string,
+            choice_id: confirmation.choice_id as string,
+          },
+        }
+      : {}),
+    ...(value.bypass_personal_memory === true ? { bypass_personal_memory: true } : {}),
     message: { role: "user", content: currentMessage.content },
     turn_id: turnId,
     expected_sequence: expectedSequence as number,

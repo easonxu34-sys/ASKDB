@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas.chat import ChatRequest
+from api.personal_memory_stream import management_response
+from domain.personal_memory import PersonalMemoryError
 from api.dependencies import get_auth_application, require_current_user
 from api.streaming import encode_sse
 from application.auth import AuthApplication
@@ -18,6 +20,8 @@ from api.chat_stream import (
     stream_chat_response,
 )
 from application.conversation_memory import sanitize_turn_text
+from application.chat_diagnostics import fingerprint, log_chat_diagnostic, reference
+from application.presentation_budget import presentation_fits
 from application.memory_context import (
     ContextBudgetError,
     MemoryContextAssembler,
@@ -85,6 +89,10 @@ async def chat(
     auth: AuthApplication = Depends(get_auth_application),
 ) -> StreamingResponse:
     app = http_request.app
+    log_chat_diagnostic('request_received', request.thread_id, request.turn_id,
+        requested_model_ref=reference(request.model_profile_id),
+        bypass=request.bypass_personal_memory, confirmation=bool(request.personal_memory_response),
+        question=fingerprint(request.message.content if request.message else ''))
     lease = None
     memory_store: ConversationMemoryStore | None = None
     thread_context = None
@@ -92,6 +100,7 @@ async def chat(
     recalled_document_keys: tuple[tuple[str, str], ...] = ()
     memory_references: tuple[dict[str, object], ...] = ()
     memory_reference_text = ""
+    personal_state = None
     if request.message is None and not request.thread_id.startswith(f"{principal.user_id}:"):
         if ":" in request.thread_id:
             raise HTTPException(
@@ -236,6 +245,26 @@ async def chat(
             source_id,
             principal.role,
         )
+        personal = getattr(app.state, 'personal_memory', None)
+        if personal is not None and request.message is not None:
+            try:
+                authorized_sources = {x.id for x in source_store.list_data_sources() if auth.can_access_data_source(principal,x.id)}
+                personal_state = await personal.prepare(principal.user_id,source_id,request.thread_id,request.turn_id,request.message.content,request.personal_memory_response,request.bypass_personal_memory,authorized_sources)
+            except PersonalMemoryError as exc:
+                if exc.code == 'PERSONAL_MEMORY_PROCESSING_UNAVAILABLE':
+                    import re
+                    question=re.split(r'[，,；;]?\s*(?:并|顺便|然后)\s*(?:记住|以后|下次)',request.message.content,maxsplit=1)[0].strip()
+                    if question and question != request.message.content:
+                        personal_state=await personal.prepare(principal.user_id,source_id,request.thread_id,request.turn_id,question,bypass=request.bypass_personal_memory,authorized_sources=authorized_sources)
+                        personal_state['events'].append(('personal_memory_action',{'status':'failed','message':exc.message}))
+                    else:
+                        personal_state = {'reply':exc.message,'events':[('personal_memory_action',{'status':'failed','message':exc.message})], 'source_id':source_id}
+                else:
+                    raise HTTPException(exc.status,detail={'code':exc.code,'message':exc.message},headers={'Cache-Control':'no-store'}) from None
+            if personal_state.get('reply'):
+                log_chat_diagnostic('personal_management_reply', request.thread_id, request.turn_id,
+                    reply=fingerprint(personal_state['reply']))
+                return await management_response(app,request,principal,memory_store,personal_state)
         if business_rule_store is not None and await run_in_threadpool(
             business_rule_store.has_pending_removals, source_id
         ):
@@ -380,6 +409,27 @@ async def chat(
             headers={"Cache-Control": "no-store"},
         )
     runtime = lease.snapshot.graph
+    log_chat_diagnostic('runtime_acquired', request.thread_id, request.turn_id,
+        source_ref=reference(source_id), revision_ref=reference(getattr(lease.snapshot, 'wren_revision_id', None)),
+        mdl_digest_ref=reference(getattr(lease.snapshot, 'mdl_digest', None)),
+        model_ref=reference(getattr(lease.snapshot, 'model_profile_id', None)),
+        model_revision_ref=reference(getattr(lease.snapshot, 'model_profile_revision', None)),
+        gate_type=type(getattr(runtime, 'query_gate', None)).__name__,
+        temperature=fingerprint(getattr(getattr(runtime, 'query_gate', None), 'temperature', None)),
+        business_model=fingerprint(getattr(runtime, 'query_context', '')))
+    if personal_state is not None:
+        try:
+            personal_state = await app.state.personal_memory.recall(personal_state,lease.snapshot,app.state.wren_store)
+            log_chat_diagnostic('personal_recall_finished', request.thread_id, request.turn_id,
+                reply=bool(personal_state.get('reply')), reply_fingerprint=fingerprint(personal_state.get('reply') or ''),
+                used_count=len(personal_state.get('used', [])),
+                context=fingerprint(personal_state.get('context', '')))
+        except PersonalMemoryError as exc:
+            await app.state.runtime_manager.release_runtime(lease)
+            raise HTTPException(exc.status,detail={'code':exc.code,'message':exc.message},headers={'Cache-Control':'no-store'}) from None
+        except BaseException:
+            await app.state.runtime_manager.release_runtime(lease)
+            raise
 
     turn_start = None
     if request.message is not None:
@@ -496,6 +546,8 @@ async def chat(
             (
                 str(getattr(runtime, "query_context", "")),
                 QUERY_GATE_SYSTEM_PROMPT,
+                personal_state['interpretation'].query_context()
+                if personal_state and personal_state.get('interpretation') else '',
             )
         )
         try:
@@ -544,6 +596,14 @@ async def chat(
                     (hit.document.kind.value, hit.document.id)
                     for hit in assembled_context.evidence
                 )
+            interpretation = personal_state.get('interpretation') if personal_state else None
+            if interpretation and not presentation_fits(interpretation,
+                assembled_context.input_token_limit - assembled_context.input_tokens,
+                TiktokenCounter(), snapshot.tokenizer_id):
+                personal_state['presentation_omitted'] = True
+                personal_state['events'].append(('personal_memory_usage', {
+                    'status': 'not_applied', 'message': '本轮展示偏好超过可用上下文预算，保留默认展示。'}))
+                log_chat_diagnostic('presentation_budget_omitted', request.thread_id, request.turn_id)
         except ContextBudgetError:
             await abandon_reserved_turn()
             if lease is not None:
@@ -576,6 +636,10 @@ async def chat(
             for turn in assembled_context.recent_turns
         ]
         chat_messages.append({"role": "user", "content": request.message.content})
+        log_chat_diagnostic('context_assembled', request.thread_id, request.turn_id,
+            history_count=len(assembled_context.recent_turns),
+            reference_count=len(memory_references), recall_enabled=recall_enabled,
+            conversation=fingerprint(chat_messages), references=fingerprint(memory_reference_text))
     else:
         chat_messages = []
         legacy_messages = request.messages or ()
@@ -609,6 +673,7 @@ async def chat(
         turn_start=turn_start,
         memory_store=memory_store,
         chat_messages=chat_messages,
+        personal_state=personal_state,
     )
     return StreamingResponse(
         stream_chat_response(stream_context),

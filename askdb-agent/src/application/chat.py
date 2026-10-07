@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
@@ -8,6 +10,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.presentation import QUERY_GATE_SYSTEM_PROMPT
 from application.chart_context import QueryArtifactContext, parse_requested_chart_type
+from application.chat_diagnostics import fingerprint, log_chat_diagnostic
+from application.query_decision import decide_with_issues
+from domain.turn_interpretation import RuntimeRef, empty_interpretation
 from application.chat_messages import (
     content_text as _content_text,
     decode_tool_content as _decode_tool_content,
@@ -98,17 +103,32 @@ async def stream_chat_events(
     *,
     memory_references: Sequence[Mapping[str, Any]] = (),
     memory_reference_text: str = "",
+    personal_state: dict | None = None,
+    turn_id: str | None = None,
+    runtime_ref: RuntimeRef | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """Run the query agent and expose its completed user-facing answer."""
-    latest_user_text = _latest_user_text(messages)
+    latest_user_text = personal_state['question'] if personal_state else _latest_user_text(messages)
+    if personal_state:
+        messages = [*messages[:-1], {'role':'user','content':latest_user_text}]
+    turn = personal_state.get('interpretation') if personal_state else None
+    if turn is None:
+        if personal_state and personal_state.get('eligible'):
+            raise TypeError('eligible memory requires an immutable turn interpretation')
+        turn = empty_interpretation(latest_user_text, runtime_ref or RuntimeRef('', '', ''))
+    elif turn.question != latest_user_text:
+        raise ValueError('turn interpretation question mismatch')
+    personal_context = turn.query_context()
+    apply_presentation = not bool(personal_state and personal_state.get('presentation_omitted'))
+    agent_context = turn.agent_context(include_presentation=apply_presentation)
+    personal_chart_type = turn.presentation.chart_type if apply_presentation else None
     query_gate = getattr(runtime, "query_gate", None)
     query_context = getattr(runtime, "query_context", "")
     if query_gate is None:
         raise TypeError("Chat runtime must provide a query gate.")
 
     yield "progress", {"step_id": "understanding", "label": "理解问题", "status": "running"}
-    readiness = await query_gate.ainvoke(
-        [
+    gate_messages = [
             SystemMessage(content=QUERY_GATE_SYSTEM_PROMPT),
             HumanMessage(
                 content=json.dumps(
@@ -122,25 +142,50 @@ async def stream_chat_events(
                             else query_context
                         ),
                         "conversation": _visible_conversation(messages),
+                        "personal_interpretation": personal_context,
                     },
                     ensure_ascii=False,
                 )
             ),
         ]
-    )
+    log_chat_diagnostic('gate_input', thread_id, turn_id,
+        input=fingerprint([m.content for m in gate_messages]),
+        policy=fingerprint(QUERY_GATE_SYSTEM_PROMPT), business_model=fingerprint(query_context),
+        conversation=fingerprint(_visible_conversation(messages)), message_count=len(messages),
+        question=fingerprint(latest_user_text), personal_context=fingerprint(personal_context),
+        recalled_references=fingerprint(list(memory_references)), reference_count=len(memory_references))
+    started = time.monotonic()
+    try:
+        readiness = await query_gate.ainvoke(gate_messages)
+    except BaseException as exc:
+        log_chat_diagnostic('gate_error', thread_id, turn_id,
+            error_type=type(exc).__name__, elapsed_ms=round((time.monotonic()-started)*1000))
+        raise
     gate_decision = _content_text(_message_value(readiness, "content")).strip()
-    if gate_decision == "INTERNAL":
+    decision_kind = ('READY' if gate_decision == 'READY' else 'INTERNAL'
+        if gate_decision == 'INTERNAL' else 'CLARIFY'
+        if gate_decision.startswith('CLARIFY:') else 'INVALID')
+    log_chat_diagnostic('gate_result', thread_id, turn_id, decision=decision_kind,
+        response=fingerprint(gate_decision), elapsed_ms=round((time.monotonic()-started)*1000))
+    decision = decide_with_issues(gate_decision, turn)
+    log_chat_diagnostic('query_decision', thread_id, turn_id, decision=decision.status,
+        reason_codes=[x.code for x in turn.semantics.issues if x.required],
+        schema_version=turn.schema_version)
+    if decision.status == "INTERNAL":
         yield "progress", {"step_id": "understanding", "label": "理解问题", "status": "completed"}
         text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
         yield "token", {"text": text}
         return
 
-    clarification = _clarification_from_gate(gate_decision, latest_user_text)
+    clarification = decision.clarification or _clarification_from_gate(gate_decision, latest_user_text)
     if clarification is not None:
         yield "progress", {"step_id": "understanding", "label": "理解问题", "status": "completed"}
-        if await _is_safe_user_facing_text(
+        clarification_is_safe = await _is_safe_user_facing_text(
             query_gate, clarification, messages, purpose="clarification"
-        ):
+        )
+        log_chat_diagnostic('clarification_review', thread_id, turn_id,
+            safe=clarification_is_safe, used_fallback=not clarification_is_safe or decision_kind == 'INVALID')
+        if clarification_is_safe:
             text = clarification
         else:
             text = _CLARIFY_ZH if _contains_chinese(latest_user_text) else _CLARIFY_EN
@@ -151,30 +196,41 @@ async def stream_chat_events(
     yield "progress", {"step_id": "query-analysis", "label": "分析查询需求", "status": "running"}
     final_answer: str | None = None
 
-    context = QueryArtifactContext()
+    context = QueryArtifactContext(interpretation=turn, runtime_ref=runtime_ref,
+        display_units=personal_state.get('display_units', {}) if personal_state else {},
+        apply_presentation=apply_presentation)
     chart_request = ChartRequest(
         latest_user_text=latest_user_text,
-        requested_chart_type=parse_requested_chart_type(latest_user_text),
-        should_render=_chart_requested_for_turn(messages),
+        requested_chart_type=parse_requested_chart_type(latest_user_text) or personal_chart_type,
+        should_render=_chart_requested_for_turn(messages) or bool(personal_chart_type and re.search(r"分析|趋势|对比|比较|analy|trend|compar",latest_user_text,re.I) and not re.search(r"不要.*图|不.*画图|no chart",latest_user_text,re.I)),
     )
     tool_event_state = ToolEventState()
     active_tool_steps: dict[str, str] = {}
+    tool_starts = tool_ends = tool_errors = 0
+    agent_completed = False
+    agent_started = time.monotonic()
     try:
         agent = runtime.create_agent_for_turn(context, chart_request)
+        log_chat_diagnostic('agent_started', thread_id, turn_id,
+            chart_requested=chart_request.should_render,
+            recall_context=fingerprint(memory_reference_text + "\n" + agent_context))
         async for event in agent.astream_events(
-            {"messages": _attach_recall_context(messages, memory_reference_text)},
+            {"messages": _attach_recall_context(messages, memory_reference_text + "\n" + agent_context)},
             config={"configurable": {"thread_id": thread_id}},
             version="v2",
         ):
             event_type = event.get("event")
             tool_name = event.get("name")
             if event_type == "on_tool_start":
+                tool_starts += 1
                 step_id = str(event.get("run_id") or f"tool-{len(active_tool_steps) + 1}")
                 label = _progress_tool_label(tool_name)
                 active_tool_steps[step_id] = label
                 yield "progress", {"step_id": step_id, "label": label, "status": "running"}
                 continue
             if event_type in {"on_tool_end", "on_tool_error"}:
+                tool_ends += event_type == 'on_tool_end'
+                tool_errors += event_type == 'on_tool_error'
                 step_id = str(event.get("run_id") or "")
                 active = active_tool_steps.pop(step_id, None)
                 if active is not None:
@@ -224,15 +280,34 @@ async def stream_chat_events(
                 "label": "生成图表",
                 "status": "completed",
             }
+        agent_completed = True
     finally:
+        log_chat_diagnostic('agent_finished', thread_id, turn_id,
+            completed=agent_completed, tool_starts=tool_starts, tool_ends=tool_ends,
+            tool_errors=tool_errors, successful_query=bool(tool_event_state.latest_result_id),
+            has_answer=bool(final_answer), answer=fingerprint(final_answer or ''),
+            elapsed_ms=round((time.monotonic()-agent_started)*1000))
         context.clear()
+    if context.successful_analysis:
+        descriptors = context.successful_analysis
+        yield '_analysis_descriptor', {'steps': [step for x in descriptors for step in x['steps']][:30], 'references': sorted({r for x in descriptors for r in x['references']})[:40], 'question':latest_user_text[:500]}
+        if context.applied_constraints:
+            filters=turn.semantics.constraints()['filters']
+            metrics=turn.semantics.constraints()['metrics']
+            summary='；'.join([f"{x['column']} {x['op']} {json.dumps(x['value'],ensure_ascii=False)[:100]}" for x in filters]+[f"{x['aggregation']}({x['column']})" for x in metrics])[:900]
+            yield 'personal_memory_usage', {'status':'applied','message':'本轮成功查询已采用个人条件/口径：'+summary,'applied': context.applied_constraints[:30]}
 
+    if context.display_applied:
+        yield 'personal_memory_usage', {'status':'applied','message':'已按声明的源单位换算金额展示；原始查询值未修改。'}
+    if personal_chart_type and tool_event_state.chart_rendered_for_latest_result:
+        yield 'personal_memory_usage', {'status':'applied','message':'本轮成功查询结果已按所选图表配置展示。'}
     yield "progress", {"step_id": "query-analysis", "label": "分析查询需求", "status": "completed"}
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "running"}
     if final_answer:
         answer_is_safe = await _is_safe_user_facing_text(
             query_gate, final_answer, messages, purpose="answer"
         )
+        log_chat_diagnostic('answer_review', thread_id, turn_id, safe=answer_is_safe)
         if not answer_is_safe:
             text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
         else:

@@ -31,7 +31,38 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ### PostgreSQL 迁移与 pgvector
 
-Agent 按 `askdb-agent/src/integrations/migrations/NNN_name.sql` 的版本顺序初始化和升级数据库。已执行版本及 SQL 文件 SHA-256 校验和写在 `app_schema_migrations`；启动只应用尚未记录的迁移。已有 `001_initial` 数据库会继续升级，新数据库首次启动会依次创建完整 schema；校验和变化、缺少历史版本或未受管理的现存表会使启动失败，避免静默覆盖结构。添加迁移时使用下一个连续编号，并保留已发布的 SQL 文件不变。
+Agent 按 `src/integrations/migrations/NNN_name.sql` 的版本顺序初始化和升级数据库。当前迁移为 `001_initial`、`002_enable_pgvector`、`003_personal_preferences`、`004_personal_preference_turn_metadata`；新迁移从 `005` 开始。启动时，`PostgresDatabase.connect()` 会持有 PostgreSQL advisory transaction lock，检查迁移历史、按序执行未记录的迁移，并把 SQL 变更与 `app_schema_migrations` 记录放在同一事务中提交。
+
+#### 版本与文件规则
+
+- 文件名使用 `NNN_<lower_snake_case_name>.sql`，例如 `005_add_profile_status.sql`。编号从 `001` 开始，必须唯一且连续；不要跳号、重排、复用或删除已发布的编号。
+- 迁移 ID 是文件名（不含 `.sql`）；对应文件的原始字节 SHA-256 保存在 `app_schema_migrations.checksum`。空格、注释、换行符等任何文件改动都会改变校验和。
+- **迁移一旦被任一数据库登记，就视为不可修改。** 需要新增或修正 schema 时，始终追加下一个迁移。开发阶段若改动已在临时库应用过的迁移，只能重建该临时库后再验证；不要把修改后的旧文件带到已有该版本记录的数据库。
+- 迁移应以前向、保留数据为原则。避免在 Agent 启动事务中执行长时间回填或大表锁定操作；大表索引或耗时数据转换应单独制定运维步骤。需要删除或收紧字段时，采用兼容多个应用版本的分阶段变更，不依赖自动回滚。
+
+#### 新增迁移流程
+
+1. 查看 `src/integrations/migrations/` 中的最高版本和 `app_schema_migrations` 历史，确认新编号；检查目标字段、约束和索引是否已经由其他迁移创建。
+2. 新建一个职责清楚的 SQL 文件，只包含本次 schema 变化。不要在迁移中写应用凭据、真实业务数据或需要人工猜测的默认值。对现存行添加非空字段时，明确兼容默认值或拆分为安全的多阶段变更。
+3. 在代码评审中同时检查：空数据库从 `001` 顺序建库；从上一已发布版本升级；迁移失败时事务回滚；重复启动不会重复执行。迁移目录必须通过连续编号和文件名校验。
+4. PostgreSQL 集成验证只能使用专用、可销毁的测试数据库，通过 `ASKDB_TEST_DATABASE_DSN` 配置。测试夹具会在其中创建并删除独立 schema；**绝不能将该变量或测试命令指向 `ASKDB_DATABASE_DSN` 的应用库**。例如：
+
+   ```bash
+   cd askdb-agent
+   export ASKDB_TEST_DATABASE_DSN='postgresql://<user>:<password>@127.0.0.1:5432/askdb_agent_test'
+   uv run pytest tests/test_postgres_database.py
+   ```
+
+5. 部署前备份应用数据库并确认 Agent 使用的 DSN 指向预期环境。Agent 首次连接会自动应用未执行迁移；确认 `app_schema_migrations` 中出现预期 ID，再只读核对相关表、列、约束和索引。不要为验证迁移读取真实业务行。
+
+#### checksum 不匹配的处理
+
+`PostgreSQL migration checksum mismatch: <migration_id>` 表示数据库登记的校验和与当前 SQL 文件字节不一致。先确认报错进程连接的数据库，再比对迁移 ID、登记校验和和实际 schema：
+
+- 若文件被意外改动且旧版仍可取得，恢复与数据库记录匹配的原始文件；后续差异另建新迁移。
+- 若旧版无法取得，先备份并审查该迁移在目标库上的实际效果，再制定受控的前向修复。不要直接改 checksum、删除 `app_schema_migrations` 行、清空历史或重放旧迁移来绕过错误。
+
+已有 `001_initial` 数据库会继续升级；新数据库首次启动会依次创建完整 schema。若库内已有业务表但没有迁移历史，迁移器会失败关闭，需要先按独立的数据库接管/基线流程处理，不能直接让 Agent 覆盖。
 
 PostgreSQL 服务器必须先安装与其主版本匹配的 pgvector 扩展文件，并在每个目标数据库中由数据库管理员启用一次。普通 Agent 数据库角色不应设置为超级用户。新建数据库后、Agent 首次启动前，用管理员连接执行：
 

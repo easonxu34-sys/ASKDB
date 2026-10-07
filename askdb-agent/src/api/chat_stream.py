@@ -16,6 +16,8 @@ from starlette.concurrency import run_in_threadpool
 from api.schemas.chat import ChatRequest
 from api.streaming import encode_sse
 from application.chat import stream_chat_events
+from application.chat_diagnostics import fingerprint, log_chat_diagnostic
+from domain.turn_interpretation import RuntimeRef
 from domain.auth import Principal
 from integrations.conversation_store import ConversationMemoryStore
 
@@ -47,6 +49,7 @@ class ChatStreamContext:
     turn_start: Any
     memory_store: ConversationMemoryStore | None
     chat_messages: list[Mapping[str, str]]
+    personal_state: dict | None = None
 
 
 async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]:
@@ -69,6 +72,34 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
     turn_finalized = False
     stream_failed = False
     assistant_parts: list[str] = []
+    analysis_descriptor = None
+    personal_events = []
+    state = context.personal_state
+
+    async def application_events():
+        log_chat_diagnostic('stream_entered', request.thread_id, request.turn_id,
+            conversation=fingerprint(chat_messages), message_count=len(chat_messages),
+            personal_context=fingerprint(state.get('context', '') if state else ''),
+            personal_reply=bool(state and state.get('reply')))
+        if state:
+            for item in state.get('events', []):
+                yield item
+            if state.get('reply'):
+                log_chat_diagnostic('personal_short_circuit', request.thread_id, request.turn_id,
+                    reply=fingerprint(state['reply']))
+                yield 'token', {'text': state['reply']}
+                return
+        async for item in stream_chat_events(
+            runtime, chat_messages, request.thread_id,
+            memory_references=memory_references,
+            memory_reference_text=memory_reference_text,
+            personal_state=state,
+            turn_id=request.turn_id,
+            runtime_ref=RuntimeRef(source_id, getattr(getattr(lease, 'snapshot', None), 'wren_revision_id', ''),
+                getattr(getattr(lease, 'snapshot', None), 'mdl_digest', '') or ''),
+        ):
+            yield item
+
 
     async def mark_failed() -> None:
         nonlocal turn_finalized
@@ -96,13 +127,12 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
             },
         )
     try:
-        async for event, payload in stream_chat_events(
-            runtime,
-            chat_messages,
-            request.thread_id,
-            memory_references=memory_references,
-            memory_reference_text=memory_reference_text,
-        ):
+        async for event, payload in application_events():
+            if event == '_analysis_descriptor':
+                analysis_descriptor = payload
+                continue
+            if event in {'personal_memory_action','personal_memory_usage','personal_memory_clarification'}:
+                personal_events.append(payload)
             if business_rule_store is not None:
                 while not business_rule_store.try_acquire_online_emission(source_id):
                     await asyncio.sleep(0.01)
@@ -168,6 +198,16 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
                 break
             if is_error_event:
                 await mark_failed()
+        if state and state.get('pending') and not stream_failed:
+            try:
+                result = await app.state.personal_memory.commit(state,analysis_descriptor)
+            except Exception as exc:
+                from domain.personal_memory import PersonalMemoryError
+                result = {'status':'failed','message':exc.message if isinstance(exc,PersonalMemoryError) else '查询回答已完成，但个人记忆未保存，请重试。'}
+            assistant_parts.append('\n\n'+result['message'])
+            yield encode_sse('personal_memory_action', result)
+            personal_events.append(result)
+            yield encode_sse('token', {'text':'\n\n'+result['message']})
         if request.message is not None and not turn_finalized and memory_store is not None:
             await run_in_threadpool(
                 memory_store.complete_turn,
@@ -175,6 +215,8 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
                 owner_user_id=principal.user_id,
                 turn_id=request.turn_id,
                 assistant_content="".join(assistant_parts),
+                analysis_descriptor=analysis_descriptor,
+                personal_events=personal_events,
             )
             turn_finalized = True
         yield encode_sse(
@@ -245,6 +287,8 @@ async def stream_chat_response(context: ChatStreamContext) -> AsyncIterator[str]
         await mark_failed()
         if lease is not None:
             await app.state.runtime_manager.release_runtime(lease)
+        log_chat_diagnostic('stream_finished', request.thread_id, request.turn_id,
+            failed=stream_failed, turn_finalized=turn_finalized, lease_released=lease is not None)
 
 
 def _wren_error_diagnostic(

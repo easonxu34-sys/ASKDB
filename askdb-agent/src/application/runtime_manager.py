@@ -88,6 +88,8 @@ class RuntimeManager:
             model = self.model_store.get_profile(model_profile_id)
         else:
             model = self.model_store.get_default()
+        if getattr(model, "model_kind", "chat") != "chat":
+            raise RuntimeModelNotConfigured("MODEL_NOT_CONFIGURED")
         if not getattr(model, "api_key", ""):
             raise RuntimeModelNotConfigured("MODEL_NOT_CONFIGURED")
         return model
@@ -241,7 +243,7 @@ class RuntimeManager:
         _default_id, models = self.model_store.list_profiles(seed_if_missing=False)
         candidates: dict[RuntimeKey, RuntimeSnapshot] = {}
         for model in models:
-            if not getattr(model, "api_key", ""):
+            if getattr(model, "model_kind", "chat") != "chat" or not getattr(model, "api_key", ""):
                 continue
             built = (candidate_builder or self.snapshot_builder)(source, revision, model)
             if inspect.isawaitable(built):

@@ -402,6 +402,10 @@ async def thread_history(
                     "role": turn.role,
                     "content": turn.content,
                     "created_at": turn.created_at,
+                    "personal_events": (
+                        request.app.state.personal_memory.store.valid_events(principal.user_id, turn.personal_events)
+                        if getattr(request.app.state, 'personal_memory', None) else []
+                    ),
                 }
                 for turn in context.turns
             ],

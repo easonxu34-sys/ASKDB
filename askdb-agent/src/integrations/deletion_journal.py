@@ -355,12 +355,13 @@ class EncryptedDeletionJournal:
                 item_type = payload.get("item_type")
                 actor_id = payload.get("actor_id")
                 if event_type not in {
+                    "personal_memory_delete",
                     "thread_delete",
                     "business_rule_revoke",
                     "query_example_revoke",
                 }:
                     raise DeletionJournalUnavailable("journal event type is unsupported")
-                if item_type not in {"thread", "business_rule", "query_example"}:
+                if item_type not in {"thread", "business_rule", "query_example", "personal_memory"}:
                     raise DeletionJournalUnavailable("journal item type is unsupported")
                 if actor_id is not None and (
                     not isinstance(actor_id, str) or not actor_id or len(actor_id) > 128
@@ -368,7 +369,9 @@ class EncryptedDeletionJournal:
                     raise DeletionJournalUnavailable("journal actor is invalid")
                 if not isinstance(payload.get("event_id"), str) or not payload["event_id"]:
                     raise DeletionJournalUnavailable("journal event shape is invalid")
-                if not isinstance(payload.get("source_id"), str) or not payload["source_id"]:
+                if not isinstance(payload.get("source_id"), str) or (not payload["source_id"] and item_type != "personal_memory"):
+                    raise DeletionJournalUnavailable("journal event scope is invalid")
+                if item_type == "personal_memory" and (event_type != "personal_memory_delete" or not actor_id):
                     raise DeletionJournalUnavailable("journal event shape is invalid")
                 event = JournalEvent(
                     sequence=expected_sequence,

@@ -16,6 +16,7 @@ import {
   readChartArtifact,
 } from "@/lib/chat-output";
 import { readQueryProgressStep, type QueryProgressStep } from "@/lib/query-progress";
+import { readMemoryRecallPayload, type MemoryRecallPayload } from "@/lib/memory-recall-notice";
 
 type AgentEvent = {
   event: string;
@@ -55,14 +56,17 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
         throw new Error("当前会话尚未准备好，请刷新后重试。");
       }
       let answer = "";
+      const personalEvents: Record<string, unknown>[] = [];
       const queryResults: unknown[] = [];
       const chartArtifacts: unknown[] = [];
       const progressSteps: QueryProgressStep[] = [
-        { stepId: "startup", label: "准备查询", status: "running" },
+        { stepId: "startup", label: "正在处理", status: "running" },
       ];
       let chartNotice = "";
       let persistenceAvailable = true;
       let terminalReceived = false;
+      let memoryRecallPayload: MemoryRecallPayload | undefined;
+      let showMemoryRecallNotice = false;
       let eofRetries = 0;
       let readCurrentTurnArtifacts: (() => unknown[]) | undefined;
       const update = () => {
@@ -81,13 +85,30 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
         return {
           content: [
             ...currentProgress,
+            ...personalEvents.map((data) => ({
+              type: "data" as const,
+              name: "personal-memory" as const,
+              data,
+            })),
             ...(queryText ? [{ type: "text" as const, text: queryText }] : []),
-            ...getChartMessageParts([
-              ...queryResults,
-              ...chartArtifacts,
-              ...(readCurrentTurnArtifacts?.() ?? []).filter(isChartViewOverrideCandidate),
-            ], { persistenceAvailable }),
+            ...getChartMessageParts(
+              [
+                ...queryResults,
+                ...chartArtifacts,
+                ...(readCurrentTurnArtifacts?.() ?? []).filter(isChartViewOverrideCandidate),
+              ],
+              { persistenceAvailable },
+            ),
             ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
+            ...(showMemoryRecallNotice && memoryRecallPayload
+              ? [
+                  {
+                    type: "data" as const,
+                    name: "memory-recall" as const,
+                    data: memoryRecallPayload,
+                  },
+                ]
+              : []),
           ] as ChatModelRunUpdate["content"],
         };
       };
@@ -153,6 +174,10 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
         const requestBody = JSON.stringify({
           thread_id: serverThreadId,
           model_profile_id: getThreadModelProfileId(userId, serverThreadId),
+          personal_memory_response: currentUserMessage.metadata.custom?.personal_memory_response,
+          bypass_personal_memory: /本轮不用个人记忆|这次不用个人记忆/.test(
+            getMessageText(currentUserMessage),
+          ),
           turn_id: turnId,
           expected_sequence: expectedSequence,
           message: { role: "user", content: getMessageText(currentUserMessage) },
@@ -279,6 +304,8 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
               event.event === "replay" &&
               typeof event.data.assistant_content === "string"
             ) {
+              memoryRecallPayload = undefined;
+              showMemoryRecallNotice = false;
               progressSteps.splice(0, progressSteps.length);
               answer = event.data.assistant_content;
               const saved = getThreadResultArtifacts(userId, serverThreadId, historyTurnId, turnId);
@@ -297,11 +324,37 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
               persistenceAvailable = true;
               chartNotice = getChartUnavailableMessages(saved).join("\n\n");
               yield update();
+            } else if (
+              [
+                "personal_memory_action",
+                "personal_memory_usage",
+                "personal_memory_clarification",
+              ].includes(event.event)
+            ) {
+              const data = event.data;
+              if (typeof data.message === "string" && data.message.length <= 1000) {
+                const safe = {
+                  type: "personal_memory_notice",
+                  message: data.message,
+                  status: data.status,
+                  request_id: data.request_id,
+                  choices: data.choices,
+                };
+                personalEvents.push(safe);
+                saveThreadResultArtifact(userId, serverThreadId, historyTurnId, safe);
+                yield update();
+              }
+            } else if (event.event === "memory_recall") {
+              memoryRecallPayload = readMemoryRecallPayload(event.data);
             } else if (event.event === "result") {
               queryResults.push(event.data.output);
               persistenceAvailable =
-                saveThreadResultArtifact(userId, serverThreadId, historyTurnId, event.data.output) &&
-                persistenceAvailable;
+                saveThreadResultArtifact(
+                  userId,
+                  serverThreadId,
+                  historyTurnId,
+                  event.data.output,
+                ) && persistenceAvailable;
               if (formatQueryResults(queryResults)) yield update();
             } else if (event.event === "chart") {
               const artifact = readChartArtifact(event.data);
@@ -334,6 +387,7 @@ export function createAgentChatAdapter(userId: string): ChatModelAdapter {
             } else if (event.event === "done") {
               terminalReceived = true;
               const successful = event.data.status === "completed";
+              showMemoryRecallNotice = successful && memoryRecallPayload !== undefined;
               for (const step of progressSteps) {
                 if (step.status === "running") {
                   step.status = successful ? "completed" : "failed";

@@ -21,7 +21,7 @@ async def chat_model_options(
     safe_profiles = []
     if isinstance(profiles, list):
         for profile in profiles:
-            if not isinstance(profile, dict):
+            if not isinstance(profile, dict) or profile.get("model_kind", "chat") != "chat":
                 continue
             if not all(
                 isinstance(profile.get(key), str)

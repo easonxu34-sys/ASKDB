@@ -10,6 +10,7 @@ from integrations.wren import build_wren_toolkit
 from runtime import project_dialect
 from model_settings import (
     ModelConfiguration,
+    ModelConfigurationError,
     ModelSettingsUnavailable,
     ModelSettingsStore,
     validate_configuration,
@@ -21,8 +22,9 @@ class ModelNotConfigured(RuntimeError):
 
 
 class ModelProbeFailed(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, diagnostic_code: str | None = None):
         self.code = code
+        self.diagnostic_code = diagnostic_code
         super().__init__(code)
 
 
@@ -66,6 +68,8 @@ class ModelSettingsApplication:
             return {
                 "default_profile_id": default_id,
                 "profiles": [profile.public() for profile in profiles],
+                "service_references": self.store.service_references(),
+                "personal_index_status": self.store.personal_index_status(),
             }
 
     async def test(
@@ -80,6 +84,8 @@ class ModelSettingsApplication:
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         tokenizer_id: str | None = None,
+        model_kind: str = "chat",
+        service_options: dict | None = None,
     ) -> None:
         async with self._lock:
             self.store.ensure_available()
@@ -92,6 +98,7 @@ class ModelSettingsApplication:
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 tokenizer_id=tokenizer_id,
+                model_kind=model_kind, service_options=service_options,
             )
             await self._probe(candidate)
 
@@ -106,6 +113,8 @@ class ModelSettingsApplication:
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         tokenizer_id: str | None = None,
+        model_kind: str = "chat",
+        service_options: dict | None = None,
     ) -> dict[str, object]:
         async with self._lock:
             self.store.ensure_available()
@@ -114,6 +123,7 @@ class ModelSettingsApplication:
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 tokenizer_id=tokenizer_id,
+                model_kind=model_kind, service_options=service_options,
             )
             await self._probe(candidate)
             toolkit, next_runtime = self._build_candidate_runtime(candidate)
@@ -134,6 +144,8 @@ class ModelSettingsApplication:
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         tokenizer_id: str | None = None,
+        model_kind: str = "chat",
+        service_options: dict | None = None,
     ) -> dict[str, object]:
         async with self._lock:
             self.store.ensure_available()
@@ -143,6 +155,7 @@ class ModelSettingsApplication:
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 tokenizer_id=tokenizer_id,
+                model_kind=model_kind, service_options=service_options,
             )
             await self._probe(candidate)
             toolkit, next_runtime = self._build_candidate_runtime(candidate)
@@ -155,6 +168,9 @@ class ModelSettingsApplication:
     async def set_default(self, profile_id: str) -> dict[str, object]:
         async with self._lock:
             self.store.set_default(profile_id)
+            if self.store.get_profile(profile_id).model_kind != 'chat':
+                default_id, profiles = self.store.list_profiles()
+                return {'default_profile_id':default_id,'profiles':[profile.public() for profile in profiles],'service_references':self.store.service_references()}
             return {"default_profile_id": profile_id}
 
     async def delete(self, profile_id: str, new_default_id: str | None = None) -> dict[str, object]:
@@ -179,6 +195,8 @@ class ModelSettingsApplication:
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         tokenizer_id: str | None = None,
+        model_kind: str = "chat",
+        service_options: dict | None = None,
     ) -> dict[str, object]:
         """Backward-compatible write operation for the original singular API."""
         async with self._lock:
@@ -192,6 +210,7 @@ class ModelSettingsApplication:
                 context_window_tokens=context_window_tokens,
                 max_output_tokens=max_output_tokens,
                 tokenizer_id=tokenizer_id,
+                model_kind=model_kind, service_options=service_options,
             )
             await self._probe(candidate)
             toolkit, next_runtime = self._build_candidate_runtime(candidate)
@@ -230,6 +249,8 @@ class ModelSettingsApplication:
         context_window_tokens: int | None = None,
         max_output_tokens: int | None = None,
         tokenizer_id: str | None = None,
+        model_kind: str = "chat",
+        service_options: dict | None = None,
     ) -> ModelConfiguration:
         return validate_configuration(
             provider,
@@ -246,6 +267,7 @@ class ModelSettingsApplication:
                 if max_output_tokens is not None
                 else existing.max_output_tokens if existing else None
             ),
+            model_kind=model_kind, service_options=service_options,
             tokenizer_id=(
                 tokenizer_id
                 if tokenizer_id is not None
@@ -289,6 +311,8 @@ class ModelSettingsApplication:
             return runtime
 
     def _build_candidate_runtime(self, configuration: ModelConfiguration) -> tuple[Any, Any]:
+        if configuration.model_kind != "chat":
+            return None, None
         if self.runtime_manager is not None:
             # Wren-aware graph snapshots are built per source/revision on demand.
             return None, None
@@ -324,6 +348,48 @@ class ModelSettingsApplication:
             await self.runtime_manager.invalidate_model_profile(profile_id)
 
     async def _probe(self, configuration: ModelConfiguration) -> None:
+        if configuration.model_kind != "chat":
+            from integrations.model_services import (
+                ModelResponseInvalid,
+                ModelServiceError,
+                embed,
+                rerank,
+            )
+            if not configuration.api_key:
+                raise ModelProbeFailed("MODEL_AUTH_FAILED")
+            try:
+                if configuration.model_kind == "embedding":
+                    await embed(configuration, ["连接测试"])
+                else:
+                    await rerank(configuration, "连接测试", ["连接测试", "天气"])
+            except Exception as exc:
+                if isinstance(exc, ModelConfigurationError):
+                    raise
+                status = getattr(exc, "status_code", None)
+                provider_code = (
+                    exc.provider_code.lower().replace("_", "")
+                    if isinstance(exc, ModelServiceError)
+                    else ""
+                )
+                if status == 401 or status == 403 or provider_code in {
+                    "invalidapikey",
+                    "unauthorized",
+                    "authenticationerror",
+                }:
+                    code = "MODEL_AUTH_FAILED"
+                elif status is not None and 400 <= status < 500:
+                    code = "MODEL_REJECTED"
+                elif status is not None and status >= 500:
+                    code = "MODEL_CONNECTION_FAILED"
+                elif isinstance(exc, ModelServiceError) and provider_code:
+                    code = "MODEL_REJECTED"
+                elif isinstance(exc, ModelResponseInvalid):
+                    code = "MODEL_RESPONSE_INVALID"
+                else:
+                    code = "MODEL_CONNECTION_FAILED"
+                diagnostic_code = exc.diagnostic_code if isinstance(exc, ModelResponseInvalid) else None
+                raise ModelProbeFailed(code, diagnostic_code) from None
+            return
         if not configuration.api_key:
             raise ModelProbeFailed("MODEL_AUTH_FAILED")
         try:

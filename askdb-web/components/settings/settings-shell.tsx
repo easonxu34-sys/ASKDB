@@ -24,6 +24,7 @@ type SettingsItem = {
 };
 
 const personalItems: SettingsItem[] = [
+  { href: "/settings/preferences", label: "个人偏好记忆", icon: BrainIcon },
   { href: "/settings", label: "我的提交", icon: BookOpenIcon, aliases: ["/memories"] },
   { href: "/settings/archived-threads", label: "归档会话", icon: ArchiveIcon },
   { href: "/settings/password", label: "修改密码", icon: KeyRoundIcon },

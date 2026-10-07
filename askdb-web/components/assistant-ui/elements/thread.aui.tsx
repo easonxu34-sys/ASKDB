@@ -11,6 +11,8 @@ import {
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 import { ChartResult } from "@/components/assistant-ui/elements/chart-result";
 import { QueryProgress } from "@/components/assistant-ui/elements/query-progress";
+import { PersonalMemoryNotice } from "@/components/assistant-ui/elements/personal-memory-notice";
+import { MemoryRecallNotice } from "@/components/assistant-ui/elements/memory-recall-notice";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { ComposerSelect } from "@/components/ui/composer-select";
@@ -23,6 +25,7 @@ import { cn } from "@/lib/utils";
 import type { AuthUser } from "@/lib/auth-api";
 import { deriveSourceTurnKey } from "@/lib/agent-chat-adapter";
 import { getSuccessfulQueryArtifacts, type ChartMessagePart } from "@/lib/chat-output";
+import { readMemoryRecallPayload } from "@/lib/memory-recall-notice";
 import { fetchChatModelOptions, type ChatModelCatalog } from "@/lib/model-profiles";
 import {
   fetchDataSourceCatalog,
@@ -407,7 +410,9 @@ const DataSourceSelection: FC<{
   );
 
   useEffect(() => {
-    onSetupRequiredChange(Boolean(catalog && isAdmin && availableSources.length === 0 && !loadError));
+    onSetupRequiredChange(
+      Boolean(catalog && isAdmin && availableSources.length === 0 && !loadError),
+    );
   }, [availableSources.length, catalog, isAdmin, loadError, onSetupRequiredChange]);
 
   useEffect(() => {
@@ -534,7 +539,9 @@ const ModelProfileSelector: FC<{
 
   const availableProfiles = catalog?.profiles.filter((profile) => profile.available) ?? [];
   useEffect(() => {
-    onSetupRequiredChange(Boolean(catalog && isAdmin && availableProfiles.length === 0 && !loadError));
+    onSetupRequiredChange(
+      Boolean(catalog && isAdmin && availableProfiles.length === 0 && !loadError),
+    );
   }, [availableProfiles.length, catalog, isAdmin, loadError, onSetupRequiredChange]);
 
   const profileOptions = availableProfiles.map((profile) => ({
@@ -630,77 +637,77 @@ const ComposerAction: FC<{
         {children}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <AuiIf condition={(s) => s.thread.capabilities.dictation}>
-            <AuiIf condition={(s) => s.composer.dictation == null}>
-              <ComposerPrimitive.Dictate asChild>
-                <TooltipIconButton
-                  tooltip="语音输入"
-                  side="bottom"
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
-                  aria-label="开始语音输入"
-                >
-                  <MicIcon className="aui-composer-dictate-icon size-4" />
-                </TooltipIconButton>
-              </ComposerPrimitive.Dictate>
-            </AuiIf>
-            <AuiIf condition={(s) => s.composer.dictation != null}>
-              <ComposerPrimitive.StopDictation asChild>
-                <TooltipIconButton
-                  tooltip="停止语音输入"
-                  side="bottom"
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
-                  aria-label="停止语音输入"
-                >
-                  <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
-                </TooltipIconButton>
-              </ComposerPrimitive.StopDictation>
-            </AuiIf>
-          </AuiIf>
-          <AuiIf
-            condition={(s) =>
-              !s.composer.canCancel ||
-              (s.thread.voice !== undefined && s.composer.submission === undefined)
-            }
-          >
-            <ComposerPrimitive.Send asChild>
+        <AuiIf condition={(s) => s.thread.capabilities.dictation}>
+          <AuiIf condition={(s) => s.composer.dictation == null}>
+            <ComposerPrimitive.Dictate asChild>
               <TooltipIconButton
-                tooltip="发送消息"
+                tooltip="语音输入"
                 side="bottom"
                 type="button"
-                variant="default"
+                variant="ghost"
                 size="icon"
-                className="aui-composer-send size-7 rounded-full"
-                aria-label="发送消息"
-                disabled={threadInitializing || !dataSourceReady}
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
+                aria-label="开始语音输入"
               >
-                <ArrowUpIcon className="aui-composer-send-icon size-4" />
+                <MicIcon className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
-            </ComposerPrimitive.Send>
+            </ComposerPrimitive.Dictate>
           </AuiIf>
-          <AuiIf
-            condition={(s) =>
-              s.composer.canCancel &&
-              (s.thread.voice === undefined || s.composer.submission !== undefined)
-            }
-          >
-            <ComposerPrimitive.Cancel asChild>
-              <Button
+          <AuiIf condition={(s) => s.composer.dictation != null}>
+            <ComposerPrimitive.StopDictation asChild>
+              <TooltipIconButton
+                tooltip="停止语音输入"
+                side="bottom"
                 type="button"
-                variant="default"
+                variant="ghost"
                 size="icon"
-                className="aui-composer-cancel size-7 rounded-full"
-                aria-label={isSending ? "取消发送" : "停止生成"}
+                className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
+                aria-label="停止语音输入"
               >
-                <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-              </Button>
-            </ComposerPrimitive.Cancel>
+                <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
+              </TooltipIconButton>
+            </ComposerPrimitive.StopDictation>
           </AuiIf>
+        </AuiIf>
+        <AuiIf
+          condition={(s) =>
+            !s.composer.canCancel ||
+            (s.thread.voice !== undefined && s.composer.submission === undefined)
+          }
+        >
+          <ComposerPrimitive.Send asChild>
+            <TooltipIconButton
+              tooltip="发送消息"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-send size-7 rounded-full"
+              aria-label="发送消息"
+              disabled={threadInitializing || !dataSourceReady}
+            >
+              <ArrowUpIcon className="aui-composer-send-icon size-4" />
+            </TooltipIconButton>
+          </ComposerPrimitive.Send>
+        </AuiIf>
+        <AuiIf
+          condition={(s) =>
+            s.composer.canCancel &&
+            (s.thread.voice === undefined || s.composer.submission !== undefined)
+          }
+        >
+          <ComposerPrimitive.Cancel asChild>
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-cancel size-7 rounded-full"
+              aria-label={isSending ? "取消发送" : "停止生成"}
+            >
+              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+            </Button>
+          </ComposerPrimitive.Cancel>
+        </AuiIf>
       </div>
     </div>
   );
@@ -768,6 +775,19 @@ const AssistantMessage: FC<{ user: AuthUser }> = ({ user }) => {
                 steps: import("@/lib/query-progress").QueryProgressStep[];
               };
               return <QueryProgress steps={progress.steps} />;
+            }
+            if (part.type === "data" && part.name === "personal-memory") {
+              return part.data && typeof part.data === "object" && !Array.isArray(part.data) ? (
+                <PersonalMemoryNotice data={part.data as Record<string, unknown>} />
+              ) : null;
+            }
+            if (part.type === "data" && part.name === "memory-recall") {
+              const data = part.data;
+              if (typeof data !== "object" || data === null || Array.isArray(data)) {
+                return null;
+              }
+              const payload = readMemoryRecallPayload(data);
+              return payload ? <MemoryRecallNotice payload={payload} /> : null;
             }
             return null;
           }}

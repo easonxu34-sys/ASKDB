@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from domain.personal_memory import ConfirmationResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -18,6 +19,8 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=128)
     data_source_id: str | None = Field(default=None, min_length=1, max_length=128)
     model_profile_id: str | None = Field(default=None, min_length=1, max_length=128)
+    personal_memory_response: ConfirmationResponse | None = None
+    bypass_personal_memory: bool = False
     # `messages` is the bounded compatibility protocol for pre-memory clients.
     # New clients send only `message` and let the server load prior turns.
     messages: list[ChatMessage] | None = Field(default=None, min_length=1, max_length=40)

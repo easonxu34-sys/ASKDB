@@ -121,7 +121,12 @@ def test_postgres_migrations_upgrade_an_existing_initial_schema(postgres_dsn: st
         ).fetchone()
 
     assert sentinel["username"] == "migration-sentinel"
-    assert migration_ids == {"001_initial", "002_enable_pgvector"}
+    assert migration_ids == {
+        "001_initial",
+        "002_enable_pgvector",
+        "003_personal_preferences",
+        "004_personal_preference_turn_metadata",
+    }
     assert vector_type["vector_type"] is not None
 
 
@@ -151,6 +156,8 @@ def test_postgres_fresh_start_and_repeated_start_apply_each_migration_once(
         assert {row["migration_id"] for row in migration_rows} == {
             "001_initial",
             "002_enable_pgvector",
+            "003_personal_preferences",
+            "004_personal_preference_turn_metadata",
         }
         assert all(row["row_count"] == 1 for row in migration_rows)
         assert {

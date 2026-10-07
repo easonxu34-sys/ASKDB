@@ -1095,6 +1095,7 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
               role?: unknown;
               content?: unknown;
               created_at?: unknown;
+              personal_events?: unknown;
             }>;
           };
           const resultArtifacts = readThreadResultArtifacts(userId, canonicalId);
@@ -1130,6 +1131,23 @@ function LocalHistoryProvider({ children, userId }: PropsWithChildren<{ userId: 
             const content = [
               ...(artifact ? [{ type: "text" as const, text: artifact }] : []),
               ...getChartMessageParts(turnArtifacts),
+              ...(Array.isArray(turn.personal_events)
+                ? turn.personal_events
+                : turnArtifacts.filter((a) =>
+                    Boolean(
+                      a &&
+                      typeof a === "object" &&
+                      "type" in a &&
+                      a.type === "personal_memory_notice",
+                    ),
+                  )
+              )
+                .filter((a): a is Record<string, unknown> =>
+                  Boolean(
+                    a && typeof a === "object" && "message" in a && typeof a.message === "string",
+                  ),
+                )
+                .map((data) => ({ type: "data" as const, name: "personal-memory", data })),
               ...(answerText ? [{ type: "text" as const, text: answerText }] : []),
             ] as ThreadMessage["content"];
             turns.push({

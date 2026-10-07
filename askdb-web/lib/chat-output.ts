@@ -1,4 +1,4 @@
-import { decimalParts, exactPlotNumber, sumDecimalValues } from "./chart-decimal.ts";
+import { decimalParts, exactPlotNumber, sumDecimalValues, formatDecimal } from "./chart-decimal.ts";
 
 export function formatQueryResults(outputs: unknown[]) {
   return outputs.map(formatQueryResult).filter(Boolean).join("\n\n---\n\n");
@@ -12,6 +12,7 @@ export type SuccessfulQueryArtifact = {
   rows: Record<string, unknown>[];
   rowCount?: number;
   truncated?: boolean;
+  displayFormats?: Record<string, ChartValueFormat>;
 };
 
 export type EChartsChartArtifact = {
@@ -1484,7 +1485,10 @@ export function createRecommendedChartView(
         ? { mode: "dimension", field: artifact.x_field, direction: "asc" }
         : { mode: "original" },
     format_by_field: Object.fromEntries(
-      artifact.series_fields.map((field) => [field, { mode: "raw", decimal_places: "auto" }]),
+      artifact.series_fields.map((field) => [
+        field,
+        query.displayFormats?.[field] ?? { mode: "raw", decimal_places: "auto" },
+      ]),
     ),
     show_data_labels: artifact.chart_type === "pie",
     show_legend: artifact.series_fields.length > 1,
@@ -1759,6 +1763,18 @@ export function readChartArtifact(value: unknown): EChartsChartArtifact | undefi
   return artifact as EChartsChartArtifact;
 }
 
+function formatPersonalCell(value: unknown, format?: ChartValueFormat) {
+  if (!format || format.mode !== "unit_scale" || !decimalParts(value)) return value;
+  const powers = { yuan: 0, thousand_yuan: 3, ten_thousand_yuan: 4, hundred_million_yuan: 8 };
+  const labels = {
+    yuan: "元",
+    thousand_yuan: "千元",
+    ten_thousand_yuan: "万元",
+    hundred_million_yuan: "亿元",
+  };
+  return `${formatDecimal(value, powers[format.source_unit] - powers[format.display_unit], format.decimal_places)} ${labels[format.display_unit]}`;
+}
+
 function formatQueryResult(output: unknown) {
   if (!output || typeof output !== "object") return "";
   const envelope = output as { data?: unknown; artifact?: unknown; content?: unknown };
@@ -1778,7 +1794,8 @@ function formatQueryResult(output: unknown) {
     `| ${columns.map(escapeCell).join(" | ")} |`,
     `| ${columns.map(() => "---").join(" | ")} |`,
     ...visibleRows.map(
-      (row) => `| ${columns.map((column) => escapeCell(row[column])).join(" | ")} |`,
+      (row) =>
+        `| ${columns.map((column) => escapeCell(formatPersonalCell(row[column], result.displayFormats?.[column]))).join(" | ")} |`,
     ),
   ].join("\n");
   const rowSummary = `${result.rowCount ?? rows.length} 行${result.truncated ? "（结果已截断）" : ""}`;
@@ -1824,6 +1841,7 @@ function readQueryArtifact(output: unknown): SuccessfulQueryArtifact | undefined
     rows?: Record<string, unknown>[];
     row_count?: number;
     truncated?: boolean;
+    display_formats?: unknown;
   };
   const columns = result.columns;
   if (
@@ -1844,6 +1862,16 @@ function readQueryArtifact(output: unknown): SuccessfulQueryArtifact | undefined
       ? { columnTypes: result.column_types }
       : {}),
     rows: result.rows,
+    ...(isRecord(result.display_formats)
+      ? {
+          displayFormats: Object.fromEntries(
+            columns.flatMap((field) => {
+              const format = readFormat((result.display_formats as Record<string, unknown>)[field]);
+              return format ? [[field, format]] : [];
+            }),
+          ),
+        }
+      : {}),
     ...(typeof result.row_count === "number" ? { rowCount: result.row_count } : {}),
     ...(typeof result.truncated === "boolean" ? { truncated: result.truncated } : {}),
   };

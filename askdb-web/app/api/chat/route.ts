@@ -7,6 +7,12 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const NO_STORE = { "cache-control": "no-store, max-age=0" };
 
 const safeAgentMessages: Record<string, string> = {
+  PERSONAL_MEMORY_UNAVAILABLE: "无法读取个人记忆状态。请重试，或发送“本轮不用个人记忆”并附上问题。",
+  PERSONAL_MEMORY_PROCESSING_UNAVAILABLE: "个人记忆处理模型暂不可用，未保存或修改记忆。",
+  PERSONAL_MEMORY_CONFLICT: "个人记忆状态已变化，请刷新重试。",
+  PERSONAL_MEMORY_INVALID_CONTENT: "无法确定个人记忆内容或匹配，请具体说明。",
+  PERSONAL_MEMORY_CAPACITY: "个人记忆超过读取容量，请先在个人设置中整理。",
+  PERSONAL_MEMORY_SCOPE_UNAVAILABLE: "个人记忆的数据源权限已变化。",
   AUTH_REQUIRED: "登录状态已失效，请重新登录。",
   INVALID_SESSION: "登录状态已失效，请重新登录。",
   PASSWORD_CHANGE_REQUIRED: "请先修改临时密码。",
@@ -29,16 +35,22 @@ const safeAgentMessages: Record<string, string> = {
 };
 
 function safeErrorResponse(status: number, value: unknown) {
-  const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const detail = body.detail && typeof body.detail === "object"
-    ? body.detail as Record<string, unknown>
-    : {};
-  const code = typeof body.code === "string" ? body.code :
-    typeof detail.code === "string" ? detail.code : "CHAT_REQUEST_FAILED";
-  return Response.json({
-    code,
-    message: safeAgentMessages[code] ?? "AskDB 智能助手请求失败，请稍后重试。",
-  }, { status, headers: { ...NO_STORE, "content-type": "application/json; charset=utf-8" } });
+  const body = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const detail =
+    body.detail && typeof body.detail === "object" ? (body.detail as Record<string, unknown>) : {};
+  const code =
+    typeof body.code === "string"
+      ? body.code
+      : typeof detail.code === "string"
+        ? detail.code
+        : "CHAT_REQUEST_FAILED";
+  return Response.json(
+    {
+      code,
+      message: safeAgentMessages[code] ?? "AskDB 智能助手请求失败，请稍后重试。",
+    },
+    { status, headers: { ...NO_STORE, "content-type": "application/json; charset=utf-8" } },
+  );
 }
 
 export async function POST(request: Request) {
@@ -46,7 +58,11 @@ export async function POST(request: Request) {
   if ("response" in access) return access.response;
 
   const reader = request.body?.getReader();
-  if (!reader) return Response.json({ code: "CHAT_REQUEST_INVALID", message: "请求内容不能为空。" }, { status: 400, headers: NO_STORE });
+  if (!reader)
+    return Response.json(
+      { code: "CHAT_REQUEST_INVALID", message: "请求内容不能为空。" },
+      { status: 400, headers: NO_STORE },
+    );
 
   const decoder = new TextDecoder();
   let body = "";
@@ -57,7 +73,10 @@ export async function POST(request: Request) {
     receivedBytes += value.byteLength;
     if (receivedBytes > MAX_REQUEST_BYTES) {
       await reader.cancel();
-      return Response.json({ code: "CHAT_REQUEST_INVALID", message: "请求内容过大。" }, { status: 413, headers: NO_STORE });
+      return Response.json(
+        { code: "CHAT_REQUEST_INVALID", message: "请求内容过大。" },
+        { status: 413, headers: NO_STORE },
+      );
     }
     body += decoder.decode(value, { stream: true });
   }
@@ -67,12 +86,18 @@ export async function POST(request: Request) {
   try {
     parsed = JSON.parse(body);
   } catch {
-    return Response.json({ code: "CHAT_REQUEST_INVALID", message: "请求格式无效。" }, { status: 400, headers: NO_STORE });
+    return Response.json(
+      { code: "CHAT_REQUEST_INVALID", message: "请求格式无效。" },
+      { status: 400, headers: NO_STORE },
+    );
   }
 
   const chatRequest = sanitizeChatRequest(parsed);
   if (!chatRequest) {
-    return Response.json({ code: "CHAT_REQUEST_INVALID", message: "聊天请求格式无效。" }, { status: 400, headers: NO_STORE });
+    return Response.json(
+      { code: "CHAT_REQUEST_INVALID", message: "聊天请求格式无效。" },
+      { status: 400, headers: NO_STORE },
+    );
   }
 
   let upstream: Response;
@@ -89,14 +114,21 @@ export async function POST(request: Request) {
       cache: "no-store",
     });
   } catch {
-    return Response.json({ code: "AGENT_UNAVAILABLE", message: "AskDB 智能助手暂时不可用。" }, { status: 503, headers: NO_STORE });
+    return Response.json(
+      { code: "AGENT_UNAVAILABLE", message: "AskDB 智能助手暂时不可用。" },
+      { status: 503, headers: NO_STORE },
+    );
   }
 
   if (!upstream.ok || !upstream.body) {
     const detail = await upstream.text();
     if (upstream.status === 401) await clearSessionCookie();
     let payload: unknown = null;
-    try { payload = detail ? JSON.parse(detail) as unknown : null; } catch { /* Use safe fallback. */ }
+    try {
+      payload = detail ? (JSON.parse(detail) as unknown) : null;
+    } catch {
+      /* Use safe fallback. */
+    }
     return safeErrorResponse(upstream.ok ? 502 : upstream.status, payload);
   }
 

@@ -44,13 +44,36 @@ def _raise_settings_error(error: Exception) -> None:
         ) from None
     if isinstance(error, ModelProbeFailed):
         messages = {
-            "MODEL_AUTH_FAILED": "模型认证失败，请检查 API Key。",
-            "MODEL_CONNECTION_FAILED": "无法连接模型服务，请检查 API 地址后重试。",
-            "MODEL_REJECTED": "模型服务拒绝了探测请求，请检查模型名称和配置。",
+            "MODEL_AUTH_FAILED": "模型鉴权失败，请检查 API Key、地域和模型访问权限。",
+            "MODEL_CONNECTION_FAILED": "无法连接模型服务或服务暂不可用，请检查 API 地址、网络和服务状态。",
+            "MODEL_REJECTED": "模型服务拒绝了探测请求，请检查模型名称、请求参数或调用额度。",
+            "MODEL_RESPONSE_INVALID": "服务已响应，但返回格式不符合预期；请确认 API URL 和服务类型。",
         }
+        response_diagnostics = {
+            "response_too_large": "服务响应过大，无法安全解析。",
+            "invalid_json": "服务返回的内容不是有效 JSON；请确认填写的是完整 API URL。",
+            "response_not_object": "服务返回的 JSON 顶层不是对象；请确认 API URL 和服务类型。",
+            "embedding_output_missing": "响应中没有 output.embeddings；请确认使用 DashScope 原生 Embedding 接口。",
+            "embedding_count_mismatch": "返回的向量条数与测试输入不一致。",
+            "embedding_item_invalid": "Embedding 返回项不是有效对象。",
+            "embedding_index_missing": "Embedding 结果缺少索引；多条输入时必须返回 text_index。",
+            "embedding_index_invalid": "Embedding 返回的 text_index 无效或重复。",
+            "embedding_vector_missing": "Embedding 返回项缺少 embedding 字段。",
+            "embedding_vector_invalid": "Embedding 的 embedding 必须是数值数组。",
+            "embedding_dimension_mismatch": "返回向量维度与请求维度不一致；请确认模型支持该维度。",
+            "embedding_value_invalid": "Embedding 向量包含非数值内容。",
+            "rerank_output_missing": "响应中没有 output.results；请确认使用 DashScope 原生 Rerank 接口。",
+            "rerank_count_mismatch": "返回的排序条数与测试文档数不一致。",
+            "rerank_item_invalid": "Rerank 结果缺少有效的 index 或 relevance_score。",
+        }
+        message = response_diagnostics.get(error.diagnostic_code, messages[error.code])
         raise HTTPException(
             status_code=502,
-            detail={"code": error.code, "message": messages[error.code]},
+            detail={
+                "code": error.code,
+                "message": message,
+                **({"diagnostic_code": error.diagnostic_code} if error.diagnostic_code else {}),
+            },
         ) from None
     raise HTTPException(
         status_code=503,
@@ -79,6 +102,7 @@ async def test_model_profile(
             context_window_tokens=body.context_window_tokens,
             max_output_tokens=body.max_output_tokens,
             tokenizer_id=body.tokenizer_id,
+            **({"model_kind": body.model_kind, "service_options": body.service_options} if isinstance(body, ModelProfileInput) else {}),
         )
     except Exception as exc:
         _raise_settings_error(exc)
@@ -96,6 +120,7 @@ async def create_model_profile(
             context_window_tokens=body.context_window_tokens,
             max_output_tokens=body.max_output_tokens,
             tokenizer_id=body.tokenizer_id,
+            **({"model_kind": body.model_kind, "service_options": body.service_options} if isinstance(body, ModelProfileInput) else {}),
         )
     except Exception as exc:
         _raise_settings_error(exc)
@@ -112,6 +137,7 @@ async def update_model_profile(
             context_window_tokens=body.context_window_tokens,
             max_output_tokens=body.max_output_tokens,
             tokenizer_id=body.tokenizer_id,
+            **({"model_kind": body.model_kind, "service_options": body.service_options} if isinstance(body, ModelProfileInput) else {}),
         )
     except Exception as exc:
         _raise_settings_error(exc)
@@ -177,6 +203,7 @@ async def test_model_settings(
             context_window_tokens=body.context_window_tokens,
             max_output_tokens=body.max_output_tokens,
             tokenizer_id=body.tokenizer_id,
+            **({"model_kind": body.model_kind, "service_options": body.service_options} if isinstance(body, ModelProfileInput) else {}),
         )
     except Exception as exc:
         _raise_settings_error(exc)
@@ -194,6 +221,7 @@ async def put_model_settings(
             context_window_tokens=body.context_window_tokens,
             max_output_tokens=body.max_output_tokens,
             tokenizer_id=body.tokenizer_id,
+            **({"model_kind": body.model_kind, "service_options": body.service_options} if isinstance(body, ModelProfileInput) else {}),
         )
     except Exception as exc:
         _raise_settings_error(exc)
@@ -204,5 +232,15 @@ async def delete_model_credential(request: Request, response: Response) -> dict[
     response.headers["Cache-Control"] = "no-store"
     try:
         return await _service(request).clear_default_credential()
+    except Exception as exc:
+        _raise_settings_error(exc)
+
+
+@router.put('/v1/settings/models/{profile_id}/memory-processing')
+async def set_memory_processing(profile_id: str, request: Request, response: Response):
+    response.headers['Cache-Control'] = 'no-store'
+    try:
+        _service(request).store.set_memory_chat(profile_id)
+        return await _service(request).public_catalog()
     except Exception as exc:
         _raise_settings_error(exc)

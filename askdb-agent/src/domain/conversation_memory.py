@@ -107,6 +107,7 @@ class ConversationTurn:
     role: str
     content: str
     created_at: datetime
+    personal_events: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)

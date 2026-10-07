@@ -1026,7 +1026,7 @@ class ConversationMemoryStore:
             self._require_history_import_complete(connection, thread_id)
             turns = connection.execute(
                 """SELECT turn.turn_id, turn.sequence, turn.role,
-                          turn.content, turn.created_at
+                          turn.content, turn.created_at, request.personal_events
                    FROM agent_conversation_turns AS turn
                    JOIN agent_turn_requests AS request
                      ON request.thread_id=turn.thread_id
@@ -1054,6 +1054,7 @@ class ConversationMemoryStore:
                     role=item["role"],
                     content=item["content"],
                     created_at=_parse_timestamp(item["created_at"]),
+                    personal_events=tuple(item['personal_events']) if item['role']=='assistant' else (),
                 )
                 for item in reversed(turns)
             ),
@@ -1169,6 +1170,8 @@ class ConversationMemoryStore:
         owner_user_id: str,
         turn_id: str,
         assistant_content: str,
+        analysis_descriptor: dict | None = None,
+        personal_events: list | None = None,
     ) -> str:
         from application.conversation_memory import sanitize_turn_text
 
@@ -1212,6 +1215,13 @@ class ConversationMemoryStore:
                    WHERE thread_id=%s AND turn_id=%s""",
                 (next_sequence, content, now.isoformat(), thread_id, turn_key),
             )
+            if analysis_descriptor is not None:
+                descriptor = json.dumps(analysis_descriptor,ensure_ascii=False)
+                if len(descriptor) > 6000:
+                    raise ValueError('analysis descriptor too large')
+                connection.execute('UPDATE agent_turn_requests SET analysis_descriptor=%s::jsonb WHERE thread_id=%s AND turn_id=%s', (descriptor,thread_id,turn_key))
+            if personal_events:
+                connection.execute('UPDATE agent_turn_requests SET personal_events=%s::jsonb WHERE thread_id=%s AND turn_id=%s', (json.dumps(personal_events[:16]),thread_id,turn_key))
             connection.commit()
             return content
         except BaseException:

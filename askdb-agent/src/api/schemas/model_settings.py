@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ModelSettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["openai", "deepseek", "custom"]
+    provider: Literal["openai", "deepseek", "custom", "bailian"]
     name: str = Field(default="默认模型", min_length=1, max_length=100)
     profile_id: str | None = Field(default=None, min_length=1, max_length=128)
     model: str = Field(min_length=1, max_length=200)
@@ -22,8 +22,10 @@ class ModelSettingsInput(BaseModel):
 class ModelProfileInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    model_kind: Literal["chat", "embedding", "rerank"] = "chat"
+    service_options: dict = Field(default_factory=dict)
     name: str = Field(min_length=1, max_length=100)
-    provider: Literal["openai", "deepseek", "custom"]
+    provider: Literal["openai", "deepseek", "custom", "bailian"]
     model: str = Field(min_length=1, max_length=200)
     base_url: str = Field(min_length=1, max_length=2048)
     api_key: str = Field(default="", max_length=4096)
@@ -43,7 +45,7 @@ class DeleteModelProfileInput(BaseModel):
 
 
 class PublicModelSettings(BaseModel):
-    provider: Literal["openai", "deepseek", "custom"]
+    provider: Literal["openai", "deepseek", "custom", "bailian"]
     model: str
     base_url: str
     api_key_configured: bool

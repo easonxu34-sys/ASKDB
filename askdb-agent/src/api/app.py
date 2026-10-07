@@ -24,6 +24,10 @@ from api.routes.wren_settings import router as wren_settings_router
 from api.routes.threads import router as threads_router
 from api.routes.business_rules import router as business_rules_router
 from api.routes.memories import router as memories_router
+from api.routes.personal_memory import router as personal_memory_router
+from integrations.personal_memory_store import PersonalMemoryStore
+from integrations.personal_memory_index import PersonalMemoryIndexer
+from application.personal_memory import PersonalMemoryApplication
 from api.dependencies import auth_http_exception
 from api.thread_body_limit import ThreadRequestBodyLimitMiddleware
 from domain.auth import AuthError
@@ -64,6 +68,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         memory_task: asyncio.Task[None] | None = None
         revision_retention_task: asyncio.Task[None] | None = None
+        personal_index_task: asyncio.Task[None] | None = None
         sweeper_lease: PostgresConnection | None = None
         try:
             await asyncio.to_thread(store.list_data_sources)
@@ -143,6 +148,10 @@ def create_app(
                     pass
                 await asyncio.to_thread(query_memory_store.prune_expired_revisions, limit=500)
                 app.state.conversation_memory = memory_store
+                personal_store = PersonalMemoryStore(store.database, journal)
+                indexer = PersonalMemoryIndexer(personal_store, model_settings.store)
+                app.state.personal_memory = PersonalMemoryApplication(personal_store, model_settings.store, indexer)
+                personal_index_task = asyncio.create_task(indexer.run(), name="askdb-personal-memory-index")
                 wren_settings.business_rule_store = business_rule_store
                 app.state.business_rule_memory = BusinessRuleMemoryApplication(
                     business_rule_store,
@@ -205,6 +214,8 @@ def create_app(
             )
             yield
         finally:
+            if personal_index_task is not None:
+                await stop_memory_sweeper(personal_index_task)
             if memory_task is not None:
                 await stop_memory_sweeper(memory_task)
             if revision_retention_task is not None:
@@ -247,13 +258,14 @@ def create_app(
     app.include_router(threads_router)
     app.include_router(business_rules_router)
     app.include_router(memories_router)
+    app.include_router(personal_memory_router)
 
     @app.exception_handler(StarletteHTTPException)
     async def no_store_settings_errors(
         request: Request, exc: StarletteHTTPException
     ):
         if request.url.path.startswith((
-            "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
+            "/v1/me", "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
             "/v1/settings/wren", "/v1/data-sources",
             "/v1/threads",
             "/v1/business-rules",
@@ -280,13 +292,15 @@ def create_app(
         request: Request, _exc: RequestValidationError
     ) -> JSONResponse:
         if request.url.path.startswith((
-            "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
+            "/v1/me", "/v1/auth", "/v1/admin", "/v1/chat", "/v1/settings/model",
             "/v1/settings/wren", "/v1/data-sources",
             "/v1/threads",
             "/v1/business-rules",
         )):
             path = request.url.path
-            if path.startswith("/v1/auth"):
+            if path.startswith("/v1/me"):
+                code, message = "PERSONAL_MEMORY_INVALID_CONTENT", "个人记忆字段无效，请检查后重试。"
+            elif path.startswith("/v1/auth"):
                 code, message = "AUTH_INPUT_INVALID", "登录或密码字段无效，请检查后重试。"
             elif path.startswith("/v1/admin"):
                 code, message = "ACCOUNT_INPUT_INVALID", "账号字段无效，请检查后重试。"

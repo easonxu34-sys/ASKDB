@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AdminGate } from "@/components/auth/admin-gate";
 import { SettingsPageHeader } from "@/components/settings/settings-page-header";
+import { MemoryServiceSettingsPanel } from "@/components/settings/memory-service-settings-page";
 import { Button } from "@/components/ui/button";
 import { ComposerSelect } from "@/components/ui/composer-select";
 import { ArrowUpRightIcon, BookOpenIcon, BrainIcon } from "lucide-react";
@@ -22,7 +24,7 @@ import {
 } from "@/lib/memory-api";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-type Tab = "query-examples" | "business-rules";
+export type MemoryManagementTab = "query-examples" | "business-rules" | "service";
 
 const reviewLabels: Record<string, string> = {
   pending: "待审核",
@@ -66,16 +68,27 @@ function StatusPair({ review, publication }: { review: string; publication: stri
   return <div className="flex flex-wrap gap-1.5"><Badge tone={reviewTone}>{reviewLabels[review] ?? review}</Badge><Badge tone={publishTone}>{publicationLabels[publication] ?? publication}</Badge></div>;
 }
 
-export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolean }) {
+export function MemoryManagementPage({
+  adminMode = false,
+  initialTab = "query-examples",
+  syncTabToUrl = false,
+}: {
+  adminMode?: boolean;
+  initialTab?: MemoryManagementTab;
+  syncTabToUrl?: boolean;
+}) {
+  const router = useRouter();
   const pageTitle = adminMode ? "记忆管理" : "我的提交";
   const pageDescription = adminMode
-    ? "审核可复用的查询方法和业务口径；每条记忆都要经过发布或激活才会影响回答。"
+    ? "管理查询示例、业务规则与记忆处理服务配置。"
     : "查看你提交的查询示例和业务规则。审核通过后，还需要发布或激活才会用于回答。";
   const PageIcon = adminMode ? BrainIcon : BookOpenIcon;
   const [user, setUser] = useState<AuthUser | null>(null);
   const [catalog, setCatalog] = useState<DataSourceCatalog | null>(null);
   const [sourceId, setSourceId] = useState("");
-  const [tab, setTab] = useState<Tab>("query-examples");
+  const [tab, setTab] = useState<MemoryManagementTab>(
+    adminMode ? initialTab : initialTab === "service" ? "query-examples" : initialTab,
+  );
   const [reviewFilter, setReviewFilter] = useState("");
   const [examples, setExamples] = useState<QueryExampleCandidate[]>([]);
   const [nextExampleCursor, setNextExampleCursor] = useState<string | null>(null);
@@ -92,6 +105,20 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
     [catalog],
   );
   const activeSource = sources.find((source) => source.id === sourceId);
+
+  useEffect(() => {
+    setTab(adminMode ? initialTab : initialTab === "service" ? "query-examples" : initialTab);
+  }, [adminMode, initialTab]);
+
+  function selectTab(nextTab: MemoryManagementTab) {
+    const resolvedTab = !adminMode && nextTab === "service" ? "query-examples" : nextTab;
+    setTab(resolvedTab);
+    if (!syncTabToUrl) return;
+    router.replace(
+      resolvedTab === "query-examples" ? "/settings/memories" : `/settings/memories?tab=${resolvedTab}`,
+      { scroll: false },
+    );
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -181,7 +208,7 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
     return "发布仍在进行，可刷新列表查看最新状态。";
   }
 
-  if (loading && !catalog) {
+  if (loading && !catalog && !(adminMode && tab === "service")) {
     return (
       <>
         <SettingsPageHeader
@@ -205,6 +232,12 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
       />
       <main className="min-h-full bg-[#f7f5f0] px-5 py-8 text-[#393630] sm:px-8 lg:px-10">
         <div className="mx-auto max-w-5xl">
+          <div className="mb-4 flex w-fit max-w-full flex-wrap gap-1 rounded-xl bg-[#f0ede6] p-1" role="tablist" aria-label="记忆管理区域">
+            <button id="memory-tab-query-examples" type="button" role="tab" aria-selected={tab === "query-examples"} aria-controls="memory-management-panel" onClick={() => selectTab("query-examples")} className={`rounded-lg px-3 py-2 font-sans text-xs transition-colors focus-visible:ring-2 focus-visible:ring-[#c57650] ${tab === "query-examples" ? "bg-white text-[#514b42] shadow-sm" : "text-[#77736b] hover:text-[#514b42]"}`}>查询示例 <span className="ml-1 text-[10px] text-[#968f83]">{examples.length}</span></button>
+            <button id="memory-tab-business-rules" type="button" role="tab" aria-selected={tab === "business-rules"} aria-controls="memory-management-panel" onClick={() => selectTab("business-rules")} className={`rounded-lg px-3 py-2 font-sans text-xs transition-colors focus-visible:ring-2 focus-visible:ring-[#c57650] ${tab === "business-rules" ? "bg-white text-[#514b42] shadow-sm" : "text-[#77736b] hover:text-[#514b42]"}`}>业务规则 <span className="ml-1 text-[10px] text-[#968f83]">{rules.length}</span></button>
+            {adminMode && <button id="memory-tab-service" type="button" role="tab" aria-selected={tab === "service"} aria-controls="memory-service-panel" onClick={() => selectTab("service")} className={`rounded-lg px-3 py-2 font-sans text-xs transition-colors focus-visible:ring-2 focus-visible:ring-[#c57650] ${tab === "service" ? "bg-white text-[#514b42] shadow-sm" : "text-[#77736b] hover:text-[#514b42]"}`}>服务配置</button>}
+          </div>
+          <div id="memory-management-panel" role="tabpanel" aria-labelledby={tab === "business-rules" ? "memory-tab-business-rules" : "memory-tab-query-examples"} hidden={adminMode && tab === "service"}>
           <div className="mb-4 flex flex-wrap items-center justify-end gap-2 font-sans">
             <label htmlFor="memory-source" className="text-xs text-[#89847a]">数据源</label>
             <ComposerSelect
@@ -223,11 +256,7 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
             <Button variant="outline" size="sm" disabled={refreshing || !sourceId} onClick={() => void load(true)}>{refreshing ? "刷新中…" : "刷新"}</Button>
           </div>
           <section className="rounded-2xl border border-[#e7e0d5] bg-[#fbfaf7] p-4 shadow-[0_2px_10px_rgba(66,53,37,0.025)] sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex gap-1 rounded-xl bg-[#f0ede6] p-1" role="tablist" aria-label="记忆类型">
-              <button type="button" role="tab" aria-selected={tab === "query-examples"} onClick={() => setTab("query-examples")} className={`rounded-lg px-3 py-2 font-sans text-xs transition-colors focus-visible:ring-2 focus-visible:ring-[#c57650] ${tab === "query-examples" ? "bg-white text-[#514b42] shadow-sm" : "text-[#77736b] hover:text-[#514b42]"}`}>查询示例 <span className="ml-1 text-[10px] text-[#968f83]">{examples.length}</span></button>
-              <button type="button" role="tab" aria-selected={tab === "business-rules"} onClick={() => setTab("business-rules")} className={`rounded-lg px-3 py-2 font-sans text-xs transition-colors focus-visible:ring-2 focus-visible:ring-[#c57650] ${tab === "business-rules" ? "bg-white text-[#514b42] shadow-sm" : "text-[#77736b] hover:text-[#514b42]"}`}>业务规则 <span className="ml-1 text-[10px] text-[#968f83]">{rules.length}</span></button>
-            </div>
+          <div className="flex flex-wrap items-center justify-end gap-3">
             <div className="flex items-center gap-2 font-sans">
               <label htmlFor="memory-review-filter" className="text-[11px] text-[#89847a]">审核状态</label>
               <ComposerSelect
@@ -274,6 +303,12 @@ export function MemoryManagementPage({ adminMode = false }: { adminMode?: boolea
             {adminMode ? "审核通过只代表内容审核完成。查询示例需激活语料版本；业务规则需发布到新的数据源版本。" : "提交内容由服务端按当前账号和数据源权限隔离。待审核、被拒绝或尚未发布的内容不会用于回答。"}
           </p>
         </section>
+          </div>
+          {adminMode && (
+            <div id="memory-service-panel" role="tabpanel" aria-labelledby="memory-tab-service" hidden={tab !== "service"} className="mt-4">
+              <MemoryServiceSettingsPanel active={tab === "service"} />
+            </div>
+          )}
       </div>
       </main>
     </>
@@ -476,6 +511,12 @@ function makeActionKey() {
   return crypto.randomUUID().replaceAll("-", "");
 }
 
-export function AdminMemoryManagementPageRoute() {
-  return <AdminGate><MemoryManagementPage adminMode /></AdminGate>;
+export function AdminMemoryManagementPageRoute({
+  initialTab = "query-examples",
+  syncTabToUrl = false,
+}: {
+  initialTab?: MemoryManagementTab;
+  syncTabToUrl?: boolean;
+}) {
+  return <AdminGate><MemoryManagementPage adminMode initialTab={initialTab} syncTabToUrl={syncTabToUrl} /></AdminGate>;
 }
