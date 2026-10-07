@@ -10,7 +10,7 @@ services:
       dockerfile: askdb-agent/Dockerfile
     environment:
       ASKDB_SETTINGS_ENCRYPTION_KEY: ${ASKDB_SETTINGS_ENCRYPTION_KEY:?Set ASKDB_SETTINGS_ENCRYPTION_KEY in .env.docker}
-      ASKDB_SETTINGS_DB_PATH: /app/data/model-settings.sqlite3
+      ASKDB_DATABASE_DSN: ${ASKDB_DATABASE_DSN:?Set ASKDB_DATABASE_DSN in .env.docker}
       ASKDB_WREN_DATA_DIR: /app/data/wren
       WREN_HOME: /app/data/wren-home
     volumes:

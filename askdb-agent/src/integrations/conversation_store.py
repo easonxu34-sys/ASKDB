@@ -3,13 +3,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
-import sqlite3
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from domain.conversation_memory import (
@@ -41,7 +38,7 @@ from domain.conversation_memory import (
     TurnStart,
 )
 from domain.business_rules import BusinessRuleForbidden
-from integrations.memory_migrations import apply_memory_migrations
+from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
 from integrations.deletion_journal import (
     DeletionJournalUnavailable,
     EncryptedDeletionJournal,
@@ -64,7 +61,7 @@ def _opaque_key(value: str) -> str:
 _UNSET = object()
 
 
-def _thread_from_row(row: sqlite3.Row) -> ConversationThread:
+def _thread_from_row(row: PostgresRow) -> ConversationThread:
     archived_at = row["archived_at"]
     return ConversationThread(
         thread_id=row["thread_id"],
@@ -135,16 +132,16 @@ class ConversationMemoryStore:
 
     def __init__(
         self,
-        database_path: Path,
+        database: PostgresDatabase | None = None,
         *,
         clock: Callable[[], datetime] | None = None,
         tombstone_retention: timedelta = timedelta(days=30),
         deletion_journal: EncryptedDeletionJournal | None = None,
-        rule_preview: Callable[[sqlite3.Connection, str, str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+        rule_preview: Callable[[PostgresConnection, str, str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
         deletion_participant: BusinessRuleDeletionParticipant | None = None,
         suppression_participants: tuple[Any, ...] = (),
     ) -> None:
-        self.database_path = Path(database_path).expanduser().resolve()
+        self.database = database or PostgresDatabase()
         self.clock = clock or (lambda: datetime.now(UTC))
         self.tombstone_retention = tombstone_retention
         self.deletion_journal = deletion_journal
@@ -166,44 +163,35 @@ class ConversationMemoryStore:
         value = self.clock()
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
-    def _connect(self) -> sqlite3.Connection:
-        self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
-        os.chmod(self.database_path, 0o600)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.create_function(
-            "askdb_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True
-        )
-        return connection
+    def _connect(self) -> PostgresConnection:
+        return self.database.connect()
 
     @staticmethod
-    def _bump_thread_list_revision(connection: sqlite3.Connection, owner_user_id: str) -> None:
+    def _bump_thread_list_revision(connection: PostgresConnection, owner_user_id: str) -> None:
         connection.execute(
             """INSERT INTO agent_thread_list_revisions(owner_user_id, revision)
-               VALUES (?, 2)
-               ON CONFLICT(owner_user_id) DO UPDATE SET revision=revision+1""",
+               VALUES (%s, 2)
+               ON CONFLICT(owner_user_id) DO UPDATE SET
+                 revision=agent_thread_list_revisions.revision+1""",
             (owner_user_id,),
         )
 
     @staticmethod
-    def _thread_list_revision(connection: sqlite3.Connection, owner_user_id: str) -> int:
+    def _thread_list_revision(connection: PostgresConnection, owner_user_id: str) -> int:
         connection.execute(
-            """INSERT OR IGNORE INTO agent_thread_list_revisions(owner_user_id, revision)
-               VALUES (?, 1)""",
+            """INSERT INTO agent_thread_list_revisions(owner_user_id, revision)
+               VALUES (%s, 1) ON CONFLICT(owner_user_id) DO NOTHING""",
             (owner_user_id,),
         )
         row = connection.execute(
-            "SELECT revision FROM agent_thread_list_revisions WHERE owner_user_id=?",
+            "SELECT revision FROM agent_thread_list_revisions WHERE owner_user_id=%s",
             (owner_user_id,),
         ).fetchone()
         return int(row["revision"])
 
     def _get_thread_projection(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         thread_id: str,
         owner_user_id: str,
     ) -> ConversationThread:
@@ -220,7 +208,7 @@ class ConversationMemoryStore:
                FROM chat_thread_data_sources AS b
                JOIN agent_conversation_threads AS t USING(thread_id)
                LEFT JOIN wren_data_sources AS s ON s.id=b.data_source_id
-               WHERE b.thread_id=? AND b.owner_user_id=?""",
+               WHERE b.thread_id=%s AND b.owner_user_id=%s""",
             (thread_id, owner_user_id),
         ).fetchone()
         if row is None:
@@ -230,12 +218,12 @@ class ConversationMemoryStore:
     def initialize(self) -> None:
         connection = self._connect()
         try:
-            # The memory-enabled service is single-process, but requests and the
-            # sweeper use separate SQLite connections. WAL keeps their short
-            # reads from blocking writes while FULL sync preserves commit
-            # durability for journal-applied suppression state.
-            connection.execute("PRAGMA journal_mode = WAL")
-            apply_memory_migrations(connection)
+            connection.execute(
+                """INSERT INTO agent_memory_journal_state
+                   (id, journal_applied_seq, healthy, updated_at, journal_initialized)
+                   VALUES (1, 0, 1, %s, 0) ON CONFLICT(id) DO NOTHING""",
+                (self._now().isoformat(),),
+            )
             state = connection.execute(
                 "SELECT journal_initialized, journal_id FROM agent_memory_journal_state WHERE id=1"
             ).fetchone()
@@ -256,8 +244,8 @@ class ConversationMemoryStore:
             try:
                 connection.execute(
                     """UPDATE agent_memory_journal_state
-                       SET journal_initialized=1, journal_id=?, healthy=0,
-                           last_error_code='JOURNAL_REPLAY_REQUIRED', updated_at=?
+                       SET journal_initialized=1, journal_id=%s, healthy=0,
+                           last_error_code='JOURNAL_REPLAY_REQUIRED', updated_at=%s
                        WHERE id=1""",
                     (journal_id, self._now().isoformat()),
                 )
@@ -268,12 +256,14 @@ class ConversationMemoryStore:
             self._mark_journal_unhealthy("JOURNAL_INVALID")
             raise
 
-    def _has_rule_deletion_schema(self, connection: sqlite3.Connection) -> bool:
-        rows = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('business_rule_origins', 'business_rule_candidates')"
-        ).fetchall()
-        return bool(rows)
+    def _has_table(self, connection: PostgresConnection, table: str) -> bool:
+        row = connection.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (table,)).fetchone()
+        return bool(row["present"])
+
+    def _has_rule_deletion_schema(self, connection: PostgresConnection) -> bool:
+        return self._has_table(connection, "business_rule_origins") or self._has_table(
+            connection, "business_rule_candidates"
+        )
 
     def assert_deletion_participant_ready(self) -> None:
         connection = self._connect()
@@ -282,9 +272,7 @@ class ConversationMemoryStore:
                 raise ThreadDeletionParticipantUnavailable(
                     "linked business-rule deletion participant is not configured"
                 )
-            has_query_examples = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='query_example_candidates'"
-            ).fetchone() is not None
+            has_query_examples = self._has_table(connection, "query_example_candidates")
             if has_query_examples and not any(
                 callable(getattr(participant, "apply_suppression", None))
                 and callable(getattr(participant, "preview", None))
@@ -297,7 +285,7 @@ class ConversationMemoryStore:
             connection.close()
 
     def _preview_linked_rules(
-        self, connection: sqlite3.Connection, thread_id: str, source_id: str
+        self, connection: PostgresConnection, thread_id: str, source_id: str
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if self.deletion_participant is not None:
             return self.deletion_participant.preview(connection, thread_id, source_id)
@@ -310,12 +298,9 @@ class ConversationMemoryStore:
         return (), ()
 
     def _preview_query_examples(
-        self, connection: sqlite3.Connection, thread_id: str, source_id: str
+        self, connection: PostgresConnection, thread_id: str, source_id: str
     ) -> tuple[str, ...]:
-        has_query_examples = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='query_example_candidates'"
-        ).fetchone() is not None
+        has_query_examples = self._has_table(connection, "query_example_candidates")
         if not has_query_examples:
             return ()
         for participant in self.suppression_participants:
@@ -390,10 +375,10 @@ class ConversationMemoryStore:
         thread_id = uuid.uuid4().hex
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             prior_create = connection.execute(
                 """SELECT request_hash, thread_id FROM agent_thread_creation_requests
-                   WHERE owner_user_id=? AND creation_key_hash=?""",
+                   WHERE owner_user_id=%s AND creation_key_hash=%s""",
                 (owner_user_id, creation_key_hash),
             ).fetchone()
             if prior_create is not None:
@@ -413,10 +398,10 @@ class ConversationMemoryStore:
                 connection.commit()
                 return prior_thread
             user = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (owner_user_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (owner_user_id,)
             ).fetchone()
             source = connection.execute(
-                "SELECT enabled, display_name FROM wren_data_sources WHERE id=?", (source_id,)
+                "SELECT enabled, display_name FROM wren_data_sources WHERE id=%s", (source_id,)
             ).fetchone()
             if user is None or not user["is_active"]:
                 raise ThreadNotFound("thread unavailable")
@@ -424,7 +409,7 @@ class ConversationMemoryStore:
                 raise ThreadNotFound("source unavailable")
             if user["role"] == "member":
                 grant = connection.execute(
-                    "SELECT 1 FROM auth_user_data_sources WHERE user_id=? AND data_source_id=?",
+                    "SELECT 1 FROM auth_user_data_sources WHERE user_id=%s AND data_source_id=%s",
                     (owner_user_id, source_id),
                 ).fetchone()
                 if grant is None:
@@ -434,19 +419,19 @@ class ConversationMemoryStore:
             connection.execute(
                 """INSERT INTO chat_thread_data_sources
                    (thread_id, data_source_id, owner_user_id, created_at)
-                   VALUES (?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s)""",
                 (thread_id, source_id, owner_user_id, now.isoformat()),
             )
             connection.execute(
                 """INSERT INTO agent_conversation_threads
                    (thread_id, status, created_at, last_user_turn_at)
-                   VALUES (?, 'active', ?, ?)""",
+                   VALUES (%s, 'active', %s, %s)""",
                 (thread_id, now.isoformat(), now.isoformat()),
             )
             connection.execute(
                 """INSERT INTO agent_thread_creation_requests
                    (owner_user_id, creation_key_hash, request_hash, thread_id, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s)""",
                 (owner_user_id, creation_key_hash, request_hash, thread_id, now.isoformat()),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
@@ -455,7 +440,7 @@ class ConversationMemoryStore:
                     """INSERT INTO agent_thread_history_imports
                        (thread_id, import_id, expected_chunk_count, expected_turn_count,
                         expected_content_bytes, expected_chunk_hashes_json, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (
                         thread_id,
                         history_import.import_id,
@@ -474,7 +459,7 @@ class ConversationMemoryStore:
                     """INSERT INTO agent_turn_requests
                        (thread_id, turn_id, request_hash, status, assistant_content,
                         created_at, updated_at, user_sequence, assistant_sequence)
-                       VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, 'completed', %s, %s, %s, %s, %s)""",
                     (
                         thread_id,
                         turn_key,
@@ -489,7 +474,7 @@ class ConversationMemoryStore:
                 connection.executemany(
                     """INSERT INTO agent_conversation_turns
                        (id, thread_id, sequence, role, turn_id, content, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (
                         (uuid.uuid4().hex, thread_id, sequence, "user", turn_key, user_content, now.isoformat()),
                         (uuid.uuid4().hex, thread_id, sequence + 1, "assistant", turn_key, assistant_content, now.isoformat()),
@@ -543,10 +528,10 @@ class ConversationMemoryStore:
                 else "t.status='active' AND t.archived_at IS NOT NULL"
             )
             ordering = (
-                "askdb_casefold(COALESCE(s.display_name, '')) COLLATE BINARY, "
+                'askdb_casefold(COALESCE(s.display_name, \'\')) COLLATE "C", '
                 "b.data_source_id, t.is_pinned DESC, t.last_user_turn_at DESC, b.thread_id"
                 if view == "recent"
-                else "askdb_casefold(COALESCE(s.display_name, '')) COLLATE BINARY, "
+                else 'askdb_casefold(COALESCE(s.display_name, \'\')) COLLATE "C", '
                 "b.data_source_id, t.archived_at DESC, b.thread_id"
             )
             rows = connection.execute(
@@ -564,11 +549,11 @@ class ConversationMemoryStore:
                    JOIN agent_conversation_threads AS t USING(thread_id)
                    JOIN auth_users AS u ON u.id=b.owner_user_id
                    LEFT JOIN wren_data_sources AS s ON s.id=b.data_source_id
-                   WHERE b.owner_user_id=? AND u.is_active=1
+                   WHERE b.owner_user_id=%s AND u.is_active=1
                      AND u.role IN ('admin', 'member') AND {view_filter}
-                     AND (?='' OR instr(askdb_casefold(COALESCE(t.title, '')), ?)>0
-                          OR instr(askdb_casefold(COALESCE(s.display_name, '')), ?)>0)
-                   ORDER BY {ordering} LIMIT ? OFFSET ?""",
+                     AND (%s='' OR POSITION(%s IN askdb_casefold(COALESCE(t.title, ''))) > 0
+                          OR POSITION(%s IN askdb_casefold(COALESCE(s.display_name, ''))) > 0)
+                   ORDER BY {ordering} LIMIT %s OFFSET %s""",
                 (
                     owner_user_id,
                     normalized_query,
@@ -639,7 +624,7 @@ class ConversationMemoryStore:
 
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
             self._require_live_metadata_thread(current)
             if current.metadata_revision != expected_metadata_revision:
@@ -649,11 +634,11 @@ class ConversationMemoryStore:
             values: list[Any] = []
             changed_for_list = False
             if title is not _UNSET:
-                updates.append("title=?")
+                updates.append("title=%s")
                 values.append(title)
                 changed_for_list = changed_for_list or title != current.title
             if is_pinned is not _UNSET:
-                updates.append("is_pinned=?")
+                updates.append("is_pinned=%s")
                 values.append(int(bool(is_pinned)))
                 changed_for_list = changed_for_list or bool(is_pinned) != current.is_pinned
             if changed_for_list:
@@ -661,7 +646,7 @@ class ConversationMemoryStore:
                 values.extend((thread_id, expected_metadata_revision))
                 connection.execute(
                     f"UPDATE agent_conversation_threads SET {', '.join(updates)} "
-                    "WHERE thread_id=? AND metadata_revision=?",
+                    "WHERE thread_id=%s AND metadata_revision=%s",
                     values,
                 )
                 self._bump_thread_list_revision(connection, owner_user_id)
@@ -689,7 +674,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
             if current.metadata_revision != expected_metadata_revision:
                 raise ThreadMetadataConflict(current)
@@ -698,8 +683,8 @@ class ConversationMemoryStore:
                 raise ThreadStateConflict(current)
             connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET archived_at=?, metadata_revision=metadata_revision+1
-                   WHERE thread_id=? AND metadata_revision=? AND status='active'""",
+                   SET archived_at=%s, metadata_revision=metadata_revision+1
+                   WHERE thread_id=%s AND metadata_revision=%s AND status='active'""",
                 (now.isoformat(), thread_id, expected_metadata_revision),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
@@ -721,7 +706,7 @@ class ConversationMemoryStore:
     ) -> ConversationThread:
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             current = self._get_thread_projection(connection, thread_id, owner_user_id)
             if current.metadata_revision != expected_metadata_revision:
                 raise ThreadMetadataConflict(current)
@@ -731,7 +716,7 @@ class ConversationMemoryStore:
             connection.execute(
                 """UPDATE agent_conversation_threads
                    SET archived_at=NULL, metadata_revision=metadata_revision+1
-                   WHERE thread_id=? AND metadata_revision=? AND status='active'""",
+                   WHERE thread_id=%s AND metadata_revision=%s AND status='active'""",
                 (thread_id, expected_metadata_revision),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
@@ -750,14 +735,14 @@ class ConversationMemoryStore:
         if not 1 <= len(thread_ids) <= 200:
             raise ValueError("thread state batch size is outside the supported range")
         ids = tuple(dict.fromkeys(thread_ids))
-        placeholders = ",".join("?" for _ in ids)
+        placeholders = ",".join("%s" for _ in ids)
         connection = self._connect()
         try:
             rows = connection.execute(
                 f"""SELECT b.thread_id, t.status, t.archived_at
                    FROM chat_thread_data_sources AS b
                    JOIN agent_conversation_threads AS t USING(thread_id)
-                   WHERE b.owner_user_id=? AND b.thread_id IN ({placeholders})""",
+                   WHERE b.owner_user_id=%s AND b.thread_id IN ({placeholders})""",
                 (owner_user_id, *ids),
             ).fetchall()
         finally:
@@ -804,7 +789,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._owned_thread(
                 connection,
                 thread_id,
@@ -816,7 +801,7 @@ class ConversationMemoryStore:
                           expected_content_bytes, expected_chunk_hashes_json,
                           received_chunks, received_turn_count, received_content_bytes,
                           completed_at
-                   FROM agent_thread_history_imports WHERE thread_id=?""",
+                   FROM agent_thread_history_imports WHERE thread_id=%s""",
                 (thread_id,),
             ).fetchone()
             if descriptor is None or descriptor["import_id"] != import_id:
@@ -829,7 +814,7 @@ class ConversationMemoryStore:
 
             existing_chunk = connection.execute(
                 """SELECT request_hash FROM agent_thread_history_import_chunks
-                   WHERE thread_id=? AND import_id=? AND chunk_index=?""",
+                   WHERE thread_id=%s AND import_id=%s AND chunk_index=%s""",
                 (thread_id, import_id, chunk_index),
             ).fetchone()
             if existing_chunk is not None:
@@ -869,7 +854,7 @@ class ConversationMemoryStore:
                 """INSERT INTO agent_thread_history_import_chunks
                    (thread_id, import_id, chunk_index, request_hash, turn_count,
                     content_bytes, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (
                     thread_id,
                     import_id,
@@ -881,7 +866,7 @@ class ConversationMemoryStore:
                 ),
             )
             next_sequence = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=?",
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()[0]
             for turn_index, (raw_user, raw_assistant) in enumerate(turns):
@@ -897,7 +882,7 @@ class ConversationMemoryStore:
                     """INSERT INTO agent_turn_requests
                        (thread_id, turn_id, request_hash, status, assistant_content,
                         created_at, updated_at, user_sequence, assistant_sequence)
-                       VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, 'completed', %s, %s, %s, %s, %s)""",
                     (
                         thread_id,
                         turn_key,
@@ -912,7 +897,7 @@ class ConversationMemoryStore:
                 connection.executemany(
                     """INSERT INTO agent_conversation_turns
                        (id, thread_id, sequence, role, turn_id, content, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (
                         (
                             uuid.uuid4().hex,
@@ -937,9 +922,9 @@ class ConversationMemoryStore:
                 next_sequence += 2
             connection.execute(
                 """UPDATE agent_thread_history_imports
-                   SET received_chunks=?, received_turn_count=?, received_content_bytes=?,
-                       completed_at=?
-                   WHERE thread_id=? AND import_id=?""",
+                   SET received_chunks=%s, received_turn_count=%s, received_content_bytes=%s,
+                       completed_at=%s
+                   WHERE thread_id=%s AND import_id=%s""",
                 (
                     received_chunks,
                     received_turn_count,
@@ -966,12 +951,12 @@ class ConversationMemoryStore:
 
     def _owned_thread(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         thread_id: str,
         owner_user_id: str,
         *,
         require_source_grant: bool,
-    ) -> sqlite3.Row:
+    ) -> PostgresRow:
         row = connection.execute(
             """SELECT b.data_source_id, b.owner_user_id, s.display_name AS source_name,
                       t.status, t.summary,
@@ -981,23 +966,23 @@ class ConversationMemoryStore:
                FROM chat_thread_data_sources AS b
                JOIN agent_conversation_threads AS t USING(thread_id)
                LEFT JOIN wren_data_sources AS s ON s.id=b.data_source_id
-               WHERE b.thread_id=? AND b.owner_user_id=?""",
+               WHERE b.thread_id=%s AND b.owner_user_id=%s""",
             (thread_id, owner_user_id),
         ).fetchone()
         if row is None or row["status"] != "active" or row["deleted_at"] is not None:
             raise ThreadNotFound("thread unavailable")
         if require_source_grant:
             account = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (owner_user_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (owner_user_id,)
             ).fetchone()
             source = connection.execute(
-                "SELECT enabled FROM wren_data_sources WHERE id=?", (row["data_source_id"],)
+                "SELECT enabled FROM wren_data_sources WHERE id=%s", (row["data_source_id"],)
             ).fetchone()
             if account is None or not account["is_active"] or source is None or not source["enabled"]:
                 raise ThreadGrantRevoked("source grant required")
             if account["role"] == "member" and connection.execute(
                 """SELECT 1 FROM auth_user_data_sources
-                   WHERE user_id=? AND data_source_id=?""",
+                   WHERE user_id=%s AND data_source_id=%s""",
                 (owner_user_id, row["data_source_id"]),
             ).fetchone() is None:
                 raise ThreadGrantRevoked("source grant required")
@@ -1006,16 +991,16 @@ class ConversationMemoryStore:
         return row
 
     @staticmethod
-    def _history_import_pending(connection: sqlite3.Connection, thread_id: str) -> bool:
+    def _history_import_pending(connection: PostgresConnection, thread_id: str) -> bool:
         row = connection.execute(
             """SELECT completed_at FROM agent_thread_history_imports
-               WHERE thread_id=?""",
+               WHERE thread_id=%s""",
             (thread_id,),
         ).fetchone()
         return row is not None and row["completed_at"] is None
 
     def _require_history_import_complete(
-        self, connection: sqlite3.Connection, thread_id: str
+        self, connection: PostgresConnection, thread_id: str
     ) -> None:
         if self._history_import_pending(connection, thread_id):
             raise ThreadHistoryImportIncomplete("legacy history import is incomplete")
@@ -1046,12 +1031,12 @@ class ConversationMemoryStore:
                    JOIN agent_turn_requests AS request
                      ON request.thread_id=turn.thread_id
                     AND request.turn_id=turn.turn_id
-                   WHERE turn.thread_id=? AND request.status='completed'
-                   ORDER BY turn.sequence DESC LIMIT ?""",
+                   WHERE turn.thread_id=%s AND request.status='completed'
+                   ORDER BY turn.sequence DESC LIMIT %s""",
                 (thread_id, limit),
             ).fetchall()
             current_sequence = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) FROM agent_conversation_turns WHERE thread_id=?",
+                "SELECT COALESCE(MAX(sequence), 0) FROM agent_conversation_turns WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()[0]
         finally:
@@ -1093,7 +1078,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             owned_thread = self._owned_thread(
                 connection,
                 thread_id,
@@ -1104,7 +1089,7 @@ class ConversationMemoryStore:
             existing = connection.execute(
                 """SELECT request_hash, status, assistant_content,
                           user_sequence, assistant_sequence, updated_at
-                   FROM agent_turn_requests WHERE thread_id=? AND turn_id=?""",
+                   FROM agent_turn_requests WHERE thread_id=%s AND turn_id=%s""",
                 (thread_id, turn_key),
             ).fetchone()
             if existing:
@@ -1116,8 +1101,8 @@ class ConversationMemoryStore:
                     <= now - timedelta(minutes=15)
                 ):
                     connection.execute(
-                        """UPDATE agent_turn_requests SET status='failed', updated_at=?
-                           WHERE thread_id=? AND turn_id=? AND status='running'""",
+                        """UPDATE agent_turn_requests SET status='failed', updated_at=%s
+                           WHERE thread_id=%s AND turn_id=%s AND status='running'""",
                         (now.isoformat(), thread_id, turn_key),
                     )
                     connection.commit()
@@ -1132,20 +1117,20 @@ class ConversationMemoryStore:
                 )
             running = connection.execute(
                 """SELECT turn_id, updated_at FROM agent_turn_requests
-                   WHERE thread_id=? AND status='running' LIMIT 1""",
+                   WHERE thread_id=%s AND status='running' LIMIT 1""",
                 (thread_id,),
             ).fetchone()
             if running is not None:
                 if _parse_timestamp(running["updated_at"]) <= now - timedelta(minutes=15):
                     connection.execute(
-                        """UPDATE agent_turn_requests SET status='failed', updated_at=?
-                           WHERE thread_id=? AND turn_id=? AND status='running'""",
+                        """UPDATE agent_turn_requests SET status='failed', updated_at=%s
+                           WHERE thread_id=%s AND turn_id=%s AND status='running'""",
                         (now.isoformat(), thread_id, running["turn_id"]),
                     )
                 else:
                     raise TurnAlreadyRunning("another turn is already running for this thread")
             next_sequence = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=?",
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()[0]
             current_sequence = next_sequence - 1
@@ -1154,18 +1139,18 @@ class ConversationMemoryStore:
             connection.execute(
                 """INSERT INTO agent_turn_requests
                    (thread_id, turn_id, request_hash, status, user_sequence, created_at, updated_at)
-                   VALUES (?, ?, ?, 'running', ?, ?, ?)""",
+                   VALUES (%s, %s, %s, 'running', %s, %s, %s)""",
                 (thread_id, turn_key, request_hash, next_sequence, now.isoformat(), now.isoformat()),
             )
             connection.execute(
                 """INSERT INTO agent_conversation_turns
                    (id, thread_id, sequence, role, turn_id, content, created_at)
-                   VALUES (?, ?, ?, 'user', ?, ?, ?)""",
+                   VALUES (%s, %s, %s, 'user', %s, %s, %s)""",
                 (uuid.uuid4().hex, thread_id, next_sequence, turn_key, content, now.isoformat()),
             )
             connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET last_user_turn_at=? WHERE thread_id=?""",
+                   SET last_user_turn_at=%s WHERE thread_id=%s""",
                 (now.isoformat(), thread_id),
             )
             self._bump_thread_list_revision(connection, owner_user_id)
@@ -1192,7 +1177,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._owned_thread(
                 connection,
                 thread_id,
@@ -1201,7 +1186,7 @@ class ConversationMemoryStore:
             )
             request = connection.execute(
                 """SELECT status, assistant_content FROM agent_turn_requests
-                   WHERE thread_id=? AND turn_id=?""",
+                   WHERE thread_id=%s AND turn_id=%s""",
                 (thread_id, turn_key),
             ).fetchone()
             if request is None:
@@ -1212,19 +1197,19 @@ class ConversationMemoryStore:
             if request["status"] != "running":
                 raise TurnNotFound("turn is not running")
             next_sequence = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=?",
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_conversation_turns WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()[0]
             connection.execute(
                 """INSERT INTO agent_conversation_turns
                    (id, thread_id, sequence, role, turn_id, content, created_at)
-                   VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
+                   VALUES (%s, %s, %s, 'assistant', %s, %s, %s)""",
                 (uuid.uuid4().hex, thread_id, next_sequence, turn_key, content, now.isoformat()),
             )
             connection.execute(
                 """UPDATE agent_turn_requests
-                   SET status='completed', assistant_sequence=?, assistant_content=?, updated_at=?
-                   WHERE thread_id=? AND turn_id=?""",
+                   SET status='completed', assistant_sequence=%s, assistant_content=%s, updated_at=%s
+                   WHERE thread_id=%s AND turn_id=%s""",
                 (next_sequence, content, now.isoformat(), thread_id, turn_key),
             )
             connection.commit()
@@ -1247,7 +1232,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._owned_thread(
                 connection,
                 thread_id,
@@ -1255,8 +1240,8 @@ class ConversationMemoryStore:
                 require_source_grant=True,
             )
             cursor = connection.execute(
-                """UPDATE agent_turn_requests SET status='failed', updated_at=?
-                   WHERE thread_id=? AND turn_id=? AND status='running'""",
+                """UPDATE agent_turn_requests SET status='failed', updated_at=%s
+                   WHERE thread_id=%s AND turn_id=%s AND status='running'""",
                 (now.isoformat(), thread_id, turn_key),
             )
             connection.commit()
@@ -1278,17 +1263,17 @@ class ConversationMemoryStore:
         cutoff = (moment - stale_after).isoformat()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             stale = connection.execute(
                 """SELECT thread_id, turn_id FROM agent_turn_requests
-                   WHERE status='running' AND updated_at<=?
-                   ORDER BY updated_at LIMIT ?""",
+                   WHERE status='running' AND updated_at<=%s
+                   ORDER BY updated_at LIMIT %s""",
                 (cutoff, limit),
             ).fetchall()
             for row in stale:
                 connection.execute(
-                    """UPDATE agent_turn_requests SET status='failed', updated_at=?
-                       WHERE thread_id=? AND turn_id=? AND status='running'""",
+                    """UPDATE agent_turn_requests SET status='failed', updated_at=%s
+                       WHERE thread_id=%s AND turn_id=%s AND status='running'""",
                     (moment.isoformat(), row["thread_id"], row["turn_id"]),
                 )
             connection.commit()
@@ -1313,7 +1298,7 @@ class ConversationMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._owned_thread(
                 connection,
                 thread_id,
@@ -1322,8 +1307,8 @@ class ConversationMemoryStore:
             )
             cursor = connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET summary=?, summary_version=summary_version+1
-                   WHERE thread_id=? AND summary_version=? AND status='active'""",
+                   SET summary=%s, summary_version=summary_version+1
+                   WHERE thread_id=%s AND summary_version=%s AND status='active'""",
                 (safe_summary, thread_id, expected_version),
             )
             connection.commit()
@@ -1347,7 +1332,7 @@ class ConversationMemoryStore:
         impact_version = uuid.uuid4().hex
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             thread = self._owned_thread(
                 connection,
                 thread_id,
@@ -1378,7 +1363,7 @@ class ConversationMemoryStore:
                    (impact_version, thread_id, owner_user_id, data_source_id,
                     impact_hash, rule_count, rule_labels_json, query_example_count,
                     created_at, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     impact_version,
                     thread_id,
@@ -1436,7 +1421,7 @@ class ConversationMemoryStore:
         connection = self._connect()
         release_barrier: Callable[[], None] | None = None
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             prior = connection.execute(
                 """SELECT o.operation_id, o.thread_id, o.data_source_id,
                           o.journal_sequence, o.status, t.tombstone_until,
@@ -1444,7 +1429,7 @@ class ConversationMemoryStore:
                    FROM agent_thread_deletion_operations AS o
                    JOIN agent_conversation_threads AS t USING(thread_id)
                    JOIN chat_thread_data_sources AS b USING(thread_id)
-                   WHERE o.idempotency_key=?""",
+                   WHERE o.idempotency_key=%s""",
                 (idempotency_hash,),
             ).fetchone()
             if prior:
@@ -1476,7 +1461,7 @@ class ConversationMemoryStore:
             impact = connection.execute(
                 """SELECT impact_hash, expires_at, consumed_at
                    FROM agent_thread_deletion_impacts
-                   WHERE impact_version=? AND thread_id=? AND owner_user_id=?""",
+                   WHERE impact_version=%s AND thread_id=%s AND owner_user_id=%s""",
                 (impact_version, thread_id, owner_user_id),
             ).fetchone()
             if (
@@ -1527,7 +1512,7 @@ class ConversationMemoryStore:
                 connection, thread["data_source_id"], tuple(sorted(set(rule_ids)))
             )
             connection.execute(
-                "UPDATE agent_thread_deletion_impacts SET consumed_at=? WHERE impact_version=?",
+                "UPDATE agent_thread_deletion_impacts SET consumed_at=%s WHERE impact_version=%s",
                 (now.isoformat(), impact_version),
             )
             connection.commit()
@@ -1586,23 +1571,23 @@ class ConversationMemoryStore:
         connection = self._connect()
         release_barrier: Callable[[], None] | None = None
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             actor = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (actor_user_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_user_id,)
             ).fetchone()
             if actor is None or not actor["is_active"] or actor["role"] != "admin":
                 raise BusinessRuleForbidden("admin role required to revoke a shared rule")
             source = connection.execute(
-                "SELECT enabled FROM wren_data_sources WHERE id=?", (data_source_id,)
+                "SELECT enabled FROM wren_data_sources WHERE id=%s", (data_source_id,)
             ).fetchone()
             candidate = connection.execute(
                 """SELECT 1 FROM business_rule_candidates
-                   WHERE data_source_id=? AND business_rule_id=?""",
+                   WHERE data_source_id=%s AND business_rule_id=%s""",
                 (data_source_id, normalized_rule_id),
             ).fetchone()
             origin = connection.execute(
                 """SELECT 1 FROM business_rule_origins
-                   WHERE data_source_id=? AND business_rule_id=?""",
+                   WHERE data_source_id=%s AND business_rule_id=%s""",
                 (data_source_id, normalized_rule_id),
             ).fetchone()
             if source is None or not source["enabled"] or (candidate is None and origin is None):
@@ -1674,18 +1659,18 @@ class ConversationMemoryStore:
         connection = self._connect()
         release_barrier: Callable[[], None] | None = None
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             actor = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (actor_user_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_user_id,)
             ).fetchone()
             if actor is None or not actor["is_active"] or actor["role"] != "admin":
                 raise BusinessRuleForbidden("admin role required to revoke a shared query example")
             source = connection.execute(
-                "SELECT enabled FROM wren_data_sources WHERE id=?", (data_source_id,)
+                "SELECT enabled FROM wren_data_sources WHERE id=%s", (data_source_id,)
             ).fetchone()
             candidate = connection.execute(
                 """SELECT 1 FROM query_example_candidates
-                   WHERE data_source_id=? AND query_example_id=?""",
+                   WHERE data_source_id=%s AND query_example_id=%s""",
                 (data_source_id, normalized_id),
             ).fetchone()
             if source is None or not source["enabled"] or candidate is None:
@@ -1721,11 +1706,11 @@ class ConversationMemoryStore:
 
     @staticmethod
     def _business_rule_removal_status(
-        connection: sqlite3.Connection, source_id: str, business_rule_id: str
+        connection: PostgresConnection, source_id: str, business_rule_id: str
     ) -> str:
         exists = connection.execute(
             """SELECT 1 FROM business_rule_origins
-               WHERE data_source_id=? AND business_rule_id=?
+               WHERE data_source_id=%s AND business_rule_id=%s
                  AND publication_status='removal_pending'""",
             (source_id, business_rule_id),
         ).fetchone()
@@ -1733,21 +1718,21 @@ class ConversationMemoryStore:
 
     @classmethod
     def _thread_deletion_status(
-        cls, connection: sqlite3.Connection, source_id: str, rule_ids: tuple[str, ...]
+        cls, connection: PostgresConnection, source_id: str, rule_ids: tuple[str, ...]
     ) -> str:
         if not rule_ids:
             return "completed_online"
-        placeholders = ",".join("?" for _ in rule_ids)
+        placeholders = ",".join("%s" for _ in rule_ids)
         pending = connection.execute(
             f"""SELECT 1 FROM business_rule_origins
-                WHERE data_source_id=? AND business_rule_id IN ({placeholders})
+                WHERE data_source_id=%s AND business_rule_id IN ({placeholders})
                   AND publication_status='removal_pending' LIMIT 1""",
             (source_id, *rule_ids),
         ).fetchone()
         return "suppressed" if pending else "completed_online"
 
     def _apply_journal_event(
-        self, connection: sqlite3.Connection, event: JournalEvent
+        self, connection: PostgresConnection, event: JournalEvent
     ) -> None:
         state = connection.execute(
             "SELECT journal_applied_seq FROM agent_memory_journal_state WHERE id=1"
@@ -1760,21 +1745,21 @@ class ConversationMemoryStore:
         if event.event_type == "thread_delete" and event.thread_id:
             timestamp = event.created_at.isoformat()
             owner = connection.execute(
-                "SELECT owner_user_id FROM chat_thread_data_sources WHERE thread_id=?",
+                "SELECT owner_user_id FROM chat_thread_data_sources WHERE thread_id=%s",
                 (event.thread_id,),
             ).fetchone()
             connection.execute(
-                "DELETE FROM agent_conversation_turns WHERE thread_id=?",
+                "DELETE FROM agent_conversation_turns WHERE thread_id=%s",
                 (event.thread_id,),
             )
             connection.execute(
-                "DELETE FROM agent_turn_requests WHERE thread_id=?", (event.thread_id,)
+                "DELETE FROM agent_turn_requests WHERE thread_id=%s", (event.thread_id,)
             )
             connection.execute(
                 """UPDATE agent_conversation_threads
-                   SET status=?, summary=NULL, summary_version=summary_version+1,
-                       deleted_at=?, tombstone_until=?
-                   WHERE thread_id=?""",
+                   SET status=%s, summary=NULL, summary_version=summary_version+1,
+                       deleted_at=%s, tombstone_until=%s
+                   WHERE thread_id=%s""",
                 (
                     "deleted",
                     timestamp,
@@ -1786,9 +1771,9 @@ class ConversationMemoryStore:
                 self._bump_thread_list_revision(connection, owner["owner_user_id"])
         for item_id in event.item_ids:
             connection.execute(
-                """INSERT OR IGNORE INTO agent_memory_suppressions
+                """INSERT INTO agent_memory_suppressions
                    (event_sequence, data_source_id, item_type, item_id, reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT(event_sequence, item_type, item_id) DO NOTHING""",
                 (
                     event.sequence,
                     event.source_id,
@@ -1813,9 +1798,7 @@ class ConversationMemoryStore:
                     "business-rule revocation participant is not configured"
                 )
         if event.event_type in {"thread_delete", "query_example_revoke"}:
-            has_query_examples = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='query_example_candidates'"
-            ).fetchone() is not None
+            has_query_examples = self._has_table(connection, "query_example_candidates")
             query_participants = [
                 participant for participant in self.suppression_participants
                 if callable(getattr(participant, "apply_suppression", None))
@@ -1839,10 +1822,10 @@ class ConversationMemoryStore:
                 connection, event.source_id, event.item_ids
             )
             connection.execute(
-                """INSERT OR IGNORE INTO agent_thread_deletion_operations
+                """INSERT INTO agent_thread_deletion_operations
                    (operation_id, idempotency_key, thread_id, data_source_id,
                     journal_sequence, request_hash, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT(idempotency_key) DO NOTHING""",
                 (
                     event.event_id,
                     idempotency_key,
@@ -1857,7 +1840,7 @@ class ConversationMemoryStore:
             )
         connection.execute(
             """UPDATE agent_memory_journal_state
-               SET journal_applied_seq=?, healthy=1, last_error_code=NULL, updated_at=?
+               SET journal_applied_seq=%s, healthy=1, last_error_code=NULL, updated_at=%s
                WHERE id=1""",
             (event.sequence, self._now().isoformat()),
         )
@@ -1877,7 +1860,7 @@ class ConversationMemoryStore:
         try:
             connection.execute(
                 """UPDATE agent_memory_journal_state
-                   SET healthy=0, last_error_code=?, updated_at=? WHERE id=1""",
+                   SET healthy=0, last_error_code=%s, updated_at=%s WHERE id=1""",
                 (code, self._now().isoformat()),
             )
         finally:
@@ -1904,7 +1887,7 @@ class ConversationMemoryStore:
             events = journal.read_all()
             connection = self._connect()
             try:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.acquire_write_lock()
                 state = connection.execute(
                     """SELECT journal_initialized, journal_id, journal_applied_seq
                        FROM agent_memory_journal_state WHERE id=1"""
@@ -1922,7 +1905,7 @@ class ConversationMemoryStore:
                     self._apply_journal_event(connection, event)
                 connection.execute(
                     """UPDATE agent_memory_journal_state
-                       SET healthy=1, last_error_code=NULL, updated_at=? WHERE id=1""",
+                       SET healthy=1, last_error_code=NULL, updated_at=%s WHERE id=1""",
                     (self._now().isoformat(),),
                 )
                 connection.commit()
@@ -1962,25 +1945,25 @@ class ConversationMemoryStore:
         moment = now or self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT thread_id FROM agent_conversation_threads
-                   WHERE status IN ('deleted', 'expired') AND tombstone_until<=?
-                   ORDER BY tombstone_until LIMIT ?""",
+                   WHERE status IN ('deleted', 'expired') AND tombstone_until<=%s
+                   ORDER BY tombstone_until LIMIT %s""",
                 (moment.isoformat(), limit),
             ).fetchall()
             for row in rows:
                 thread_id = row["thread_id"]
                 connection.execute(
-                    "DELETE FROM agent_thread_deletion_impacts WHERE thread_id=?",
+                    "DELETE FROM agent_thread_deletion_impacts WHERE thread_id=%s",
                     (thread_id,),
                 )
                 connection.execute(
-                    "DELETE FROM agent_thread_deletion_operations WHERE thread_id=?",
+                    "DELETE FROM agent_thread_deletion_operations WHERE thread_id=%s",
                     (thread_id,),
                 )
                 connection.execute(
-                    "DELETE FROM chat_thread_data_sources WHERE thread_id=?",
+                    "DELETE FROM chat_thread_data_sources WHERE thread_id=%s",
                     (thread_id,),
                 )
             connection.commit()

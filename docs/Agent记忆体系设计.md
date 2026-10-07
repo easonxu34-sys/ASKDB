@@ -25,7 +25,7 @@
 - Agent API 的 `ChatRequest` 接收 `thread_id`、可选的 `data_source_id` / `model_profile_id` 和最多 40 条 `messages`；`stream_chat_events` 将其作为 LangGraph 输入并传入 `thread_id`。`build_graph()` 没有 checkpointer/store，因此服务端没有跨请求消息持久化。
 - 当前依赖锁定 `wren-langchain 0.2.0` 与 `wrenai 0.15.0`，声明了 connector extras，但未安装 Wren `memory` extra 或 `lancedb`。`include_memory_write=False` 只在 Wren memory provider 已启用时隐藏写工具；`WrenToolkit` 需检测到项目内 `.wren/memory/` 才暴露 fetch/recall 工具。Wren CLI 的 grep backend 可做 NL→SQL recall，但 `wren memory fetch` 的语义 schema 检索需要 `wren[memory]`；当前 WrenToolkit 的 memory provider 直接打开 LanceDB `MemoryStore`，不能假设 CLI grep 能力会自动成为 toolkit 工具。
 - `WrenProjectBuilder` 生成不可变项目 revision 并写入 `knowledge/rules/`，不会创建 `.wren/memory/`。所以即使安装了 `wren-langchain`，当前新建 runtime project 也不会自动带有可用的 memory tools。
-- Wren 数据源目录、revision、operations 和 `chat_thread_data_sources` 当前都由 `WrenSettingsStore` 写入 SQLite；建表是 `_connect()` 中的 `CREATE TABLE IF NOT EXISTS` 加列检查/`ALTER TABLE`，仓库没有通用版本化迁移 runner。`start_apply()` 将 operation 写 DB，但用进程内 `asyncio.create_task` 执行；当前 active revision 指针在 runtime 激活前先更新。M1 应新增原子、可重入的 schema migration runner；memory 发布不能照搬现有仅进程内调度和“先改指针后激活”的顺序。
+- Wren 数据源目录、revision、operations 和 `chat_thread_data_sources` 当前都由 `WrenSettingsStore` 写入 PostgreSQL，并通过版本化 SQL migration 建表。`start_apply()` 将 operation 写 DB，但用进程内 `asyncio.create_task` 执行；当前 active revision 指针在 runtime 激活前先更新。memory 发布不能照搬现有仅进程内调度和“先改指针后激活”的顺序。
 - `RuntimeSnapshot` 已按数据源 revision 和模型 profile 版本缓存；`RuntimeManager` 已提供 candidate prepare、原子激活和请求 lease。Wren revision 的 `mdl_digest` 当前由 `target/mdl.json` 字节的 SHA-256 生成，方案应复用并明确定义额外的规则/连接器兼容摘要。未来若启用 PostgreSQL 多 worker，必须迁移 WrenSettingsStore、thread binding、memory 操作/active pointer 到同一共享事务存储；只把新 memory 表放 PostgreSQL 不足以跨 worker 一致。
 
 相关代码：[Agent graph](../askdb-agent/src/agent/graph.py)、[chat API schema](../askdb-agent/src/api/schemas/chat.py)、[chat route](../askdb-agent/src/api/routes/chat.py)、[auth principal](../askdb-agent/src/domain/auth.py)、[Web chat adapter](../askdb-web/lib/agent-chat-adapter.tsx)、[thread adapter](../askdb-web/lib/local-thread-adapter.tsx)、[Wren project builder](../askdb-agent/src/integrations/wren_project.py)、[runtime manager](../askdb-agent/src/application/runtime_manager.py)。
@@ -182,7 +182,7 @@ flowchart TB
 
 | 数据 | 推荐权威存储 | 索引/缓存 |
 |---|---|---|
-| thread owner/source、turn、摘要和候选审核状态 | 首版放在与 `chat_thread_data_sources` 相同的事务型数据库中，使用独立表；不存入设置 JSON/模型凭证明文列。生产多 worker 使用 PostgreSQL；单实例可 SQLite | LangGraph 每轮状态只在内存中运行；无需保存模型工具 payload |
+| thread owner/source、turn、摘要和候选审核状态 | 放在与 `chat_thread_data_sources` 相同的 PostgreSQL 事务域中，使用独立表；不存入设置 JSON/模型凭证明文列 | LangGraph 每轮状态只在内存中运行；无需保存模型工具 payload |
 | MDL、规则和 schema revision | 不可变 Wren revision 的语义配置；`WrenProjectBuilder` 生成的 revision 项目是 validate/build/runtime 输入 | Wren 编译后的 `target/mdl.json`；rules index 从同一 revision 的 `knowledge/rules/` 重建 |
 | 已审核查询示例 | 按数据源保存的不可变 canonical JSON corpus revision，数据库存 manifest、hash、active pointer 和 supersession lifecycle metadata | 应用层 lexical 索引；可删除重建 |
 | 删除/撤销 journal | 生产使用与可恢复快照集物理隔离的加密 durable append-only journal；只记事件序号、类型、source 与稳定对象 ID，不保存记忆正文 | 按快照内 `journal_applied_seq` 幂等重放；不作为 recall 索引 |
@@ -190,7 +190,7 @@ flowchart TB
 | NL→SQL 示例候选 | 同一事务型数据库保存候选与审核事件；批准内容进入不可变 canonical JSON corpus revision | 不加入模型 recall，直到 corpus revision 激活 |
 | 个人偏好 | 认证后使用有 owner scope 的存储 | 仅该 owner 的私有检索索引 |
 
-复用当前 thread owner/source registry 所在数据库，可让 thread 创建、绑定和删除在一个事务内完成；新增专用表，不把会话正文塞进配置/凭证明细字段。当前 WrenSettingsStore 的 SQLite DDL 没有版本化 migration runner，M1 新建 `schema_migrations`/编号 migration，在服务接受请求前串行完成迁移并保证重复启动安全。若部署环境必须把会话正文与身份目录放在不同数据库，则需先定义 owner/source 的唯一权威、跨库创建/删除 saga、重试和对账流程。SQLite 仅支持 V1 单 Agent 进程；启用 WAL、文件权限、加密存储、备份及恢复演练。未来转 PostgreSQL 时，WrenSettingsStore、thread binding 和 memory metadata 必须一起迁移；PostgreSQL 也不自动同步各进程内的 `RuntimeSnapshot`。启用多 worker/多实例前必须增加 durable generation pointer、变更通知/轮询、每 worker prepare/ack 和 lease 前代际校验。发布操作只有全部目标 worker 已激活才报告 `ACTIVE`；未确认的 worker 不得用旧 memory revision 接收新 turn，旧 lease 可继续完成。LangGraph 的图状态不持久化；如未来要支持工具中断恢复，再单独评估有脱敏和 TTL 的 checkpointer。
+复用当前 PostgreSQL 中的 thread owner/source registry，可让 thread 创建、绑定和删除在一个事务内完成；新增专用表，不把会话正文塞进配置/凭证明细字段。版本化 migration 在服务接受请求前串行完成，并保证重复启动安全。若部署环境必须把会话正文与身份目录放在不同数据库，则需先定义 owner/source 的唯一权威、跨库创建/删除 saga、重试和对账流程。PostgreSQL 负责持久化和事务协调，但不会自动同步各进程内的 `RuntimeSnapshot`。启用多 worker/多实例前必须增加 durable generation pointer、变更通知/轮询、每 worker prepare/ack 和 lease 前代际校验。发布操作只有全部目标 worker 已激活才报告 `ACTIVE`；未确认的 worker 不得用旧 memory revision 接收新 turn，旧 lease 可继续完成。LangGraph 的图状态不持久化；如未来要支持工具中断恢复，再单独评估有脱敏和 TTL 的 checkpointer。
 
 ### 6.2 建议代码结构
 
@@ -204,7 +204,7 @@ askdb-agent/src/
 │   ├── query_memory.py           # NL→SQL 候选、审核、corpus 发布和失效
 │   └── business_rule_memory.py   # 业务规则候选、审核、Wren revision 发布协调
 ├── integrations/
-│   ├── conversation_store.py     # owner/source 同事务域内的 SQLite/Postgres 会话存储
+│   ├── conversation_store.py     # owner/source 同事务域内的 PostgreSQL 会话存储
 │   ├── query_corpus.py            # canonical query corpus、revision manifest 和 lexical recall
 │   └── wren_project.py            # 复用现有 revision builder，不另建规则事实库
 ├── agent/
@@ -574,7 +574,7 @@ class ThreadDeletionImpact:
 - `data_source_id` 必须是不可复用的稳定身份；若产品层以可复用名称定位 source，memory namespace 还需包含 source generation ID，删除后不允许旧 corpus 绑定到同名新 source。
 - `thread_id` 和 `turn_id` 是定位/幂等标识，不是认证因子。所有 thread endpoints 使用现有 Principal 做 owner 校验。chat、turn/history/export、创建和修改 thread 要求当前 source grant；owner 的 thread 列表在 grant 被撤销后仅返回最小管理元数据（opaque ID、日期、`access_revoked`、删除状态，不含标题/turn 内容），以便删除；删除影响预览和删除只要求账号仍有效且 owner 匹配。
 - 不在普通日志/trace 记录完整会话、SQL 参数、结果行或记忆文本；使用 request ID、memory ID、source/revision digest 做审计关联。
-- 服务端保存会话时按存储介质加密并限制访问；当前 SQLite 不提供应用级静态加密保证，部署必须使用加密磁盘/卷，备份也必须加密。备份快照以同一个 `generation_id` 关联 SQLite 在线 backup、对应 Wren revision、canonical query corpus revision 和 manifest/hash；先写临时备份并校验，再最后写入完成 manifest，未完成的备份不允许恢复。每份 manifest 的 journal 高水位必须取自同一 SQLite 快照内的 `journal_applied_seq`，不能取备份时 journal 的最新尾序号；否则可能跳过已记入 journal、但尚未应用到该快照 DB 的删除事件。为避免恢复旧快照复活之后删除/撤销的内容，thread 删除、业务规则删除及 query-example revoke 事件必须进入与可恢复快照集物理隔离、加密且追加写的 durable tombstone/revocation journal；不能只保存在会随旧快照一起回滚的 SQLite 位置。journal 至少保留 60 天，并持续到最后一份可能包含相关内容的 Wren/query-corpus revision 或备份过期。journal 事件只包含单调连续的全局序号/event ID、事件类型、source ID、稳定 rule/example ID、时间和完整性字段，不含记忆正文。操作先把事件追加并持久化到独立 journal，再按序在主数据库事务中应用 suppression；仅当已连续应用前缀时才能推进 `journal_applied_seq`；只有二者都持久化后才返回成功/`202`。journal 追加失败时返回可重试错误，不报告删除/撤销成功；追加成功但数据库应用失败时，受影响 source 的 recall fail closed，直到恢复/对账应用该事件。恢复时先校验快照及 generation/hash，再幂等重放序号大于快照 `journal_applied_seq` 的全部 journal 事件、更新 applied sequence、重建索引并核对 active pointer 与 suppression，最后才开放 chat；journal 不可用、损坏或序号不连续则 memory/chat fail closed。独立 journal 是生产开放服务端 memory 的硬性前置条件；开发环境可用本地模拟实现，但不能据此宣称具备灾难恢复能力。模型供应商的请求留存策略仍需按实际 provider 单独配置；加密密钥与模型凭证分开管理，明确轮换/恢复步骤。
+- 服务端保存会话时应限制数据库角色权限，并按部署要求加密备份。备份快照以同一个 `generation_id` 关联 PostgreSQL 一致性备份、对应 Wren revision、canonical query corpus revision 和 manifest/hash；先写临时备份并校验，再最后写入完成 manifest，未完成的备份不允许恢复。每份 manifest 的 journal 高水位必须取自同一 PostgreSQL 快照内的 `journal_applied_seq`，不能取备份时 journal 的最新尾序号；否则可能跳过已记入 journal、但尚未应用到该快照 DB 的删除事件。为避免恢复旧快照复活之后删除/撤销的内容，thread 删除、业务规则删除及 query-example revoke 事件必须进入与可恢复快照集物理隔离、加密且追加写的 durable tombstone/revocation journal。journal 至少保留 60 天，并持续到最后一份可能包含相关内容的 Wren/query-corpus revision 或备份过期。journal 事件只包含单调连续的全局序号/event ID、事件类型、source ID、稳定 rule/example ID、时间和完整性字段，不含记忆正文。操作先把事件追加并持久化到独立 journal，再按序在主数据库事务中应用 suppression；仅当已连续应用前缀时才能推进 `journal_applied_seq`；只有二者都持久化后才返回成功/`202`。journal 追加失败时返回可重试错误，不报告删除/撤销成功；追加成功但数据库应用失败时，受影响 source 的 recall fail closed，直到恢复/对账应用该事件。恢复时先校验快照及 generation/hash，再幂等重放序号大于快照 `journal_applied_seq` 的全部 journal 事件、更新 applied sequence、重建索引并核对 active pointer 与 suppression，最后才开放 chat；journal 不可用、损坏或序号不连续则 memory/chat fail closed。独立 journal 是生产开放服务端 memory 的硬性前置条件；开发环境可用本地模拟实现，但不能据此宣称具备灾难恢复能力。模型供应商的请求留存策略仍需按实际 provider 单独配置；加密密钥与模型凭证分开管理，明确轮换/恢复步骤。
 - 检索出来的记忆一律视为不可信数据，不将其拼接成高优先级 system prompt，不允许记忆候选控制工具权限。
 - 对共享规则/示例变更记录审核人和版本，可 diff、回滚、重建索引。
 
@@ -658,7 +658,7 @@ Web 的 thread adapter 改为以 server thread/turn 为权威；localStorage 只
 
 ### M1：服务端 thread/turn 记忆与协议迁移
 
-- 复用现有 Principal、thread owner/source registry 和 source grant；不再把认证列为待实现事项。部署拓扑确定后选择单实例 SQLite 或 PostgreSQL。
+- 复用现有 Principal、thread owner/source registry 和 source grant；不再把认证列为待实现事项。身份目录、线程和记忆元数据统一使用 PostgreSQL。
 - 新增 server-issued opaque thread、turn 状态、幂等键、expected sequence、summary checkpoint、model profile 的 `context_window_tokens` / `max_output_tokens` / `tokenizer_id` 配置和 retention；浏览器 history 变为 UI 缓存。首版 memory-enabled Agent 限制单进程，避免每进程 RuntimeSnapshot 代际不一致。
 - 实现 thread create/list/update/delete/turn history、删除影响预览/显式确认/操作状态、legacy history 一次性 import、自然语言 turn 持久化和 SSE result 分离；不存 tool payload、SQL 和结果行。基础删除 service 在 M1 完成，M3 的业务规则候选必须接入同一 deletion participant 后才允许开启跨会话规则功能。
 - 上线前完成 owner/source、禁用账号、grant 撤销、删除/tombstone、自动到期、重试/并发和刷新/重启验收；备份默认保留 30 天，恢复演练必须重放 deletion/suppression ledger。
@@ -693,7 +693,7 @@ Web 的 thread adapter 改为以 server thread/turn 为权威；localStorage 只
 | candidate TTL | 90 天上限；source thread 更早删除/过期时，未发布候选提前清除；候选 body 到期清除，保留 hash-only 审计 | 默认已纳入方案 |
 | thread 删除状态 / suppression | 在线删除状态保留 7 天；最小 suppression ledger 至少保留 60 天，并在仍有可能复活规则的旧 revision/备份时继续保留 | V1 默认 |
 | 备份 TTL / 恢复 | 30 天；数据库、Wren revision 文件、canonical corpus 和 generation manifest 按同一快照标识备份；恢复时先回放独立 journal，再校验 suppression/hash、重建索引后开放 chat | 默认已纳入方案；生产必须配置独立 durable journal |
-| 部署数据库 / runtime | V1 单 Agent 进程使用当前 WrenSettingsStore SQLite（WAL、受限文件权限）；未来多 worker 要把 Wren settings/catalog、thread binding 和 memory metadata 一起迁 PostgreSQL，并实现 generation prepare/ack | V1 默认；扩容前置条件明确 |
+| 部署数据库 / runtime | Wren settings/catalog、thread binding 和 memory metadata 统一使用 PostgreSQL；多 worker 仍需实现 generation prepare/ack | PostgreSQL-only；扩容前置条件明确 |
 | thread 身份与授权 | 复用现有 `Principal.user_id`、owner registry 和 source grant；数据访问每次重验 grant；grant 撤销后 owner 仍可看最小管理行及删除 | 已确认目标；CRUD API 待实现 |
 | 规则审核角色 | source-granted member 可提交；仅现有全局 admin 审核、澄清、批准、拒绝、撤销、发布 | 用户已确认 |
 | query example 审核角色 | 首版沿用全局 admin；member 有 source grant 可提交 | 方案默认；若以后要求 source-admin 再补 scoped role |

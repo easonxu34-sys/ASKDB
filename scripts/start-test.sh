@@ -83,7 +83,8 @@ UV_PROJECT_ENVIRONMENT="$LOCAL_DEPLOY_VENV_DIR" uv sync --locked --no-dev --no-e
 sync_encryption_key() {
   local local_file="$SOURCE_ROOT/.env.local"
   local legacy_file="$SOURCE_ROOT/.env.docker"
-  local local_key="" legacy_key="" selected_key=""
+  local agent_env_file="$AGENT_SOURCE_DIR/.env"
+  local local_key="" legacy_key="" selected_key="" selected_dsn=""
 
   if [[ -f "$local_file" ]]; then
     local_key="$(local_deploy_read_key_from_file "$local_file")" || fail '.env.local 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
@@ -109,11 +110,31 @@ sync_encryption_key() {
     unset active_key
   fi
 
+  selected_dsn="${ASKDB_DATABASE_DSN:-}"
+  if [[ -z "$selected_dsn" && -f "$agent_env_file" ]]; then
+    selected_dsn="$(local_deploy_read_database_dsn_from_file "$agent_env_file")" || fail '无法读取 askdb-agent/.env 中的 PostgreSQL DSN。'
+  fi
+  if [[ -z "$selected_dsn" && -f "$LOCAL_DEPLOY_SECRET_FILE" ]]; then
+    selected_dsn="$(local_deploy_read_database_dsn_from_file "$LOCAL_DEPLOY_SECRET_FILE")" || fail '无法读取 Application Support 中的 PostgreSQL DSN。'
+  fi
+  [[ -n "$selected_dsn" ]] || selected_dsn='service=askdb-agent-dev'
+  [[ "$selected_dsn" != *$'\n'* ]] || fail 'ASKDB_DATABASE_DSN 不能包含换行。'
+
   local temp_file="$LOCAL_DEPLOY_DIR/.secrets.env.tmp.$$"
-  printf 'ASKDB_SETTINGS_ENCRYPTION_KEY=%s\n' "$selected_key" > "$temp_file"
+  ASKDB_LOCAL_SECRET_KEY="$selected_key" ASKDB_LOCAL_SECRET_DSN="$selected_dsn" \
+    "$LOCAL_DEPLOY_VENV_DIR/bin/python" - "$temp_file" <<'PY'
+import os
+import sys
+
+from dotenv import set_key
+
+path = sys.argv[1]
+set_key(path, "ASKDB_SETTINGS_ENCRYPTION_KEY", os.environ["ASKDB_LOCAL_SECRET_KEY"], quote_mode="always")
+set_key(path, "ASKDB_DATABASE_DSN", os.environ["ASKDB_LOCAL_SECRET_DSN"], quote_mode="always")
+PY
   chmod 600 "$temp_file"
   mv -f -- "$temp_file" "$LOCAL_DEPLOY_SECRET_FILE"
-  unset local_key legacy_key selected_key
+  unset local_key legacy_key selected_key selected_dsn
 }
 sync_encryption_key
 
@@ -131,10 +152,6 @@ prepare_data_directory() {
   fi
   mkdir -p -m 700 "$LOCAL_DEPLOY_DATA_DIR" "$LOCAL_DEPLOY_DATA_DIR/wren" "$LOCAL_DEPLOY_DATA_DIR/wren-home"
   chmod 700 "$LOCAL_DEPLOY_DATA_DIR" "$LOCAL_DEPLOY_DATA_DIR/wren" "$LOCAL_DEPLOY_DATA_DIR/wren-home"
-  if [[ -f "$LOCAL_DEPLOY_DATA_DIR/model-settings.sqlite3" ]]; then
-    python3 "$SCRIPT_DIR/relocate-docker-data-paths.py" \
-      "$LOCAL_DEPLOY_DATA_DIR/model-settings.sqlite3" "$LOCAL_DEPLOY_DATA_DIR"
-  fi
 }
 prepare_data_directory
 

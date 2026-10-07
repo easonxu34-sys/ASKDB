@@ -121,8 +121,8 @@ def test_schema_reader_only_returns_metadata():
     assert connection.closed
 
 
-def test_schema_refresh_returns_foreign_key_metadata(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_schema_refresh_returns_foreign_key_metadata(tmp_path, postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
 
     class SchemaReader:
         def __init__(self, *_args):
@@ -325,7 +325,7 @@ class FakeMigrationCli:
         assert (project_dir / "target" / "mdl.json").is_file()
 
 
-def test_initializes_legacy_wren_as_encrypted_default_source(tmp_path):
+def test_initializes_legacy_wren_as_encrypted_default_source(tmp_path, postgres_database):
     project = tmp_path / "legacy-project"
     (project / "target").mkdir(parents=True)
     (project / "wren_project.yml").write_text(
@@ -345,7 +345,7 @@ def test_initializes_legacy_wren_as_encrypted_default_source(tmp_path):
         encoding="utf-8",
     )
     key = Fernet.generate_key().decode("ascii")
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", key)
+    store = WrenSettingsStore(postgres_database, key)
     cli = FakeMigrationCli()
     settings = Settings(
         wren_project_dir=project,

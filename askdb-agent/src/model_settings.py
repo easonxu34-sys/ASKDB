@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from urllib.parse import urlparse
 
+import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
+from integrations.database import PostgresConnection, PostgresDatabase
 
 
 class ModelSettingsUnavailable(RuntimeError):
@@ -108,15 +108,13 @@ def validate_configuration(
 class ModelSettingsStore:
     """Encrypted, deployment-wide catalog of OpenAI-compatible model profiles."""
 
-    def __init__(self, database_path: Path | None = None, encryption_key: str | None = None):
+    def __init__(
+        self,
+        database: PostgresDatabase | None = None,
+        encryption_key: str | None = None,
+    ):
         load_dotenv()
-        configured_path = database_path or Path(
-            os.environ.get(
-                "ASKDB_SETTINGS_DB_PATH",
-                str(Path(__file__).resolve().parents[1] / "data" / "model-settings.sqlite3"),
-            )
-        )
-        self.database_path = configured_path.expanduser().resolve()
+        self.database = database or PostgresDatabase()
         self._encryption_key = encryption_key or os.environ.get(
             "ASKDB_SETTINGS_ENCRYPTION_KEY", ""
         ).strip()
@@ -133,80 +131,8 @@ class ModelSettingsStore:
     def has_encryption_key(self) -> bool:
         return bool(self._encryption_key)
 
-    def _connect(self) -> sqlite3.Connection:
-        try:
-            self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.database_path, timeout=5)
-            os.chmod(self.database_path, 0o600)
-            connection.execute("PRAGMA busy_timeout = 5000")
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS model_profiles (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    base_url TEXT NOT NULL,
-                    api_key_ciphertext BLOB,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS model_settings_meta (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    default_profile_id TEXT,
-                    FOREIGN KEY(default_profile_id) REFERENCES model_profiles(id)
-                )"""
-            )
-            profile_columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(model_profiles)")
-            }
-            for name, declaration in (
-                ("context_window_tokens", "INTEGER"),
-                ("max_output_tokens", "INTEGER"),
-                ("tokenizer_id", "TEXT"),
-            ):
-                if name not in profile_columns:
-                    connection.execute(
-                        f"ALTER TABLE model_profiles ADD COLUMN {name} {declaration}"
-                    )
-            self._migrate_legacy_row(connection)
-            connection.commit()
-            return connection
-        except (OSError, sqlite3.Error) as exc:
-            raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
-
-    @staticmethod
-    def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
-        return connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)
-        ).fetchone() is not None
-
-    def _migrate_legacy_row(self, connection: sqlite3.Connection) -> None:
-        if not self._table_exists(connection, "model_settings"):
-            return
-        if connection.execute("SELECT 1 FROM model_profiles LIMIT 1").fetchone():
-            return
-        row = connection.execute(
-            "SELECT provider, model, base_url, api_key_ciphertext, updated_at "
-            "FROM model_settings WHERE id = 1"
-        ).fetchone()
-        if row is None:
-            return
-        profile_id = f"profile_{uuid.uuid4().hex}"
-        updated_at = row[4] or datetime.now(UTC).isoformat()
-        connection.execute(
-            """INSERT INTO model_profiles
-               (id, name, provider, model, base_url, api_key_ciphertext, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, "默认模型", row[0], row[1], row[2], row[3], updated_at, updated_at),
-        )
-        connection.execute(
-            """INSERT INTO model_settings_meta (id, default_profile_id) VALUES (1, ?)
-               ON CONFLICT(id) DO UPDATE SET default_profile_id=excluded.default_profile_id""",
-            (profile_id,),
-        )
+    def _connect(self) -> PostgresConnection:
+        return self.database.connect()
 
     def _ensure_seeded(self) -> None:
         self._cipher()
@@ -267,7 +193,7 @@ class ModelSettingsStore:
                               max_output_tokens, tokenizer_id
                        FROM model_profiles ORDER BY created_at, id"""
                 ).fetchall()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         return (str(default[0]) if default and default[0] else None, [self._decode_row(row) for row in rows])
 
@@ -279,10 +205,10 @@ class ModelSettingsStore:
                     """SELECT id, name, provider, model, base_url, api_key_ciphertext,
                               created_at, updated_at, context_window_tokens,
                               max_output_tokens, tokenizer_id
-                       FROM model_profiles WHERE id = ?""",
+                       FROM model_profiles WHERE id = %s""",
                     (profile_id,),
                 ).fetchone()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         if row is None:
             raise ModelProfileNotFound("模型配置不存在。")
@@ -301,20 +227,12 @@ class ModelSettingsStore:
         raise ModelSettingsUnavailable("默认模型配置不可用。")
 
     def has_saved_settings(self) -> bool:
-        if not self.database_path.exists():
-            return False
         try:
-            with sqlite3.connect(self.database_path, timeout=2) as connection:
-                if self._table_exists(connection, "model_profiles") and connection.execute(
+            with self._connect() as connection:
+                return connection.execute(
                     "SELECT 1 FROM model_profiles LIMIT 1"
-                ).fetchone():
-                    return True
-                if self._table_exists(connection, "model_settings") and connection.execute(
-                    "SELECT 1 FROM model_settings WHERE id = 1"
-                ).fetchone():
-                    return True
-                return False
-        except sqlite3.Error as exc:
+                ).fetchone() is not None
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
 
     def ensure_available(self) -> None:
@@ -348,7 +266,7 @@ class ModelSettingsStore:
                     """INSERT INTO model_profiles
                        (id, name, provider, model, base_url, api_key_ciphertext, created_at,
                         updated_at, context_window_tokens, max_output_tokens, tokenizer_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (profile_id, clean_name, configuration.provider, configuration.model,
                      configuration.base_url, ciphertext, now, now,
                      configuration.context_window_tokens, configuration.max_output_tokens,
@@ -359,12 +277,12 @@ class ModelSettingsStore:
                 ).fetchone()
                 if make_default or not default or not default[0]:
                     connection.execute(
-                        """INSERT INTO model_settings_meta (id, default_profile_id) VALUES (1, ?)
+                        """INSERT INTO model_settings_meta (id, default_profile_id) VALUES (1, %s)
                            ON CONFLICT(id) DO UPDATE SET default_profile_id=excluded.default_profile_id""",
                         (profile_id,),
                     )
                 connection.commit()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         return ModelConfiguration(
             configuration.provider, configuration.model, configuration.base_url,
@@ -389,9 +307,9 @@ class ModelSettingsStore:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    """UPDATE model_profiles SET name=?, provider=?, model=?, base_url=?,
-                              api_key_ciphertext=?, updated_at=?, context_window_tokens=?,
-                              max_output_tokens=?, tokenizer_id=? WHERE id=?""",
+                    """UPDATE model_profiles SET name=%s, provider=%s, model=%s, base_url=%s,
+                              api_key_ciphertext=%s, updated_at=%s, context_window_tokens=%s,
+                              max_output_tokens=%s, tokenizer_id=%s WHERE id=%s""",
                     (clean_name, configuration.provider, configuration.model,
                      configuration.base_url, ciphertext, now,
                      configuration.context_window_tokens, configuration.max_output_tokens,
@@ -400,7 +318,7 @@ class ModelSettingsStore:
                 if cursor.rowcount == 0:
                     raise ModelConfigurationError("模型配置不存在。")
                 connection.commit()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         return ModelConfiguration(
             configuration.provider, configuration.model, configuration.base_url,
@@ -416,12 +334,12 @@ class ModelSettingsStore:
         try:
             with self._connect() as connection:
                 connection.execute(
-                    """INSERT INTO model_settings_meta (id, default_profile_id) VALUES (1, ?)
+                    """INSERT INTO model_settings_meta (id, default_profile_id) VALUES (1, %s)
                        ON CONFLICT(id) DO UPDATE SET default_profile_id=excluded.default_profile_id""",
                     (profile_id,),
                 )
                 connection.commit()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         return profile_id
 
@@ -433,7 +351,7 @@ class ModelSettingsStore:
                     "SELECT default_profile_id FROM model_settings_meta WHERE id = 1"
                 ).fetchone()
                 if not connection.execute(
-                    "SELECT 1 FROM model_profiles WHERE id = ?", (profile_id,)
+                    "SELECT 1 FROM model_profiles WHERE id = %s", (profile_id,)
                 ).fetchone():
                     raise ModelProfileNotFound("模型配置不存在。")
                 default_id = str(current[0]) if current and current[0] else None
@@ -442,20 +360,20 @@ class ModelSettingsStore:
                         """SELECT id, name, provider, model, base_url, api_key_ciphertext,
                                   created_at, updated_at, context_window_tokens,
                                   max_output_tokens, tokenizer_id
-                           FROM model_profiles WHERE id=? AND id<>? AND api_key_ciphertext IS NOT NULL""",
+                           FROM model_profiles WHERE id=%s AND id<>%s AND api_key_ciphertext IS NOT NULL""",
                         (new_default_id, profile_id),
                     ).fetchone() if new_default_id else None
                     if not candidate_row or not self._decode_row(candidate_row).api_key:
                         raise ModelConfigurationError("删除默认模型时必须指定另一项可用配置作为新默认。")
                     default_id = new_default_id
                     connection.execute(
-                        "UPDATE model_settings_meta SET default_profile_id=? WHERE id=1",
+                        "UPDATE model_settings_meta SET default_profile_id=%s WHERE id=1",
                         (default_id,),
                     )
-                connection.execute("DELETE FROM model_profiles WHERE id=?", (profile_id,))
+                connection.execute("DELETE FROM model_profiles WHERE id=%s", (profile_id,))
                 connection.commit()
                 return default_id
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
 
     def clear_credential(self, profile_id: str) -> ModelConfiguration:
@@ -463,11 +381,11 @@ class ModelSettingsStore:
         try:
             with self._connect() as connection:
                 connection.execute(
-                    "UPDATE model_profiles SET api_key_ciphertext=NULL, updated_at=? WHERE id=?",
+                    "UPDATE model_profiles SET api_key_ciphertext=NULL, updated_at=%s WHERE id=%s",
                     (datetime.now(UTC).isoformat(), profile_id),
                 )
                 connection.commit()
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise ModelSettingsUnavailable("模型设置存储当前不可用。") from exc
         return ModelConfiguration(
             configuration.provider, configuration.model, configuration.base_url, "",

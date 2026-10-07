@@ -298,7 +298,7 @@ def _wren_error_diagnostic(
             if len(error_args) > 8:
                 fields["argument_types_truncated"] = True
 
-        for attribute in ("errno", "sqlite_errorcode", "code"):
+        for attribute in ("errno", "code"):
             try:
                 numeric_code = safe_integer(getattr(error, attribute, None))
             except Exception:

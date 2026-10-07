@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,6 +10,8 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
+import psycopg
+from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
 from integrations.wren_connectors import (
     SUPPORTED_DATABASE_CONNECTORS,
     safe_connection_projection,
@@ -77,7 +78,7 @@ class WrenRevision:
 
 
 class WrenSettingsStore:
-    """SQLite catalog for Wren data sources, revisions, secrets, and chat bindings."""
+    """PostgreSQL catalog for Wren data sources, revisions, secrets, and chat bindings."""
 
     _SECRET_FIELDS = {
         "password", "passwd", "ca", "ca_pem", "ssl_ca", "client_key", "private_key",
@@ -86,15 +87,9 @@ class WrenSettingsStore:
         "secret_key", "dsn", "secret", "token",
     }
 
-    def __init__(self, database_path: Path | None = None, encryption_key: str | None = None):
+    def __init__(self, database: PostgresDatabase | None = None, encryption_key: str | None = None):
         load_dotenv()
-        configured_path = database_path or Path(
-            os.environ.get(
-                "ASKDB_SETTINGS_DB_PATH",
-                str(Path(__file__).resolve().parents[1] / "data" / "model-settings.sqlite3"),
-            )
-        )
-        self.database_path = configured_path.expanduser().resolve()
+        self.database = database or PostgresDatabase()
         self._encryption_key = (
             encryption_key
             if encryption_key is not None
@@ -109,121 +104,10 @@ class WrenSettingsStore:
         except (ValueError, UnicodeEncodeError) as exc:
             raise WrenSettingsUnavailable("Wren 设置加密密钥格式无效。") from exc
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> PostgresConnection:
         try:
-            self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.database_path, timeout=5)
-            os.chmod(self.database_path, 0o600)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA busy_timeout = 5000")
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS wren_data_sources (
-                    id TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL,
-                    connector_type TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    active_revision_id TEXT,
-                    draft_revision_id TEXT,
-                    runtime_status TEXT NOT NULL DEFAULT 'not_ready',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS wren_revisions (
-                    id TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL REFERENCES wren_data_sources(id),
-                    status TEXT NOT NULL,
-                    config_json TEXT NOT NULL,
-                    project_dir TEXT,
-                    profile_name TEXT,
-                    mdl_digest TEXT,
-                    error_code TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_wren_revisions_source
-                    ON wren_revisions(source_id, created_at);
-                CREATE TABLE IF NOT EXISTS wren_secrets (
-                    source_id TEXT NOT NULL REFERENCES wren_data_sources(id),
-                    revision_id TEXT NOT NULL REFERENCES wren_revisions(id),
-                    secret_name TEXT NOT NULL,
-                    ciphertext BLOB NOT NULL,
-                    PRIMARY KEY(source_id, revision_id, secret_name)
-                );
-                CREATE TABLE IF NOT EXISTS wren_operations (
-                    id TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL REFERENCES wren_data_sources(id),
-                    revision_id TEXT,
-                    status TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    error_code TEXT,
-                    message TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS wren_source_operation_state (
-                    source_id TEXT PRIMARY KEY REFERENCES wren_data_sources(id) ON DELETE CASCADE,
-                    generation INTEGER NOT NULL DEFAULT 0,
-                    active_operation_id TEXT,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS chat_thread_data_sources (
-                    thread_id TEXT PRIMARY KEY,
-                    data_source_id TEXT NOT NULL REFERENCES wren_data_sources(id),
-                    owner_user_id TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS wren_state (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    default_data_source_id TEXT REFERENCES wren_data_sources(id),
-                    migration_status TEXT,
-                    updated_at TEXT NOT NULL
-                );
-                """
-            )
-            additive_columns = {
-                "wren_revisions": {
-                    "parent_revision_id": "TEXT",
-                    "publication_operation_id": "TEXT",
-                },
-                "wren_operations": {
-                    "operation_type": "TEXT NOT NULL DEFAULT 'settings_apply'",
-                    "base_revision_id": "TEXT",
-                    "base_mdl_digest": "TEXT",
-                    "base_generation": "INTEGER",
-                    "target_revision_id": "TEXT",
-                    "target_mdl_digest": "TEXT",
-                    "activated_generation": "INTEGER",
-                    "actor_id": "TEXT",
-                    "payload_json": "TEXT NOT NULL DEFAULT '{}'",
-                },
-            }
-            for table, columns in additive_columns.items():
-                existing = {
-                    row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
-                }
-                for name, definition in columns.items():
-                    if name not in existing:
-                        connection.execute(
-                            f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
-                        )
-            connection.execute(
-                """INSERT OR IGNORE INTO wren_source_operation_state
-                   (source_id, generation, active_operation_id, updated_at)
-                   SELECT id, 0, NULL, ? FROM wren_data_sources""",
-                (self._now(),),
-            )
-            thread_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(chat_thread_data_sources)")
-            }
-            if "owner_user_id" not in thread_columns:
-                connection.execute(
-                    "ALTER TABLE chat_thread_data_sources ADD COLUMN owner_user_id TEXT"
-                )
-            connection.commit()
-            return connection
-        except (OSError, sqlite3.Error) as exc:
+            return self.database.connect()
+        except psycopg.Error as exc:
             raise WrenSettingsUnavailable("Wren 设置存储当前不可用。") from exc
 
     @staticmethod
@@ -231,7 +115,12 @@ class WrenSettingsStore:
         return datetime.now(UTC).isoformat()
 
     @staticmethod
-    def _source_from_row(row: sqlite3.Row) -> WrenDataSource:
+    def _has_table(connection: PostgresConnection, table: str) -> bool:
+        row = connection.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (table,)).fetchone()
+        return bool(row["present"])
+
+    @staticmethod
+    def _source_from_row(row: PostgresRow) -> WrenDataSource:
         return WrenDataSource(
             id=row["id"],
             display_name=row["display_name"],
@@ -245,7 +134,7 @@ class WrenSettingsStore:
         )
 
     @staticmethod
-    def _revision_from_row(row: sqlite3.Row) -> WrenRevision:
+    def _revision_from_row(row: PostgresRow) -> WrenRevision:
         return WrenRevision(
             id=row["id"],
             source_id=row["source_id"],
@@ -292,7 +181,7 @@ class WrenSettingsStore:
 
     def _insert_secrets(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         source_id: str,
         revision_id: str,
         secrets: dict[str, str] | None,
@@ -306,7 +195,7 @@ class WrenSettingsStore:
             encrypted = cipher.encrypt(value.encode("utf-8"))
             connection.execute(
                 "INSERT INTO wren_secrets(source_id, revision_id, secret_name, ciphertext) "
-                "VALUES (?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s)",
                 (source_id, revision_id, name, encrypted),
             )
 
@@ -335,19 +224,19 @@ class WrenSettingsStore:
                 """INSERT INTO wren_data_sources
                    (id, display_name, connector_type, enabled, draft_revision_id,
                     runtime_status, created_at, updated_at)
-                   VALUES (?, ?, ?, 1, ?, 'not_ready', ?, ?)""",
+                   VALUES (%s, %s, %s, 1, %s, 'not_ready', %s, %s)""",
                 (source_id, name, connector, revision_id, now, now),
             )
             connection.execute(
                 """INSERT INTO wren_revisions
                    (id, source_id, status, config_json, created_at, updated_at)
-                   VALUES (?, ?, 'draft', ?, ?, ?)""",
+                   VALUES (%s, %s, 'draft', %s, %s, %s)""",
                 (revision_id, source_id, json.dumps(safe_config, ensure_ascii=False), now, now),
             )
             connection.execute(
                 """INSERT INTO wren_source_operation_state
                    (source_id, generation, active_operation_id, updated_at)
-                   VALUES (?, 0, NULL, ?)""",
+                   VALUES (%s, 0, NULL, %s)""",
                 (source_id, now),
             )
             self._insert_secrets(connection, source_id, revision_id, secrets)
@@ -369,11 +258,11 @@ class WrenSettingsStore:
         revision_id = f"rev_{uuid.uuid4().hex}"
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if connection.execute("SELECT 1 FROM wren_data_sources WHERE id=?", (source_id,)).fetchone() is None:
+            connection.acquire_write_lock()
+            if connection.execute("SELECT 1 FROM wren_data_sources WHERE id=%s", (source_id,)).fetchone() is None:
                 raise LookupError("数据源不存在。")
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if state is not None and state["active_operation_id"] is not None:
@@ -382,12 +271,12 @@ class WrenSettingsStore:
                     code="SOURCE_OPERATION_IN_PROGRESS",
                 )
             source = connection.execute(
-                "SELECT active_revision_id FROM wren_data_sources WHERE id=?", (source_id,)
+                "SELECT active_revision_id FROM wren_data_sources WHERE id=%s", (source_id,)
             ).fetchone()
             connection.execute(
                 """INSERT INTO wren_revisions
                    (id, source_id, status, config_json, parent_revision_id, created_at, updated_at)
-                   VALUES (?, ?, 'draft', ?, ?, ?, ?)""",
+                   VALUES (%s, %s, 'draft', %s, %s, %s, %s)""",
                 (
                     revision_id,
                     source_id,
@@ -399,7 +288,7 @@ class WrenSettingsStore:
             )
             if copy_secrets_from:
                 rows = connection.execute(
-                    "SELECT secret_name, ciphertext FROM wren_secrets WHERE source_id=? AND revision_id=?",
+                    "SELECT secret_name, ciphertext FROM wren_secrets WHERE source_id=%s AND revision_id=%s",
                     (source_id, copy_secrets_from),
                 ).fetchall()
                 if rows or secrets:
@@ -417,21 +306,21 @@ class WrenSettingsStore:
             else:
                 self._insert_secrets(connection, source_id, revision_id, secrets)
             connection.execute(
-                "UPDATE wren_data_sources SET draft_revision_id=?, runtime_status=CASE "
+                "UPDATE wren_data_sources SET draft_revision_id=%s, runtime_status=CASE "
                 "WHEN active_revision_id IS NULL THEN 'not_ready' ELSE runtime_status END, "
-                "display_name=COALESCE(?, display_name), updated_at=? WHERE id=?",
+                "display_name=COALESCE(%s, display_name), updated_at=%s WHERE id=%s",
                 (revision_id, safe_display_name, now, source_id),
             )
             connection.execute(
                 """INSERT INTO wren_source_operation_state
                    (source_id, generation, active_operation_id, updated_at)
-                   VALUES (?, 1, NULL, ?)
+                   VALUES (%s, 1, NULL, %s)
                    ON CONFLICT(source_id) DO UPDATE SET
                      generation=wren_source_operation_state.generation+1,
                      updated_at=excluded.updated_at""",
                 (source_id, now),
             )
-            row = connection.execute("SELECT * FROM wren_revisions WHERE id=?", (revision_id,)).fetchone()
+            row = connection.execute("SELECT * FROM wren_revisions WHERE id=%s", (revision_id,)).fetchone()
         return self._revision_from_row(row)
 
     def save_draft(
@@ -456,9 +345,9 @@ class WrenSettingsStore:
         if not name or len(name) > 120:
             raise WrenConfigurationError("数据源名称不能为空且不能超过 120 个字符。")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if operation and operation["active_operation_id"] is not None:
@@ -467,7 +356,7 @@ class WrenSettingsStore:
                     code="SOURCE_OPERATION_IN_PROGRESS",
                 )
             cursor = connection.execute(
-                "UPDATE wren_data_sources SET display_name=?, updated_at=? WHERE id=?",
+                "UPDATE wren_data_sources SET display_name=%s, updated_at=%s WHERE id=%s",
                 (name, self._now(), source_id),
             )
             if not cursor.rowcount:
@@ -476,7 +365,7 @@ class WrenSettingsStore:
 
     def get_data_source(self, source_id: str) -> WrenDataSource:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM wren_data_sources WHERE id=?", (source_id,)).fetchone()
+            row = connection.execute("SELECT * FROM wren_data_sources WHERE id=%s", (source_id,)).fetchone()
         if row is None:
             raise LookupError("数据源不存在。")
         return self._source_from_row(row)
@@ -493,7 +382,7 @@ class WrenSettingsStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, status, error_code, mdl_digest, created_at "
-                "FROM wren_revisions WHERE source_id=? ORDER BY created_at DESC, id DESC",
+                "FROM wren_revisions WHERE source_id=%s ORDER BY created_at DESC, id DESC",
                 (source_id,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -501,7 +390,7 @@ class WrenSettingsStore:
     def get_revision(self, source_id: str, revision_id: str) -> WrenRevision:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM wren_revisions WHERE source_id=? AND id=?",
+                "SELECT * FROM wren_revisions WHERE source_id=%s AND id=%s",
                 (source_id, revision_id),
             ).fetchone()
         if row is None:
@@ -519,8 +408,8 @@ class WrenSettingsStore:
     ) -> WrenRevision:
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE wren_revisions SET project_dir=?, profile_name=?, mdl_digest=?, updated_at=? "
-                "WHERE source_id=? AND id=?",
+                "UPDATE wren_revisions SET project_dir=%s, profile_name=%s, mdl_digest=%s, updated_at=%s "
+                "WHERE source_id=%s AND id=%s",
                 (str(project_dir.resolve()), profile_name, mdl_digest, self._now(), source_id, revision_id),
             )
             if not cursor.rowcount:
@@ -543,7 +432,7 @@ class WrenSettingsStore:
             raise ValueError("Wren 版本状态无效。")
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE wren_revisions SET status=?, error_code=?, updated_at=? WHERE source_id=? AND id=?",
+                "UPDATE wren_revisions SET status=%s, error_code=%s, updated_at=%s WHERE source_id=%s AND id=%s",
                 (status, error_code, self._now(), source_id, revision_id),
             )
             if not cursor.rowcount:
@@ -577,14 +466,14 @@ class WrenSettingsStore:
         now = self._now()
         operation_id = f"op_{uuid.uuid4().hex}"
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             source = connection.execute(
-                "SELECT * FROM wren_data_sources WHERE id=?", (source_id,)
+                "SELECT * FROM wren_data_sources WHERE id=%s", (source_id,)
             ).fetchone()
             if source is None:
                 raise LookupError("数据源不存在。")
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if state is None:
@@ -623,11 +512,8 @@ class WrenSettingsStore:
                     code="WREN_DRAFT_PENDING",
                 )
             if operation_type in {"business_rule_publish", "rollback"}:
-                has_rule_origins = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='business_rule_origins'"
-                ).fetchone()
-                if has_rule_origins is not None and connection.execute(
-                    """SELECT 1 FROM business_rule_origins WHERE data_source_id=?
+                if self._has_table(connection, "business_rule_origins") and connection.execute(
+                    """SELECT 1 FROM business_rule_origins WHERE data_source_id=%s
                        AND publication_status='removal_pending' LIMIT 1""",
                     (source_id,),
                 ).fetchone():
@@ -637,7 +523,7 @@ class WrenSettingsStore:
                     )
             if operation_type == "settings_apply" and target_revision_id:
                 draft = connection.execute(
-                    "SELECT parent_revision_id FROM wren_revisions WHERE source_id=? AND id=?",
+                    "SELECT parent_revision_id FROM wren_revisions WHERE source_id=%s AND id=%s",
                     (source_id, target_revision_id),
                 ).fetchone()
                 if draft is None or draft["parent_revision_id"] != base_revision_id:
@@ -647,7 +533,7 @@ class WrenSettingsStore:
                     )
             if base_revision_id is not None:
                 base = connection.execute(
-                    "SELECT status, mdl_digest FROM wren_revisions WHERE source_id=? AND id=?",
+                    "SELECT status, mdl_digest FROM wren_revisions WHERE source_id=%s AND id=%s",
                     (source_id, base_revision_id),
                 ).fetchone()
                 if base is None or base["status"] != "active":
@@ -665,7 +551,7 @@ class WrenSettingsStore:
                    (id, source_id, revision_id, status, phase, operation_type,
                     base_revision_id, base_mdl_digest, base_generation,
                     target_revision_id, actor_id, payload_json, created_at, updated_at)
-                   VALUES (?, ?, ?, 'running', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, 'running', 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     operation_id,
                     source_id,
@@ -683,8 +569,8 @@ class WrenSettingsStore:
             )
             changed = connection.execute(
                 """UPDATE wren_source_operation_state
-                   SET active_operation_id=?, updated_at=?
-                   WHERE source_id=? AND generation=? AND active_operation_id IS NULL""",
+                   SET active_operation_id=%s, updated_at=%s
+                   WHERE source_id=%s AND generation=%s AND active_operation_id IS NULL""",
                 (operation_id, now, source_id, generation),
             )
             if changed.rowcount != 1:
@@ -712,7 +598,7 @@ class WrenSettingsStore:
     def source_operation_state(self, source_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
         if row is None:
@@ -730,9 +616,9 @@ class WrenSettingsStore:
         safe_config = self._safe_config(config)
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND status='running'", (operation_id,)
+                "SELECT * FROM wren_operations WHERE id=%s AND status='running'", (operation_id,)
             ).fetchone()
             if (
                 operation is None
@@ -742,11 +628,11 @@ class WrenSettingsStore:
                 raise WrenConfigurationError("发布操作与目标版本不匹配。", code="SOURCE_GENERATION_STALE")
             source_id = operation["source_id"]
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             source = connection.execute(
-                "SELECT active_revision_id, draft_revision_id, enabled FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id, draft_revision_id, enabled FROM wren_data_sources WHERE id=%s",
                 (source_id,),
             ).fetchone()
             if (
@@ -765,7 +651,7 @@ class WrenSettingsStore:
                 """INSERT INTO wren_revisions
                    (id, source_id, status, config_json, parent_revision_id,
                     publication_operation_id, created_at, updated_at)
-                   VALUES (?, ?, 'draft', ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, 'draft', %s, %s, %s, %s, %s)""",
                 (
                     target_revision_id,
                     source_id,
@@ -777,7 +663,7 @@ class WrenSettingsStore:
                 ),
             )
             rows = connection.execute(
-                "SELECT secret_name, ciphertext FROM wren_secrets WHERE source_id=? AND revision_id=?",
+                "SELECT secret_name, ciphertext FROM wren_secrets WHERE source_id=%s AND revision_id=%s",
                 (source_id, copy_secrets_from),
             ).fetchall()
             if rows:
@@ -792,7 +678,7 @@ class WrenSettingsStore:
                         ) from exc
                 self._insert_secrets(connection, source_id, target_revision_id, secrets)
             connection.execute(
-                "UPDATE wren_operations SET phase='building_target', updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET phase='building_target', updated_at=%s WHERE id=%s",
                 (now, operation_id),
             )
         return self.get_revision(source_id, target_revision_id)
@@ -803,7 +689,7 @@ class WrenSettingsStore:
         now = self._now()
         with self._connect() as connection:
             operation = connection.execute(
-                "SELECT source_id, target_revision_id, status FROM wren_operations WHERE id=?",
+                "SELECT source_id, target_revision_id, status FROM wren_operations WHERE id=%s",
                 (operation_id,),
             ).fetchone()
             if (
@@ -812,7 +698,7 @@ class WrenSettingsStore:
             ):
                 raise WrenConfigurationError("发布操作与目标版本不匹配。", code="SOURCE_GENERATION_STALE")
             connection.execute(
-                "UPDATE wren_operations SET target_mdl_digest=?, updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET target_mdl_digest=%s, updated_at=%s WHERE id=%s",
                 (mdl_digest, now, operation_id),
             )
 
@@ -821,22 +707,22 @@ class WrenSettingsStore:
     ) -> WrenDataSource:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND source_id=? AND status='running'",
+                "SELECT * FROM wren_operations WHERE id=%s AND source_id=%s AND status='running'",
                 (operation_id, source_id),
             ).fetchone()
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             source = connection.execute(
-                "SELECT active_revision_id, draft_revision_id FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id, draft_revision_id FROM wren_data_sources WHERE id=%s",
                 (source_id,),
             ).fetchone()
             revision = connection.execute(
                 "SELECT status, mdl_digest, parent_revision_id, publication_operation_id, config_json "
-                "FROM wren_revisions WHERE source_id=? AND id=?",
+                "FROM wren_revisions WHERE source_id=%s AND id=%s",
                 (source_id, target_revision_id),
             ).fetchone()
             if (
@@ -861,20 +747,14 @@ class WrenSettingsStore:
             if operation["operation_type"] == "settings_apply" and source["draft_revision_id"] != target_revision_id:
                 raise WrenConfigurationError("设置草稿已变化，不能激活此版本。", code="SOURCE_GENERATION_STALE")
             if operation["operation_type"] in {"settings_apply", "rollback"}:
-                origins_table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='business_rule_origins'"
-                ).fetchone()
-                if origins_table is not None:
-                    suppressions_table = connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_suppressions'"
-                    ).fetchone()
-                    if suppressions_table is None:
+                if self._has_table(connection, "business_rule_origins"):
+                    if not self._has_table(connection, "agent_memory_suppressions"):
                         raise WrenConfigurationError(
                             "业务规则删除状态不可验证。", code="SOURCE_RECOVERY_REQUIRED"
                         )
                     suppressed_rows = connection.execute(
                         """SELECT business_rule_id FROM business_rule_origins
-                           WHERE data_source_id=? AND publication_status IN ('removal_pending','removed')""",
+                           WHERE data_source_id=%s AND publication_status IN ('removal_pending','removed')""",
                         (source_id,),
                     ).fetchall()
                     suppressed_names = {
@@ -882,7 +762,7 @@ class WrenSettingsStore:
                     }
                     journal_suppressions = connection.execute(
                         """SELECT item_id FROM agent_memory_suppressions
-                           WHERE data_source_id=? AND item_type='business_rule'""",
+                           WHERE data_source_id=%s AND item_type='business_rule'""",
                         (source_id,),
                     ).fetchall()
                     suppressed_names.update(
@@ -906,11 +786,13 @@ class WrenSettingsStore:
                         )
             if operation["operation_type"] == "business_rule_publish":
                 tables = {
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                        "('business_rule_candidates','agent_conversation_threads','agent_memory_suppressions')"
+                    table
+                    for table in (
+                        "business_rule_candidates",
+                        "agent_conversation_threads",
+                        "agent_memory_suppressions",
                     )
+                    if self._has_table(connection, table)
                 }
                 rule_id = (json.loads(operation["payload_json"] or "{}")).get("business_rule_id")
                 required_tables = {
@@ -927,12 +809,12 @@ class WrenSettingsStore:
                        FROM business_rule_candidates AS candidate
                        JOIN agent_conversation_threads AS thread
                          ON thread.thread_id=candidate.source_thread_id
-                       WHERE candidate.data_source_id=? AND candidate.business_rule_id=?""",
+                       WHERE candidate.data_source_id=%s AND candidate.business_rule_id=%s""",
                     (source_id, rule_id),
                 ).fetchone()
                 suppressed = connection.execute(
                     """SELECT 1 FROM agent_memory_suppressions
-                       WHERE data_source_id=? AND item_type='business_rule' AND item_id=? LIMIT 1""",
+                       WHERE data_source_id=%s AND item_type='business_rule' AND item_id=%s LIMIT 1""",
                     (source_id, rule_id),
                 ).fetchone()
                 expiry = (
@@ -958,49 +840,46 @@ class WrenSettingsStore:
                 rule_ids = tuple(sorted(set(payload.get("business_rule_ids", ()))))
                 if not rule_ids or len(rule_ids) > 500 or any(not isinstance(item, str) for item in rule_ids):
                     raise WrenConfigurationError("规则下线操作没有有效目标。", code="SOURCE_GENERATION_STALE")
-                table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='business_rule_origins'"
-                ).fetchone()
-                if table is None:
+                if not self._has_table(connection, "business_rule_origins"):
                     raise WrenConfigurationError("业务规则下线状态不可验证。", code="SOURCE_RECOVERY_REQUIRED")
-                placeholders = ",".join("?" for _ in rule_ids)
+                placeholders = ",".join("%s" for _ in rule_ids)
                 pending = connection.execute(
                     f"""SELECT business_rule_id FROM business_rule_origins
-                        WHERE data_source_id=? AND publication_status='removal_pending'
+                        WHERE data_source_id=%s AND publication_status='removal_pending'
                           AND business_rule_id IN ({placeholders})""",
                     (source_id, *rule_ids),
                 ).fetchall()
                 if {row["business_rule_id"] for row in pending} != set(rule_ids):
                     raise WrenConfigurationError("规则下线队列已变化。", code="SOURCE_GENERATION_STALE")
             connection.execute(
-                "UPDATE wren_revisions SET status='retired', updated_at=? "
-                "WHERE source_id=? AND status='active' AND id<>?",
+                "UPDATE wren_revisions SET status='retired', updated_at=%s "
+                "WHERE source_id=%s AND status='active' AND id<>%s",
                 (now, source_id, target_revision_id),
             )
             connection.execute(
-                "UPDATE wren_revisions SET status='active', error_code=NULL, updated_at=? WHERE source_id=? AND id=?",
+                "UPDATE wren_revisions SET status='active', error_code=NULL, updated_at=%s WHERE source_id=%s AND id=%s",
                 (now, source_id, target_revision_id),
             )
             activated_generation = int(operation["base_generation"]) + 1
             source_update = connection.execute(
-                """UPDATE wren_data_sources SET active_revision_id=?,
-                       draft_revision_id=CASE WHEN draft_revision_id=? THEN NULL ELSE draft_revision_id END,
+                """UPDATE wren_data_sources SET active_revision_id=%s,
+                       draft_revision_id=CASE WHEN draft_revision_id=%s THEN NULL ELSE draft_revision_id END,
                        runtime_status=CASE WHEN enabled=1 THEN 'ready' ELSE 'disabled' END,
-                       updated_at=? WHERE id=? AND active_revision_id IS ?""",
+                       updated_at=%s WHERE id=%s AND active_revision_id IS NOT DISTINCT FROM %s""",
                 (target_revision_id, target_revision_id, now, source_id, operation["base_revision_id"]),
             )
             if source_update.rowcount != 1:
                 raise WrenConfigurationError("活动版本指针已变化。", code="SOURCE_GENERATION_STALE")
             state_update = connection.execute(
-                "UPDATE wren_source_operation_state SET generation=?, updated_at=? "
-                "WHERE source_id=? AND generation=? AND active_operation_id=?",
+                "UPDATE wren_source_operation_state SET generation=%s, updated_at=%s "
+                "WHERE source_id=%s AND generation=%s AND active_operation_id=%s",
                 (activated_generation, now, source_id, operation["base_generation"], operation_id),
             )
             if state_update.rowcount != 1:
                 raise WrenConfigurationError("数据源 generation 已变化。", code="SOURCE_GENERATION_STALE")
             operation_update = connection.execute(
                 """UPDATE wren_operations SET phase='generation_persisted',
-                       activated_generation=?, updated_at=? WHERE id=?""",
+                       activated_generation=%s, updated_at=%s WHERE id=%s""",
                 (activated_generation, now, operation_id),
             )
             if operation_update.rowcount != 1:
@@ -1010,18 +889,18 @@ class WrenSettingsStore:
     def complete_source_operation(self, operation_id: str) -> dict[str, Any]:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND status='running'", (operation_id,)
+                "SELECT * FROM wren_operations WHERE id=%s AND status='running'", (operation_id,)
             ).fetchone()
             if operation is None:
                 raise LookupError("操作不存在或已完成。")
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (operation["source_id"],),
             ).fetchone()
             source = connection.execute(
-                "SELECT active_revision_id FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id FROM wren_data_sources WHERE id=%s",
                 (operation["source_id"],),
             ).fetchone()
             expected_active_revision = (
@@ -1039,8 +918,8 @@ class WrenSettingsStore:
                 raise WrenConfigurationError("运行时尚未与持久活动版本一致。", code="SOURCE_RECOVERY_REQUIRED")
             if operation["operation_type"] == "query_corpus_activate":
                 changed = connection.execute(
-                    """UPDATE wren_data_sources SET runtime_status='ready', updated_at=?
-                       WHERE id=? AND enabled=1 AND active_revision_id=?
+                    """UPDATE wren_data_sources SET runtime_status='ready', updated_at=%s
+                       WHERE id=%s AND enabled=1 AND active_revision_id=%s
                          AND runtime_status='unavailable'""",
                     (now, operation["source_id"], operation["base_revision_id"]),
                 )
@@ -1050,12 +929,12 @@ class WrenSettingsStore:
                         code="SOURCE_RECOVERY_REQUIRED",
                     )
             connection.execute(
-                "UPDATE wren_operations SET status='active', phase='active', updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET status='active', phase='active', updated_at=%s WHERE id=%s",
                 (now, operation_id),
             )
             connection.execute(
-                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=? "
-                "WHERE source_id=? AND active_operation_id=?",
+                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=%s "
+                "WHERE source_id=%s AND active_operation_id=%s",
                 (now, operation["source_id"], operation_id),
             )
         return self.get_operation(operation_id)
@@ -1065,18 +944,18 @@ class WrenSettingsStore:
     ) -> dict[str, Any]:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND status='running'", (operation_id,)
+                "SELECT * FROM wren_operations WHERE id=%s AND status='running'", (operation_id,)
             ).fetchone()
             if operation is None:
                 return self.get_operation(operation_id)
             source = connection.execute(
-                "SELECT active_revision_id FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id FROM wren_data_sources WHERE id=%s",
                 (operation["source_id"],),
             ).fetchone()
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (operation["source_id"],),
             ).fetchone()
             if (
@@ -1090,20 +969,20 @@ class WrenSettingsStore:
                     code="SOURCE_RECOVERY_REQUIRED",
                 )
             connection.execute(
-                "UPDATE wren_operations SET status='failed', phase='failed', error_code=?, message=?, updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET status='failed', phase='failed', error_code=%s, message=%s, updated_at=%s WHERE id=%s",
                 (error_code, message[:500], now, operation_id),
             )
             connection.execute(
-                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=? "
-                "WHERE source_id=? AND active_operation_id=?",
+                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=%s "
+                "WHERE source_id=%s AND active_operation_id=%s",
                 (now, operation["source_id"], operation_id),
             )
             if operation["target_revision_id"] and operation["operation_type"] not in {
                 "rollback", "revision_cleanup"
             }:
                 connection.execute(
-                    "UPDATE wren_revisions SET status='failed', error_code=?, updated_at=? "
-                    "WHERE source_id=? AND id=? AND status<>'active'",
+                    "UPDATE wren_revisions SET status='failed', error_code=%s, updated_at=%s "
+                    "WHERE source_id=%s AND id=%s AND status<>'active'",
                     (error_code, now, operation["source_id"], operation["target_revision_id"]),
                 )
         return self.get_operation(operation_id)
@@ -1127,12 +1006,12 @@ class WrenSettingsStore:
                    FROM wren_revisions AS revision
                    JOIN wren_data_sources AS source ON source.id=revision.source_id
                    WHERE revision.id<>source.active_revision_id
-                     AND revision.id IS NOT source.draft_revision_id
+                     AND revision.id IS DISTINCT FROM source.draft_revision_id
                      AND (revision.status='cleanup_pending'
                        OR (revision.status='retired' AND revision.project_dir IS NOT NULL
-                           AND revision.updated_at<=?)
-                       OR (revision.status='failed' AND revision.updated_at<=?))
-                   ORDER BY revision.source_id, revision.updated_at, revision.id LIMIT ?""",
+                           AND revision.updated_at<=%s)
+                       OR (revision.status='failed' AND revision.updated_at<=%s))
+                   ORDER BY revision.source_id, revision.updated_at, revision.id LIMIT %s""",
                 (cutoff, cutoff, limit),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1145,19 +1024,19 @@ class WrenSettingsStore:
         now = self._now()
         marked: list[str] = []
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND status='running'",
+                "SELECT * FROM wren_operations WHERE id=%s AND status='running'",
                 (operation_id,),
             ).fetchone()
             if operation is None or operation["operation_type"] != "revision_cleanup":
                 raise WrenConfigurationError("版本清理操作无效。", code="SOURCE_GENERATION_STALE")
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (operation["source_id"],),
             ).fetchone()
             source = connection.execute(
-                "SELECT active_revision_id FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id FROM wren_data_sources WHERE id=%s",
                 (operation["source_id"],),
             ).fetchone()
             if (
@@ -1169,7 +1048,7 @@ class WrenSettingsStore:
                 raise WrenConfigurationError("数据源版本已变化，不能清理历史版本。", code="SOURCE_GENERATION_STALE")
             for revision_id in sorted(set(revision_ids)):
                 row = connection.execute(
-                    "SELECT status, updated_at FROM wren_revisions WHERE source_id=? AND id=?",
+                    "SELECT status, updated_at FROM wren_revisions WHERE source_id=%s AND id=%s",
                     (operation["source_id"], revision_id),
                 ).fetchone()
                 if (
@@ -1180,13 +1059,13 @@ class WrenSettingsStore:
                 if row["status"] in {"retired", "failed"} and row["updated_at"] > cutoff:
                     continue
                 connection.execute(
-                    "UPDATE wren_revisions SET status='cleanup_pending', updated_at=? "
-                    "WHERE source_id=? AND id=? AND status IN ('retired','failed','cleanup_pending')",
+                    "UPDATE wren_revisions SET status='cleanup_pending', updated_at=%s "
+                    "WHERE source_id=%s AND id=%s AND status IN ('retired','failed','cleanup_pending')",
                     (now, operation["source_id"], revision_id),
                 )
                 marked.append(revision_id)
             connection.execute(
-                "UPDATE wren_operations SET phase='cleaning_artifacts', payload_json=?, updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET phase='cleaning_artifacts', payload_json=%s, updated_at=%s WHERE id=%s",
                 (
                     json.dumps({"revision_ids": marked}, separators=(",", ":")),
                     now,
@@ -1198,17 +1077,17 @@ class WrenSettingsStore:
     def finalize_revision_cleanup(self, operation_id: str, revision_id: str) -> None:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT source_id, status, operation_type FROM wren_operations WHERE id=?",
+                "SELECT source_id, status, operation_type FROM wren_operations WHERE id=%s",
                 (operation_id,),
             ).fetchone()
             state = connection.execute(
-                "SELECT active_operation_id, generation FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT active_operation_id, generation FROM wren_source_operation_state WHERE source_id=%s",
                 (operation["source_id"],),
             ).fetchone() if operation else None
             revision = connection.execute(
-                "SELECT status FROM wren_revisions WHERE source_id=? AND id=?",
+                "SELECT status FROM wren_revisions WHERE source_id=%s AND id=%s",
                 (operation["source_id"], revision_id),
             ).fetchone() if operation else None
             if (
@@ -1219,32 +1098,32 @@ class WrenSettingsStore:
             ):
                 raise WrenConfigurationError("历史版本清理状态已变化。", code="SOURCE_GENERATION_STALE")
             connection.execute(
-                "DELETE FROM wren_secrets WHERE source_id=? AND revision_id=?",
+                "DELETE FROM wren_secrets WHERE source_id=%s AND revision_id=%s",
                 (operation["source_id"], revision_id),
             )
             connection.execute(
                 """UPDATE wren_revisions SET status='expired', config_json='{}',
-                       project_dir=NULL, profile_name=NULL, error_code=NULL, updated_at=?
-                   WHERE source_id=? AND id=? AND status='cleanup_pending'""",
+                       project_dir=NULL, profile_name=NULL, error_code=NULL, updated_at=%s
+                   WHERE source_id=%s AND id=%s AND status='cleanup_pending'""",
                 (now, operation["source_id"], revision_id),
             )
 
     def complete_maintenance_operation(self, operation_id: str) -> dict[str, Any]:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT * FROM wren_operations WHERE id=? AND status='running'",
+                "SELECT * FROM wren_operations WHERE id=%s AND status='running'",
                 (operation_id,),
             ).fetchone()
             if operation is None or operation["operation_type"] != "revision_cleanup":
                 raise LookupError("清理操作不存在或已完成。")
             source = connection.execute(
-                "SELECT active_revision_id FROM wren_data_sources WHERE id=?",
+                "SELECT active_revision_id FROM wren_data_sources WHERE id=%s",
                 (operation["source_id"],),
             ).fetchone()
             state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (operation["source_id"],),
             ).fetchone()
             if (
@@ -1255,12 +1134,12 @@ class WrenSettingsStore:
             ):
                 raise WrenConfigurationError("数据源版本已变化，清理操作需要恢复。", code="SOURCE_RECOVERY_REQUIRED")
             connection.execute(
-                "UPDATE wren_operations SET status='active', phase='active', updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET status='active', phase='active', updated_at=%s WHERE id=%s",
                 (now, operation_id),
             )
             connection.execute(
-                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=? "
-                "WHERE source_id=? AND active_operation_id=?",
+                "UPDATE wren_source_operation_state SET active_operation_id=NULL, updated_at=%s "
+                "WHERE source_id=%s AND active_operation_id=%s",
                 (now, operation["source_id"], operation_id),
             )
         return self.get_operation(operation_id)
@@ -1278,7 +1157,7 @@ class WrenSettingsStore:
             raise ValueError("operation 状态无效。")
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE wren_operations SET status=?, phase=?, error_code=?, message=?, updated_at=? WHERE id=?",
+                "UPDATE wren_operations SET status=%s, phase=%s, error_code=%s, message=%s, updated_at=%s WHERE id=%s",
                 (status, phase, error_code, message, self._now(), operation_id),
             )
             if not cursor.rowcount:
@@ -1287,7 +1166,7 @@ class WrenSettingsStore:
 
     def get_operation(self, operation_id: str) -> dict[str, Any]:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM wren_operations WHERE id=?", (operation_id,)).fetchone()
+            row = connection.execute("SELECT * FROM wren_operations WHERE id=%s", (operation_id,)).fetchone()
         if row is None:
             raise LookupError("操作不存在。")
         return {
@@ -1314,7 +1193,7 @@ class WrenSettingsStore:
     def latest_operation(self, source_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id FROM wren_operations WHERE source_id=? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id FROM wren_operations WHERE source_id=%s ORDER BY created_at DESC LIMIT 1",
                 (source_id,),
             ).fetchone()
         return self.get_operation(row["id"]) if row else None
@@ -1360,7 +1239,7 @@ class WrenSettingsStore:
     def get_secret(self, source_id: str, revision_id: str, secret_name: str) -> str | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT ciphertext FROM wren_secrets WHERE source_id=? AND revision_id=? AND secret_name=?",
+                "SELECT ciphertext FROM wren_secrets WHERE source_id=%s AND revision_id=%s AND secret_name=%s",
                 (source_id, revision_id, secret_name),
             ).fetchone()
         if row is None:
@@ -1373,7 +1252,7 @@ class WrenSettingsStore:
     def get_secrets(self, source_id: str, revision_id: str) -> dict[str, str]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT secret_name FROM wren_secrets WHERE source_id=? AND revision_id=?",
+                "SELECT secret_name FROM wren_secrets WHERE source_id=%s AND revision_id=%s",
                 (source_id, revision_id),
             ).fetchall()
         return {
@@ -1396,7 +1275,7 @@ class WrenSettingsStore:
             raise ValueError("迁移状态无效。")
         with self._connect() as connection:
             connection.execute(
-                """INSERT INTO wren_state(id, migration_status, updated_at) VALUES (1, ?, ?)
+                """INSERT INTO wren_state(id, migration_status, updated_at) VALUES (1, %s, %s)
                    ON CONFLICT(id) DO UPDATE SET migration_status=excluded.migration_status,
                    updated_at=excluded.updated_at""",
                 (status, self._now()),
@@ -1414,7 +1293,7 @@ class WrenSettingsStore:
         with self._connect() as connection:
             if source_id is not None:
                 source = connection.execute(
-                    "SELECT enabled, active_revision_id, runtime_status FROM wren_data_sources WHERE id=?",
+                    "SELECT enabled, active_revision_id, runtime_status FROM wren_data_sources WHERE id=%s",
                     (source_id,),
                 ).fetchone()
                 if source is None:
@@ -1424,7 +1303,7 @@ class WrenSettingsStore:
                 if not source["active_revision_id"] or source["runtime_status"] != "ready":
                     raise ValueError("默认数据源必须已有可用的活动 runtime。")
             connection.execute(
-                """INSERT INTO wren_state(id, default_data_source_id, updated_at) VALUES (1, ?, ?)
+                """INSERT INTO wren_state(id, default_data_source_id, updated_at) VALUES (1, %s, %s)
                    ON CONFLICT(id) DO UPDATE SET default_data_source_id=excluded.default_data_source_id,
                    updated_at=excluded.updated_at""",
                 (source_id, now),
@@ -1434,9 +1313,9 @@ class WrenSettingsStore:
     def set_enabled(self, source_id: str, enabled: bool) -> WrenDataSource:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
-                "SELECT active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if operation and operation["active_operation_id"] is not None:
@@ -1445,27 +1324,27 @@ class WrenSettingsStore:
                     code="SOURCE_OPERATION_IN_PROGRESS",
                 )
             cursor = connection.execute(
-                "UPDATE wren_data_sources SET enabled=?, updated_at=? WHERE id=?",
+                "UPDATE wren_data_sources SET enabled=%s, updated_at=%s WHERE id=%s",
                 (int(enabled), now, source_id),
             )
             if cursor.rowcount == 0:
                 raise LookupError("数据源不存在。")
             if not enabled:
                 connection.execute(
-                    "UPDATE wren_state SET default_data_source_id=NULL, updated_at=? WHERE default_data_source_id=?",
+                    "UPDATE wren_state SET default_data_source_id=NULL, updated_at=%s WHERE default_data_source_id=%s",
                     (now, source_id),
                 )
                 connection.execute(
-                    "UPDATE wren_data_sources SET runtime_status='disabled' WHERE id=?", (source_id,)
+                    "UPDATE wren_data_sources SET runtime_status='disabled' WHERE id=%s", (source_id,)
                 )
             else:
                 connection.execute(
                     "UPDATE wren_data_sources SET runtime_status=CASE WHEN active_revision_id IS NULL "
-                    "THEN 'not_ready' ELSE 'ready' END WHERE id=?",
+                    "THEN 'not_ready' ELSE 'ready' END WHERE id=%s",
                     (source_id,),
                 )
             connection.execute(
-                "UPDATE wren_source_operation_state SET generation=generation+1, updated_at=? WHERE source_id=?",
+                "UPDATE wren_source_operation_state SET generation=generation+1, updated_at=%s WHERE source_id=%s",
                 (now, source_id),
             )
         return self.get_data_source(source_id)
@@ -1473,9 +1352,9 @@ class WrenSettingsStore:
     def activate_revision(self, source_id: str, revision_id: str) -> WrenDataSource:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation_state = connection.execute(
-                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=?",
+                "SELECT generation, active_operation_id FROM wren_source_operation_state WHERE source_id=%s",
                 (source_id,),
             ).fetchone()
             if operation_state and operation_state["active_operation_id"] is not None:
@@ -1484,28 +1363,28 @@ class WrenSettingsStore:
                     code="SOURCE_OPERATION_IN_PROGRESS",
                 )
             revision = connection.execute(
-                "SELECT id FROM wren_revisions WHERE id=? AND source_id=?",
+                "SELECT id FROM wren_revisions WHERE id=%s AND source_id=%s",
                 (revision_id, source_id),
             ).fetchone()
             if revision is None:
                 raise LookupError("Wren 版本不存在。")
             connection.execute(
-                "UPDATE wren_revisions SET status='retired', updated_at=? "
-                "WHERE source_id=? AND status='active' AND id<>?",
+                "UPDATE wren_revisions SET status='retired', updated_at=%s "
+                "WHERE source_id=%s AND status='active' AND id<>%s",
                 (now, source_id, revision_id),
             )
             connection.execute(
-                "UPDATE wren_revisions SET status='active', error_code=NULL, updated_at=? WHERE id=?",
+                "UPDATE wren_revisions SET status='active', error_code=NULL, updated_at=%s WHERE id=%s",
                 (now, revision_id),
             )
             connection.execute(
-                "UPDATE wren_data_sources SET active_revision_id=?, "
-                "draft_revision_id=CASE WHEN draft_revision_id=? THEN NULL ELSE draft_revision_id END, "
-                "runtime_status='ready', updated_at=? WHERE id=?",
+                "UPDATE wren_data_sources SET active_revision_id=%s, "
+                "draft_revision_id=CASE WHEN draft_revision_id=%s THEN NULL ELSE draft_revision_id END, "
+                "runtime_status='ready', updated_at=%s WHERE id=%s",
                 (revision_id, revision_id, now, source_id),
             )
             connection.execute(
-                "UPDATE wren_source_operation_state SET generation=generation+1, updated_at=? WHERE source_id=?",
+                "UPDATE wren_source_operation_state SET generation=generation+1, updated_at=%s WHERE source_id=%s",
                 (now, source_id),
             )
         return self.get_data_source(source_id)
@@ -1516,7 +1395,7 @@ class WrenSettingsStore:
             raise ValueError("运行状态无效。")
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE wren_data_sources SET runtime_status=?, updated_at=? WHERE id=?",
+                "UPDATE wren_data_sources SET runtime_status=%s, updated_at=%s WHERE id=%s",
                 (status, self._now(), source_id),
             )
             if not cursor.rowcount:
@@ -1526,7 +1405,7 @@ class WrenSettingsStore:
     def get_thread_binding(self, thread_id: str) -> tuple[str, str | None] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT data_source_id, owner_user_id FROM chat_thread_data_sources WHERE thread_id=?",
+                "SELECT data_source_id, owner_user_id FROM chat_thread_data_sources WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()
         if row is None:
@@ -1542,14 +1421,14 @@ class WrenSettingsStore:
     ) -> str:
         now = self._now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             account = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (owner_user_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (owner_user_id,)
             ).fetchone()
             if account is None or not account["is_active"] or account["role"] != role:
                 raise ChatThreadOwnerMismatch("当前登录状态已变更，请重新登录。")
             existing = connection.execute(
-                "SELECT data_source_id, owner_user_id FROM chat_thread_data_sources WHERE thread_id=?",
+                "SELECT data_source_id, owner_user_id FROM chat_thread_data_sources WHERE thread_id=%s",
                 (thread_id,),
             ).fetchone()
             if existing:
@@ -1560,14 +1439,14 @@ class WrenSettingsStore:
                 if existing["data_source_id"] != source_id:
                     raise ChatDataSourceMismatch("会话已绑定到其他数据源。")
             source = connection.execute(
-                "SELECT id, enabled FROM wren_data_sources WHERE id=?", (source_id,)
+                "SELECT id, enabled FROM wren_data_sources WHERE id=%s", (source_id,)
             ).fetchone()
             if source is None or not source["enabled"]:
                 raise ChatDataSourceUnavailable("所选数据源当前不可用。")
             if role == "member":
                 grant = connection.execute(
                     """SELECT 1 FROM auth_user_data_sources
-                       WHERE user_id=? AND data_source_id=?""",
+                       WHERE user_id=%s AND data_source_id=%s""",
                     (owner_user_id, source_id),
                 ).fetchone()
                 if grant is None:
@@ -1576,7 +1455,7 @@ class WrenSettingsStore:
                 return existing["data_source_id"]
             connection.execute(
                 """INSERT INTO chat_thread_data_sources
-                   (thread_id, data_source_id, owner_user_id, created_at) VALUES (?, ?, ?, ?)""",
+                   (thread_id, data_source_id, owner_user_id, created_at) VALUES (%s, %s, %s, %s)""",
                 (thread_id, source_id, owner_user_id, now),
             )
         return source_id
@@ -1588,7 +1467,7 @@ class WrenSettingsStore:
     def source_is_referenced(self, source_id: str) -> bool:
         with self._connect() as connection:
             return connection.execute(
-                "SELECT 1 FROM chat_thread_data_sources WHERE data_source_id=? LIMIT 1",
+                "SELECT 1 FROM chat_thread_data_sources WHERE data_source_id=%s LIMIT 1",
                 (source_id,),
             ).fetchone() is not None
 

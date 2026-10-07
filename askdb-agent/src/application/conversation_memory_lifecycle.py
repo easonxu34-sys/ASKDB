@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
-import os
 from contextlib import suppress
 from datetime import timedelta
-from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from integrations.database import PostgresConnection, PostgresDatabase
 
 
 logger = logging.getLogger(__name__)
@@ -30,23 +29,27 @@ def initialize_memory_before_serving(store: Any) -> None:
             pass
 
 
-def try_acquire_sweeper_lease(database_path: Path) -> int | None:
-    """Allow only one process on this host to run the periodic cleanup loop."""
-    path = database_path.with_name(database_path.name + ".memory-sweeper.lock")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    os.fchmod(descriptor, 0o600)
+def try_acquire_sweeper_lease(database: PostgresDatabase) -> PostgresConnection | None:
+    """Hold a session advisory lock so only one process runs periodic memory cleanup."""
+    connection = database.connect()
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(descriptor)
-        return None
-    return descriptor
+        acquired = connection.execute(
+            "SELECT pg_try_advisory_lock(1095985988, 1111577414) AS acquired"
+        ).fetchone()["acquired"]
+        if acquired:
+            return connection
+    except BaseException:
+        connection.close()
+        raise
+    connection.close()
+    return None
 
 
-def release_sweeper_lease(descriptor: int) -> None:
-    fcntl.flock(descriptor, fcntl.LOCK_UN)
-    os.close(descriptor)
+def release_sweeper_lease(connection: PostgresConnection) -> None:
+    try:
+        connection.execute("SELECT pg_advisory_unlock(1095985988, 1111577414)")
+    finally:
+        connection.close()
 
 
 async def _sweep_once(

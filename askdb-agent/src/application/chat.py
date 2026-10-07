@@ -36,6 +36,59 @@ from tools.chart import create_chart_tool
 
 
 _CHART_CLAIM_MARKERS = ("图表已生成", "柱状图已生成", "折线图已生成", "饼图已生成", "成功生成图表")
+_MEMORY_RECALL_KINDS = frozenset({"schema", "business_rule", "query_example"})
+_MEMORY_RECALL_TITLE_LIMIT = 160
+_MEMORY_RECALL_DETAIL_LIMIT = 600
+_MEMORY_RECALL_ITEM_LIMIT = 13
+
+
+def _bounded_memory_text(value: object, *, limit: int) -> tuple[str, bool]:
+    if not isinstance(value, str):
+        return "", False
+    text = value.strip()
+    if len(text) <= limit:
+        return text, False
+    return f"{text[: limit - 1].rstrip()}…", True
+
+
+def _memory_recall_payload(
+    memory_references: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    counts: dict[str, int] = {}
+    items: list[dict[str, object]] = []
+    for reference in memory_references:
+        if not isinstance(reference, Mapping):
+            continue
+        kind = reference.get("kind")
+        if not isinstance(kind, str) or kind not in _MEMORY_RECALL_KINDS:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+        if len(items) >= _MEMORY_RECALL_ITEM_LIMIT:
+            continue
+
+        title, title_truncated = _bounded_memory_text(
+            reference.get("title"), limit=_MEMORY_RECALL_TITLE_LIMIT
+        )
+        if not title:
+            continue
+        item: dict[str, object] = {
+            "kind": kind,
+            "title": title,
+        }
+        if title_truncated:
+            item["title_truncated"] = True
+
+        # Query examples expose only their natural-language question, never SQL.
+        if kind in {"schema", "business_rule"}:
+            detail, detail_truncated = _bounded_memory_text(
+                reference.get("body"), limit=_MEMORY_RECALL_DETAIL_LIMIT
+            )
+            if detail:
+                item["detail"] = detail
+            if detail_truncated:
+                item["detail_truncated"] = True
+        items.append(item)
+    return {"counts": counts, "items": items} if counts else None
 
 
 async def stream_chat_events(
@@ -177,9 +230,10 @@ async def stream_chat_events(
     yield "progress", {"step_id": "query-analysis", "label": "分析查询需求", "status": "completed"}
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "running"}
     if final_answer:
-        if not await _is_safe_user_facing_text(
+        answer_is_safe = await _is_safe_user_facing_text(
             query_gate, final_answer, messages, purpose="answer"
-        ):
+        )
+        if not answer_is_safe:
             text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
         else:
             text = final_answer
@@ -190,6 +244,10 @@ async def stream_chat_events(
         ):
             text = "本轮没有成功生成可显示的图表；我没有取得有效的本轮查询结果，请重新发送查询和分组维度。"
         yield "token", {"text": text}
+        if answer_is_safe and memory_reference_text:
+            recall_payload = _memory_recall_payload(memory_references)
+            if recall_payload is not None:
+                yield "memory_recall", recall_payload
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "completed"}
 
 

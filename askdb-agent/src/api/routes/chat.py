@@ -175,7 +175,7 @@ async def chat(
             )
     try:
         source_store = app.state.wren_store
-        source_store.list_data_sources()  # initializes the shared SQLite catalog
+        source_store.list_data_sources()  # verifies the shared PostgreSQL catalog
         business_rule_memory = getattr(app.state, "business_rule_memory", None)
         business_rule_store = getattr(business_rule_memory, "store", None)
         if thread_context is not None:

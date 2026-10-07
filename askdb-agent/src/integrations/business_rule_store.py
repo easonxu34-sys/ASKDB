@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
-import sqlite3
 import threading
 import unicodedata
 import uuid
@@ -24,6 +22,7 @@ from domain.business_rules import (
     BusinessRuleStaleSource,
     BusinessRuleValidationError,
 )
+from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
 from integrations.deletion_journal import (
     EncryptedDeletionJournal,
     JournalEvent,
@@ -102,12 +101,12 @@ class BusinessRuleMemoryStore:
 
     def __init__(
         self,
-        database_path: Path,
+        database: PostgresDatabase | None = None,
         *,
         deletion_journal: EncryptedDeletionJournal,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self.database_path = Path(database_path).expanduser().resolve()
+        self.database = database or PostgresDatabase()
         self.deletion_journal = deletion_journal
         self.clock = clock or (lambda: datetime.now(UTC))
         self._source_suppression_barriers: dict[str, _SourceSuppressionBarrier] = {}
@@ -135,21 +134,16 @@ class BusinessRuleMemoryStore:
         value = self.clock()
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA synchronous = FULL")
-        return connection
+    def _connect(self) -> PostgresConnection:
+        return self.database.connect()
 
     @staticmethod
-    def _candidate(row: sqlite3.Row) -> BusinessRuleCandidate:
+    def _candidate(row: PostgresRow) -> BusinessRuleCandidate:
         raw_references = row["mdl_references_json"]
         try:
             references = tuple(json.loads(raw_references)) if raw_references else ()
         except (TypeError, json.JSONDecodeError) as exc:
-            raise sqlite3.DatabaseError("stored business-rule reference list is invalid") from exc
+            raise ValueError("stored business-rule reference list is invalid") from exc
         return BusinessRuleCandidate(
             business_rule_id=row["business_rule_id"],
             data_source_id=row["data_source_id"],
@@ -198,7 +192,7 @@ class BusinessRuleMemoryStore:
 
     @staticmethod
     def _record_event(
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *,
         business_rule_id: str,
         data_source_id: str,
@@ -214,11 +208,11 @@ class BusinessRuleMemoryStore:
         event_id: str | None = None,
     ) -> None:
         connection.execute(
-            """INSERT OR IGNORE INTO business_rule_candidate_events
+            """INSERT INTO business_rule_candidate_events
                (event_id, business_rule_id, data_source_id, actor_user_id, event_type,
                 previous_review_status, review_status, previous_publication_status,
                 publication_status, content_hash, reason_code, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             (
                 event_id or uuid.uuid4().hex,
                 business_rule_id,
@@ -237,14 +231,14 @@ class BusinessRuleMemoryStore:
 
     def _require_active_source_and_thread(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *,
         data_source_id: str,
         thread_id: str,
         owner_user_id: str,
         revision_id: str,
         mdl_digest: str,
-    ) -> sqlite3.Row:
+    ) -> PostgresRow:
         row = connection.execute(
             """SELECT b.data_source_id, b.owner_user_id, t.status,
                       u.role, u.is_active, s.enabled, s.active_revision_id,
@@ -255,7 +249,7 @@ class BusinessRuleMemoryStore:
                JOIN wren_data_sources AS s ON s.id=b.data_source_id
                LEFT JOIN wren_revisions AS r
                  ON r.source_id=b.data_source_id AND r.id=s.active_revision_id
-               WHERE b.thread_id=? AND b.owner_user_id=? AND b.data_source_id=?""",
+               WHERE b.thread_id=%s AND b.owner_user_id=%s AND b.data_source_id=%s""",
             (thread_id, owner_user_id, data_source_id),
         ).fetchone()
         if row is None or row["status"] != "active" or not row["is_active"]:
@@ -266,7 +260,7 @@ class BusinessRuleMemoryStore:
             raise BusinessRuleForbidden("active account required")
         if row["role"] == "member" and connection.execute(
             """SELECT 1 FROM auth_user_data_sources
-               WHERE user_id=? AND data_source_id=?""",
+               WHERE user_id=%s AND data_source_id=%s""",
             (owner_user_id, data_source_id),
         ).fetchone() is None:
             raise BusinessRuleForbidden("source grant required")
@@ -317,7 +311,7 @@ class BusinessRuleMemoryStore:
         )
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_active_source_and_thread(
                 connection,
                 data_source_id=data_source_id,
@@ -328,7 +322,7 @@ class BusinessRuleMemoryStore:
             )
             prior = connection.execute(
                 """SELECT * FROM business_rule_candidates
-                   WHERE submitted_by=? AND idempotency_hash=?""",
+                   WHERE submitted_by=%s AND idempotency_hash=%s""",
                 (submitter_id, idempotency_hash),
             ).fetchone()
             if prior is not None:
@@ -341,12 +335,12 @@ class BusinessRuleMemoryStore:
                 "AND publication_status IN ('not_published','queued','publishing','failed')"
             thread_count = connection.execute(
                 f"""SELECT COUNT(*) FROM business_rule_candidates
-                    WHERE source_thread_id=? AND {unresolved}""",
+                    WHERE source_thread_id=%s AND {unresolved}""",
                 (thread_id,),
             ).fetchone()[0]
             source_user_count = connection.execute(
                 f"""SELECT COUNT(*) FROM business_rule_candidates
-                    WHERE data_source_id=? AND submitted_by=? AND {unresolved}""",
+                    WHERE data_source_id=%s AND submitted_by=%s AND {unresolved}""",
                 (data_source_id, submitter_id),
             ).fetchone()[0]
             if (
@@ -357,12 +351,12 @@ class BusinessRuleMemoryStore:
             cutoff = (now - timedelta(hours=1)).isoformat()
             recent_rules = connection.execute(
                 """SELECT COUNT(*), MIN(created_at) FROM business_rule_candidates
-                   WHERE submitted_by=? AND created_at>=?""",
+                   WHERE submitted_by=%s AND created_at>=%s""",
                 (submitter_id, cutoff),
             ).fetchone()
             recent_examples = connection.execute(
                 """SELECT COUNT(*), MIN(created_at) FROM query_example_candidates
-                   WHERE submitted_by=? AND created_at>=?""",
+                   WHERE submitted_by=%s AND created_at>=%s""",
                 (submitter_id, cutoff),
             ).fetchone()
             if int(recent_rules[0]) + int(recent_examples[0]) >= self.MAX_NEW_CANDIDATES_PER_HOUR:
@@ -379,13 +373,13 @@ class BusinessRuleMemoryStore:
             normalized_term = unicodedata.normalize("NFKC", term).casefold().strip()
             candidate_terms = connection.execute(
                 """SELECT term FROM business_rule_candidates
-                   WHERE data_source_id=? AND term IS NOT NULL
+                   WHERE data_source_id=%s AND term IS NOT NULL
                      AND review_status IN ('pending','needs_clarification','needs_revalidation','approved')""",
                 (data_source_id,),
             ).fetchall()
             origin_terms = connection.execute(
                 """SELECT term_label FROM business_rule_origins
-                   WHERE data_source_id=? AND term_label IS NOT NULL
+                   WHERE data_source_id=%s AND term_label IS NOT NULL
                      AND publication_status IN ('active','removal_pending')""",
                 (data_source_id,),
             ).fetchall()
@@ -405,8 +399,8 @@ class BusinessRuleMemoryStore:
                     source_thread_id, base_wren_revision_id, base_mdl_digest, content_hash,
                     submitted_by, idempotency_hash, request_hash, has_exact_term_conflict, review_status,
                     publication_status, version, created_at, updated_at, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending',
-                           'not_published', 1, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending',
+                           'not_published', 1, %s, %s, %s)""",
                 (
                     rule_id,
                     data_source_id,
@@ -441,7 +435,7 @@ class BusinessRuleMemoryStore:
                 created_at=now,
             )
             row = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (rule_id,),
             ).fetchone()
             connection.commit()
@@ -453,13 +447,13 @@ class BusinessRuleMemoryStore:
             connection.close()
 
     def _assert_admin_source(
-        self, connection: sqlite3.Connection, *, actor_id: str, data_source_id: str
+        self, connection: PostgresConnection, *, actor_id: str, data_source_id: str
     ) -> None:
         actor = connection.execute(
-            "SELECT role, is_active FROM auth_users WHERE id=?", (actor_id,)
+            "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_id,)
         ).fetchone()
         source = connection.execute(
-            "SELECT enabled FROM wren_data_sources WHERE id=?", (data_source_id,)
+            "SELECT enabled FROM wren_data_sources WHERE id=%s", (data_source_id,)
         ).fetchone()
         if actor is None or not actor["is_active"] or actor["role"] != "admin":
             raise BusinessRuleForbidden("admin role required")
@@ -467,7 +461,7 @@ class BusinessRuleMemoryStore:
             raise BusinessRuleNotFound("source is unavailable")
 
     def _assert_candidate_owner(
-        self, connection: sqlite3.Connection, row: sqlite3.Row, actor_id: str
+        self, connection: PostgresConnection, row: PostgresRow, actor_id: str
     ) -> None:
         if row["submitted_by"] != actor_id:
             raise BusinessRuleNotFound("candidate is unavailable")
@@ -480,7 +474,7 @@ class BusinessRuleMemoryStore:
                JOIN agent_conversation_threads AS t USING(thread_id)
                JOIN auth_users AS u ON u.id=b.owner_user_id
                JOIN wren_data_sources AS s ON s.id=b.data_source_id
-               WHERE b.thread_id=? AND b.owner_user_id=? AND b.data_source_id=?""",
+               WHERE b.thread_id=%s AND b.owner_user_id=%s AND b.data_source_id=%s""",
             (row["source_thread_id"], actor_id, row["data_source_id"]),
         ).fetchone()
         if (
@@ -494,7 +488,7 @@ class BusinessRuleMemoryStore:
             raise BusinessRuleNotFound("candidate is unavailable")
         if thread["role"] == "member" and connection.execute(
             """SELECT 1 FROM auth_user_data_sources
-               WHERE user_id=? AND data_source_id=?""",
+               WHERE user_id=%s AND data_source_id=%s""",
             (actor_id, row["data_source_id"]),
         ).fetchone() is None:
             raise BusinessRuleForbidden("source grant required")
@@ -503,7 +497,7 @@ class BusinessRuleMemoryStore:
         connection = self._connect()
         try:
             row = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (business_rule_id,),
             ).fetchone()
             if row is None:
@@ -527,12 +521,12 @@ class BusinessRuleMemoryStore:
         try:
             connection.execute("BEGIN")
             source = connection.execute(
-                "SELECT enabled FROM wren_data_sources WHERE id=?", (data_source_id,)
+                "SELECT enabled FROM wren_data_sources WHERE id=%s", (data_source_id,)
             ).fetchone()
             if source is None or not source["enabled"]:
                 raise BusinessRuleNotFound("source is unavailable")
             actor = connection.execute(
-                "SELECT role, is_active FROM auth_users WHERE id=?", (actor_id,)
+                "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_id,)
             ).fetchone()
             if actor is None or not actor["is_active"]:
                 raise BusinessRuleForbidden("active account required")
@@ -542,24 +536,24 @@ class BusinessRuleMemoryStore:
             else:
                 if actor["role"] != "member" or connection.execute(
                     """SELECT 1 FROM auth_user_data_sources
-                       WHERE user_id=? AND data_source_id=?""",
+                       WHERE user_id=%s AND data_source_id=%s""",
                     (actor_id, data_source_id),
                 ).fetchone() is None:
                     raise BusinessRuleForbidden("source grant required")
-            clauses = ["data_source_id=?"]
+            clauses = ["data_source_id=%s"]
             parameters: list[object] = [data_source_id]
             if not is_admin:
-                clauses.append("submitted_by=?")
+                clauses.append("submitted_by=%s")
                 parameters.append(actor_id)
             if status:
                 if status not in {item.value for item in BusinessRuleReviewStatus}:
                     raise BusinessRuleValidationError("candidate status is invalid")
-                clauses.append("review_status=?")
+                clauses.append("review_status=%s")
                 parameters.append(status)
             parameters.append(limit)
             rows = connection.execute(
                 f"""SELECT * FROM business_rule_candidates WHERE {' AND '.join(clauses)}
-                    ORDER BY created_at DESC, business_rule_id LIMIT ?""",
+                    ORDER BY created_at DESC, business_rule_id LIMIT %s""",
                 parameters,
             ).fetchall()
             connection.commit()
@@ -591,9 +585,9 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             row = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (business_rule_id,),
             ).fetchone()
             if row is None:
@@ -614,7 +608,7 @@ class BusinessRuleMemoryStore:
                     raise BusinessRuleConflict("candidate is no longer reviewable")
             else:
                 actor = connection.execute(
-                    "SELECT role, is_active FROM auth_users WHERE id=?", (actor_id,)
+                    "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_id,)
                 ).fetchone()
                 if (
                     actor is None
@@ -641,7 +635,7 @@ class BusinessRuleMemoryStore:
                        FROM wren_data_sources AS s
                        LEFT JOIN wren_revisions AS r
                          ON r.source_id=s.id AND r.id=s.active_revision_id
-                       WHERE s.id=?""",
+                       WHERE s.id=%s""",
                     (row["data_source_id"],),
                 ).fetchone()
                 if (
@@ -660,13 +654,13 @@ class BusinessRuleMemoryStore:
                 normalized_term = unicodedata.normalize("NFKC", row["term"] or "").casefold().strip()
                 candidate_terms = connection.execute(
                     """SELECT term FROM business_rule_candidates
-                       WHERE data_source_id=? AND business_rule_id<>? AND term IS NOT NULL
+                       WHERE data_source_id=%s AND business_rule_id<>%s AND term IS NOT NULL
                          AND review_status IN ('pending','needs_clarification','needs_revalidation','approved')""",
                     (row["data_source_id"], business_rule_id),
                 ).fetchall()
                 origin_terms = connection.execute(
                     """SELECT term_label FROM business_rule_origins
-                       WHERE data_source_id=? AND business_rule_id<>? AND term_label IS NOT NULL
+                       WHERE data_source_id=%s AND business_rule_id<>%s AND term_label IS NOT NULL
                          AND publication_status IN ('active','removal_pending')""",
                     (row["data_source_id"], business_rule_id),
                 ).fetchall()
@@ -704,13 +698,13 @@ class BusinessRuleMemoryStore:
                 normalized_term = unicodedata.normalize("NFKC", term).casefold().strip()
                 other_candidates = connection.execute(
                     """SELECT term FROM business_rule_candidates
-                       WHERE data_source_id=? AND business_rule_id<>? AND term IS NOT NULL
+                       WHERE data_source_id=%s AND business_rule_id<>%s AND term IS NOT NULL
                          AND review_status IN ('pending','needs_clarification','needs_revalidation','approved')""",
                     (row["data_source_id"], business_rule_id),
                 ).fetchall()
                 origins = connection.execute(
                     """SELECT term_label FROM business_rule_origins
-                       WHERE data_source_id=? AND term_label IS NOT NULL
+                       WHERE data_source_id=%s AND term_label IS NOT NULL
                          AND publication_status IN ('active','removal_pending')""",
                     (row["data_source_id"],),
                 ).fetchall()
@@ -726,14 +720,14 @@ class BusinessRuleMemoryStore:
                 publication = "not_published"
             version = expected_version + 1
             connection.execute(
-                """UPDATE business_rule_candidates SET term=?, definition=?, mdl_references_json=?,
-                       base_wren_revision_id=?, base_mdl_digest=?, content_hash=?,
-                       has_exact_term_conflict=?,
-                       review_status=?, publication_status=?, clarification_question=?,
-                       reviewed_by=CASE WHEN ? IN ('admin','system') THEN ? ELSE reviewed_by END,
-                       reviewed_at=CASE WHEN ? IN ('admin','system') THEN ? ELSE reviewed_at END,
-                       review_reason_code=?, version=?, updated_at=?
-                   WHERE business_rule_id=? AND version=?""",
+                """UPDATE business_rule_candidates SET term=%s, definition=%s, mdl_references_json=%s,
+                       base_wren_revision_id=%s, base_mdl_digest=%s, content_hash=%s,
+                       has_exact_term_conflict=%s,
+                       review_status=%s, publication_status=%s, clarification_question=%s,
+                       reviewed_by=CASE WHEN %s IN ('admin','system') THEN %s ELSE reviewed_by END,
+                       reviewed_at=CASE WHEN %s IN ('admin','system') THEN %s ELSE reviewed_at END,
+                       review_reason_code=%s, version=%s, updated_at=%s
+                   WHERE business_rule_id=%s AND version=%s""",
                 (
                     term,
                     definition,
@@ -771,7 +765,7 @@ class BusinessRuleMemoryStore:
                 created_at=now,
             )
             updated = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (business_rule_id,),
             ).fetchone()
             connection.commit()
@@ -959,13 +953,13 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT * FROM business_rule_candidates
-                   WHERE expires_at<=? AND review_status IN
+                   WHERE expires_at<=%s AND review_status IN
                      ('pending','needs_clarification','needs_revalidation','approved')
                      AND publication_status IN ('not_published','queued','failed')
-                   ORDER BY expires_at LIMIT ?""",
+                   ORDER BY expires_at LIMIT %s""",
                 (now.isoformat(), limit),
             ).fetchall()
             for row in rows:
@@ -973,8 +967,8 @@ class BusinessRuleMemoryStore:
                     """UPDATE business_rule_candidates SET review_status='expired',
                            publication_status='removed', term=NULL, definition=NULL,
                            mdl_references_json=NULL, clarification_question=NULL,
-                           version=version+1, updated_at=?
-                       WHERE business_rule_id=? AND version=?""",
+                           version=version+1, updated_at=%s
+                       WHERE business_rule_id=%s AND version=%s""",
                     (now.isoformat(), row["business_rule_id"], row["version"]),
                 )
                 if updated.rowcount:
@@ -1009,19 +1003,19 @@ class BusinessRuleMemoryStore:
         moment = now or self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT data_source_id, business_rule_id FROM business_rule_origins
                    WHERE publication_status='removed' AND purge_after IS NOT NULL
-                     AND purge_after<=?
-                   ORDER BY purge_after, data_source_id, business_rule_id LIMIT ?""",
+                     AND purge_after<=%s
+                   ORDER BY purge_after, data_source_id, business_rule_id LIMIT %s""",
                 (moment.isoformat(), limit),
             ).fetchall()
             for row in rows:
                 connection.execute(
                     """DELETE FROM business_rule_origins
-                       WHERE data_source_id=? AND business_rule_id=?
-                         AND publication_status='removed' AND purge_after<=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s
+                         AND publication_status='removed' AND purge_after<=%s""",
                     (row["data_source_id"], row["business_rule_id"], moment.isoformat()),
                 )
             connection.commit()
@@ -1052,7 +1046,7 @@ class BusinessRuleMemoryStore:
             with self._connect() as connection:
                 origin = connection.execute(
                     "SELECT active_wren_revision_id, publication_status FROM business_rule_origins "
-                    "WHERE data_source_id=? AND business_rule_id=?",
+                    "WHERE data_source_id=%s AND business_rule_id=%s",
                     (data_source_id, business_rule_id),
                 ).fetchone()
             if (
@@ -1079,7 +1073,7 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
                 """SELECT operation.*, revision.parent_revision_id,
                           revision.publication_operation_id, revision.mdl_digest AS revision_digest,
@@ -1089,7 +1083,7 @@ class BusinessRuleMemoryStore:
                      ON revision.source_id=operation.source_id
                     AND revision.id=operation.target_revision_id
                    JOIN wren_data_sources AS source ON source.id=operation.source_id
-                   WHERE operation.id=? AND operation.source_id=?""",
+                   WHERE operation.id=%s AND operation.source_id=%s""",
                 (operation_id, data_source_id),
             ).fetchone()
             try:
@@ -1124,7 +1118,7 @@ class BusinessRuleMemoryStore:
                    JOIN wren_data_sources AS source ON source.id=candidate.data_source_id
                    LEFT JOIN wren_revisions AS revision
                      ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                   WHERE business_rule_id=? AND data_source_id=?""",
+                   WHERE business_rule_id=%s AND data_source_id=%s""",
                 (business_rule_id, data_source_id),
             ).fetchone()
             if (
@@ -1150,7 +1144,7 @@ class BusinessRuleMemoryStore:
                 """INSERT INTO business_rule_origins
                    (data_source_id, business_rule_id, source_thread_id, term_label,
                     content_hash, active_wren_revision_id, publication_status, published_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+                   VALUES (%s, %s, %s, %s, %s, %s, 'active', %s)
                    ON CONFLICT(data_source_id, business_rule_id) DO UPDATE SET
                      source_thread_id=excluded.source_thread_id,
                      term_label=excluded.term_label,
@@ -1172,7 +1166,7 @@ class BusinessRuleMemoryStore:
                 """UPDATE business_rule_candidates SET term=NULL, definition=NULL,
                        mdl_references_json=NULL, source_thread_id=NULL,
                        clarification_question=NULL, publication_status='active',
-                       version=version+1, updated_at=? WHERE business_rule_id=?""",
+                       version=version+1, updated_at=%s WHERE business_rule_id=%s""",
                 (now.isoformat(), business_rule_id),
             )
             self._record_event(
@@ -1220,7 +1214,7 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             operation = connection.execute(
                 """SELECT operation.*, revision.parent_revision_id,
                           revision.publication_operation_id, revision.mdl_digest AS revision_digest,
@@ -1230,7 +1224,7 @@ class BusinessRuleMemoryStore:
                      ON revision.source_id=operation.source_id
                     AND revision.id=operation.target_revision_id
                    JOIN wren_data_sources AS source ON source.id=operation.source_id
-                   WHERE operation.id=? AND operation.source_id=?""",
+                   WHERE operation.id=%s AND operation.source_id=%s""",
                 (operation_id, data_source_id),
             ).fetchone()
             try:
@@ -1258,7 +1252,7 @@ class BusinessRuleMemoryStore:
                    FROM wren_data_sources AS source
                    LEFT JOIN wren_revisions AS revision
                      ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                   WHERE source.id=?""",
+                   WHERE source.id=%s""",
                 (data_source_id,),
             ).fetchone()
             if (
@@ -1276,7 +1270,7 @@ class BusinessRuleMemoryStore:
             for rule_id in normalized_ids:
                 origin = connection.execute(
                     """SELECT * FROM business_rule_origins
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (data_source_id, rule_id),
                 ).fetchone()
                 if origin is None:
@@ -1293,12 +1287,12 @@ class BusinessRuleMemoryStore:
                     )
                 connection.execute(
                     """UPDATE business_rule_origins SET source_thread_id=NULL,
-                           source_thread_hash=?, term_label=NULL,
+                           source_thread_hash=%s, term_label=NULL,
                            publication_status='removed',
-                           redacted_at=COALESCE(redacted_at, ?),
-                           purge_after=COALESCE(purge_after, ?),
-                           active_wren_revision_id=?
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                           redacted_at=COALESCE(redacted_at, %s),
+                           purge_after=COALESCE(purge_after, %s),
+                           active_wren_revision_id=%s
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (
                         source_thread_hash,
                         now.isoformat(),
@@ -1310,7 +1304,7 @@ class BusinessRuleMemoryStore:
                 )
                 candidate = connection.execute(
                     """SELECT review_status, publication_status, content_hash
-                       FROM business_rule_candidates WHERE business_rule_id=?""",
+                       FROM business_rule_candidates WHERE business_rule_id=%s""",
                     (rule_id,),
                 ).fetchone()
                 review_status = candidate["review_status"] if candidate else "revoked"
@@ -1321,7 +1315,7 @@ class BusinessRuleMemoryStore:
                 if candidate:
                     connection.execute(
                         """UPDATE business_rule_candidates SET publication_status='removed',
-                               version=version+1, updated_at=? WHERE business_rule_id=?""",
+                               version=version+1, updated_at=%s WHERE business_rule_id=%s""",
                         (now.isoformat(), rule_id),
                     )
                 self._record_event(
@@ -1363,7 +1357,7 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._assert_admin_source(
                 connection,
                 actor_id=actor_id,
@@ -1380,7 +1374,7 @@ class BusinessRuleMemoryStore:
                      ON revision.source_id=source.id AND revision.id=source.active_revision_id
                    JOIN agent_conversation_threads AS thread
                      ON thread.thread_id=candidate.source_thread_id
-                   WHERE candidate.business_rule_id=?""",
+                   WHERE candidate.business_rule_id=%s""",
                 (business_rule_id,),
             ).fetchone()
             if (
@@ -1401,7 +1395,7 @@ class BusinessRuleMemoryStore:
                 raise BusinessRuleConflict("candidate is not ready for publication")
             connection.execute(
                 """UPDATE business_rule_candidates SET publication_status='publishing',
-                       version=version+1, updated_at=? WHERE business_rule_id=? AND version=?""",
+                       version=version+1, updated_at=%s WHERE business_rule_id=%s AND version=%s""",
                 (now.isoformat(), business_rule_id, expected_version),
             )
             self._record_event(
@@ -1419,7 +1413,7 @@ class BusinessRuleMemoryStore:
                 created_at=now,
             )
             updated = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (business_rule_id,),
             ).fetchone()
             connection.commit()
@@ -1431,9 +1425,9 @@ class BusinessRuleMemoryStore:
             connection.close()
 
     @staticmethod
-    def _candidate_source_id(connection: sqlite3.Connection, business_rule_id: str) -> str:
+    def _candidate_source_id(connection: PostgresConnection, business_rule_id: str) -> str:
         row = connection.execute(
-            "SELECT data_source_id FROM business_rule_candidates WHERE business_rule_id=?",
+            "SELECT data_source_id FROM business_rule_candidates WHERE business_rule_id=%s",
             (business_rule_id,),
         ).fetchone()
         if row is None:
@@ -1446,9 +1440,9 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             row = connection.execute(
-                "SELECT * FROM business_rule_candidates WHERE business_rule_id=?",
+                "SELECT * FROM business_rule_candidates WHERE business_rule_id=%s",
                 (business_rule_id,),
             ).fetchone()
             if row is None or row["publication_status"] != "publishing":
@@ -1456,7 +1450,7 @@ class BusinessRuleMemoryStore:
                 return
             connection.execute(
                 """UPDATE business_rule_candidates SET publication_status='failed',
-                       version=version+1, updated_at=? WHERE business_rule_id=? AND version=?""",
+                       version=version+1, updated_at=%s WHERE business_rule_id=%s AND version=%s""",
                 (now.isoformat(), business_rule_id, row["version"]),
             )
             self._record_event(
@@ -1488,7 +1482,7 @@ class BusinessRuleMemoryStore:
             rows = connection.execute(
                 """SELECT data_source_id, business_rule_id FROM business_rule_origins
                    WHERE publication_status='removal_pending'
-                   ORDER BY data_source_id, redacted_at, business_rule_id LIMIT ?""",
+                   ORDER BY data_source_id, redacted_at, business_rule_id LIMIT %s""",
                 (limit,),
             ).fetchall()
         grouped: dict[str, list[str]] = {}
@@ -1501,7 +1495,7 @@ class BusinessRuleMemoryStore:
 
     def _advance_thread_deletion_statuses(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *,
         data_source_id: str,
         business_rule_ids: tuple[str, ...],
@@ -1511,10 +1505,10 @@ class BusinessRuleMemoryStore:
         normalized_ids = tuple(sorted(set(business_rule_ids)))
         if not normalized_ids:
             return
-        placeholders = ",".join("?" for _ in normalized_ids)
+        placeholders = ",".join("%s" for _ in normalized_ids)
         sequences = connection.execute(
             f"""SELECT DISTINCT event_sequence FROM agent_memory_suppressions
-                WHERE data_source_id=? AND item_type='business_rule'
+                WHERE data_source_id=%s AND item_type='business_rule'
                   AND item_id IN ({placeholders})""",
             (data_source_id, *normalized_ids),
         ).fetchall()
@@ -1522,28 +1516,28 @@ class BusinessRuleMemoryStore:
             sequence = sequence_row["event_sequence"]
             operation = connection.execute(
                 """SELECT operation_id FROM agent_thread_deletion_operations
-                   WHERE data_source_id=? AND journal_sequence=? AND status='suppressed'""",
+                   WHERE data_source_id=%s AND journal_sequence=%s AND status='suppressed'""",
                 (data_source_id, sequence),
             ).fetchone()
             if operation is None:
                 continue
             linked_rows = connection.execute(
                 """SELECT item_id FROM agent_memory_suppressions
-                   WHERE data_source_id=? AND item_type='business_rule'
-                     AND event_sequence=?""",
+                   WHERE data_source_id=%s AND item_type='business_rule'
+                     AND event_sequence=%s""",
                 (data_source_id, sequence),
             ).fetchall()
             linked_ids = tuple(sorted({row["item_id"] for row in linked_rows}))
             if not linked_ids:
                 continue
-            linked_placeholders = ",".join("?" for _ in linked_ids)
+            linked_placeholders = ",".join("%s" for _ in linked_ids)
             pending = connection.execute(
                 f"""SELECT 1 FROM business_rule_origins
-                    WHERE data_source_id=? AND business_rule_id IN ({linked_placeholders})
+                    WHERE data_source_id=%s AND business_rule_id IN ({linked_placeholders})
                       AND publication_status='removal_pending'
                     UNION ALL
                     SELECT 1 FROM business_rule_candidates
-                    WHERE data_source_id=? AND business_rule_id IN ({linked_placeholders})
+                    WHERE data_source_id=%s AND business_rule_id IN ({linked_placeholders})
                       AND publication_status='removal_pending'
                     LIMIT 1""",
                 (
@@ -1556,8 +1550,8 @@ class BusinessRuleMemoryStore:
             if pending is None:
                 connection.execute(
                     """UPDATE agent_thread_deletion_operations
-                       SET status='completed_online', updated_at=?
-                       WHERE operation_id=? AND status='suppressed'""",
+                       SET status='completed_online', updated_at=%s
+                       WHERE operation_id=%s AND status='suppressed'""",
                     (now.isoformat(), operation["operation_id"]),
                 )
 
@@ -1567,10 +1561,10 @@ class BusinessRuleMemoryStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT 1 FROM business_rule_origins
-                   WHERE data_source_id=? AND publication_status='removal_pending'
+                   WHERE data_source_id=%s AND publication_status='removal_pending'
                    UNION ALL
                    SELECT 1 FROM business_rule_candidates
-                   WHERE data_source_id=? AND publication_status='removal_pending'
+                   WHERE data_source_id=%s AND publication_status='removal_pending'
                    LIMIT 1""",
                 (data_source_id, data_source_id),
             ).fetchone()
@@ -1580,7 +1574,7 @@ class BusinessRuleMemoryStore:
                 return False
             suppressed = connection.execute(
                 """SELECT item_id FROM agent_memory_suppressions
-                   WHERE data_source_id=? AND item_type='business_rule'""",
+                   WHERE data_source_id=%s AND item_type='business_rule'""",
                 (data_source_id,),
             ).fetchall()
         return bool(set(business_rule_ids) & {item["item_id"] for item in suppressed})
@@ -1598,14 +1592,14 @@ class BusinessRuleMemoryStore:
         )
         if not keys:
             return False
-        conditions = " OR ".join("(item_type=? AND item_id=?)" for _ in keys)
+        conditions = " OR ".join("(item_type=%s AND item_id=%s)" for _ in keys)
         parameters: list[str] = [data_source_id]
         for kind, item_id in keys:
             parameters.extend((kind, item_id))
         with self._connect() as connection:
             row = connection.execute(
                 f"""SELECT 1 FROM agent_memory_suppressions
-                    WHERE data_source_id=? AND ({conditions}) LIMIT 1""",
+                    WHERE data_source_id=%s AND ({conditions}) LIMIT 1""",
                 tuple(parameters),
             ).fetchone()
         return row is not None
@@ -1614,7 +1608,7 @@ class BusinessRuleMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT candidate.* FROM business_rule_candidates AS candidate
                    LEFT JOIN business_rule_origins AS origin
@@ -1623,7 +1617,7 @@ class BusinessRuleMemoryStore:
                    WHERE candidate.publication_status='removal_pending'
                      AND origin.business_rule_id IS NULL
                    ORDER BY candidate.data_source_id, candidate.updated_at,
-                            candidate.business_rule_id LIMIT ?""",
+                            candidate.business_rule_id LIMIT %s""",
                 (limit,),
             ).fetchall()
             for row in rows:
@@ -1636,12 +1630,12 @@ class BusinessRuleMemoryStore:
                     )
                 )
                 connection.execute(
-                    """INSERT OR IGNORE INTO business_rule_origins
+                    """INSERT INTO business_rule_origins
                        (data_source_id, business_rule_id, source_thread_id,
                         source_thread_hash, term_label, content_hash,
                         active_wren_revision_id, publication_status, published_at,
                         redacted_at, purge_after)
-                       VALUES (?, ?, NULL, ?, NULL, ?, ?, 'removal_pending', ?, ?, ?)""",
+                       VALUES (%s, %s, NULL, %s, NULL, %s, %s, 'removal_pending', %s, %s, %s) ON CONFLICT(data_source_id, business_rule_id) DO NOTHING""",
                     (
                         row["data_source_id"],
                         row["business_rule_id"],
@@ -1670,7 +1664,7 @@ class BusinessRuleMemoryStore:
                      AND suppression.reason IN
                          ('thread_delete','business_rule_revoke')
                      AND origin.business_rule_id IS NULL
-                   ORDER BY suppression.event_sequence, suppression.item_id LIMIT ?""",
+                   ORDER BY suppression.event_sequence, suppression.item_id LIMIT %s""",
                 (limit,),
             ).fetchall()
             for suppressed in suppressed_rows:
@@ -1687,7 +1681,7 @@ class BusinessRuleMemoryStore:
                        JOIN wren_revisions AS revision
                          ON revision.source_id=source.id
                         AND revision.id=source.active_revision_id
-                       WHERE source.id=? AND revision.status='active'""",
+                       WHERE source.id=%s AND revision.status='active'""",
                     (source_id,),
                 ).fetchone()
                 if active is None or not active["active_revision_id"]:
@@ -1726,12 +1720,12 @@ class BusinessRuleMemoryStore:
                 candidate = connection.execute(
                     """SELECT content_hash, review_status, publication_status
                        FROM business_rule_candidates
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (source_id, rule_id),
                 ).fetchone()
                 latest_event = connection.execute(
                     """SELECT content_hash FROM business_rule_candidate_events
-                       WHERE data_source_id=? AND business_rule_id=?
+                       WHERE data_source_id=%s AND business_rule_id=%s
                        ORDER BY created_at DESC LIMIT 1""",
                     (source_id, rule_id),
                 ).fetchone()
@@ -1748,12 +1742,12 @@ class BusinessRuleMemoryStore:
                     f"business-rule:{source_id}:{rule_id}"
                 )
                 connection.execute(
-                    """INSERT OR IGNORE INTO business_rule_origins
+                    """INSERT INTO business_rule_origins
                        (data_source_id, business_rule_id, source_thread_id,
                         source_thread_hash, term_label, content_hash,
                         active_wren_revision_id, publication_status, published_at,
                         redacted_at, purge_after)
-                       VALUES (?, ?, NULL, ?, NULL, ?, ?, 'removal_pending', ?, ?, ?)""",
+                       VALUES (%s, %s, NULL, %s, NULL, %s, %s, 'removal_pending', %s, %s, %s) ON CONFLICT(data_source_id, business_rule_id) DO NOTHING""",
                     (
                         source_id,
                         rule_id,
@@ -1771,14 +1765,14 @@ class BusinessRuleMemoryStore:
                            SET review_status='revoked', publication_status='removal_pending',
                                term=NULL, definition=NULL, mdl_references_json=NULL,
                                clarification_question=NULL, review_reason_code='journal_recovery',
-                               version=version+1, updated_at=?
-                           WHERE data_source_id=? AND business_rule_id=?""",
+                               version=version+1, updated_at=%s
+                           WHERE data_source_id=%s AND business_rule_id=%s""",
                         (now.isoformat(), source_id, rule_id),
                     )
                 connection.execute(
                     """UPDATE agent_thread_deletion_operations
-                       SET status='suppressed', updated_at=?
-                       WHERE data_source_id=? AND journal_sequence=?
+                       SET status='suppressed', updated_at=%s
+                       WHERE data_source_id=%s AND journal_sequence=%s
                          AND status='completed_online'""",
                     (now.isoformat(), source_id, suppressed["event_sequence"]),
                 )
@@ -1804,23 +1798,23 @@ class BusinessRuleMemoryStore:
     def is_removal_pending(self, data_source_id: str, business_rule_id: str) -> bool:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM business_rule_origins WHERE data_source_id=? "
-                "AND business_rule_id=? AND publication_status='removal_pending'",
+                "SELECT 1 FROM business_rule_origins WHERE data_source_id=%s "
+                "AND business_rule_id=%s AND publication_status='removal_pending'",
                 (data_source_id, business_rule_id),
             ).fetchone()
         return row is not None
 
     def preview(
-        self, connection: sqlite3.Connection, thread_id: str, source_id: str
+        self, connection: PostgresConnection, thread_id: str, source_id: str
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         candidates = connection.execute(
             """SELECT business_rule_id, term FROM business_rule_candidates
-               WHERE data_source_id=? AND source_thread_id=? AND term IS NOT NULL""",
+               WHERE data_source_id=%s AND source_thread_id=%s AND term IS NOT NULL""",
             (source_id, thread_id),
         ).fetchall()
         origins = connection.execute(
             """SELECT business_rule_id, term_label FROM business_rule_origins
-               WHERE data_source_id=? AND source_thread_id=?""",
+               WHERE data_source_id=%s AND source_thread_id=%s""",
             (source_id, thread_id),
         ).fetchall()
         labels_by_id = {
@@ -1837,12 +1831,12 @@ class BusinessRuleMemoryStore:
         labels = tuple(labels_by_id[rule_id] for rule_id in rule_ids)
         return rule_ids, labels
 
-    def apply(self, connection: sqlite3.Connection, event: JournalEvent) -> None:
+    def apply(self, connection: PostgresConnection, event: JournalEvent) -> None:
         now = event.created_at
         if event.event_type == "thread_delete" and event.thread_id:
             candidates = connection.execute(
                 """SELECT * FROM business_rule_candidates
-                   WHERE data_source_id=? AND source_thread_id=?""",
+                   WHERE data_source_id=%s AND source_thread_id=%s""",
                 (event.source_id, event.thread_id),
             ).fetchall()
             actor_id = event.actor_id or "system:thread-deletion"
@@ -1850,7 +1844,7 @@ class BusinessRuleMemoryStore:
             for row in candidates:
                 if row["publication_status"] == "publishing":
                     # A Wren build may have reached the activation boundary while
-                    # this journal event was waiting for SQLite. Preserve a minimal
+                    # this journal event was waiting for the database write lock. Preserve a minimal
                     # removal origin so the durable publisher can remove that rule
                     # after the thread content is deleted.
                     thread_hash = self.deletion_journal.keyed_audit_hash(event.thread_id)
@@ -1860,7 +1854,7 @@ class BusinessRuleMemoryStore:
                             source_thread_hash, term_label, content_hash,
                             active_wren_revision_id, publication_status, published_at,
                             redacted_at, purge_after)
-                           VALUES (?, ?, NULL, ?, NULL, ?, ?, 'removal_pending', ?, ?, ?)
+                           VALUES (%s, %s, NULL, %s, NULL, %s, %s, 'removal_pending', %s, %s, %s)
                            ON CONFLICT(data_source_id, business_rule_id) DO UPDATE SET
                              source_thread_id=NULL, source_thread_hash=excluded.source_thread_hash,
                              term_label=NULL, publication_status='removal_pending',
@@ -1892,14 +1886,14 @@ class BusinessRuleMemoryStore:
                     event_id=f"journal-{event.sequence}-{row['business_rule_id']}",
                 )
             connection.execute(
-                "DELETE FROM business_rule_candidates WHERE data_source_id=? AND source_thread_id=?",
+                "DELETE FROM business_rule_candidates WHERE data_source_id=%s AND source_thread_id=%s",
                 (event.source_id, event.thread_id),
             )
             thread_hash = self.deletion_journal.keyed_audit_hash(event.thread_id)
             for rule_id in event.item_ids:
                 origin = connection.execute(
                     """SELECT * FROM business_rule_origins
-                       WHERE data_source_id=? AND business_rule_id=? AND source_thread_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s AND source_thread_id=%s""",
                     (event.source_id, rule_id, event.thread_id),
                 ).fetchone()
                 if origin is None:
@@ -1911,11 +1905,11 @@ class BusinessRuleMemoryStore:
                 )
                 connection.execute(
                     """UPDATE business_rule_origins SET source_thread_id=NULL,
-                           source_thread_hash=?, term_label=NULL,
+                           source_thread_hash=%s, term_label=NULL,
                            publication_status=CASE WHEN publication_status='removed'
                              THEN 'removed' ELSE 'removal_pending' END,
-                           redacted_at=?, purge_after=?
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                           redacted_at=%s, purge_after=%s
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (
                         thread_hash,
                         now.isoformat(),
@@ -1927,17 +1921,17 @@ class BusinessRuleMemoryStore:
                 candidate = connection.execute(
                     """SELECT review_status, publication_status, content_hash
                        FROM business_rule_candidates
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (event.source_id, rule_id),
                 ).fetchone()
                 if candidate is not None:
                     connection.execute(
                         """UPDATE business_rule_candidates
-                           SET review_status='revoked', publication_status=?,
+                           SET review_status='revoked', publication_status=%s,
                                term=NULL, definition=NULL, mdl_references_json=NULL,
-                               clarification_question=NULL, reviewed_by=?, reviewed_at=?,
-                               review_reason_code=?, version=version+1, updated_at=?
-                           WHERE data_source_id=? AND business_rule_id=?""",
+                               clarification_question=NULL, reviewed_by=%s, reviewed_at=%s,
+                               review_reason_code=%s, version=version+1, updated_at=%s
+                           WHERE data_source_id=%s AND business_rule_id=%s""",
                         (
                             target_publication,
                             actor_id,
@@ -1976,12 +1970,12 @@ class BusinessRuleMemoryStore:
             for rule_id in event.item_ids:
                 candidate = connection.execute(
                     """SELECT * FROM business_rule_candidates
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (event.source_id, rule_id),
                 ).fetchone()
                 origin = connection.execute(
                     """SELECT * FROM business_rule_origins
-                       WHERE data_source_id=? AND business_rule_id=?""",
+                       WHERE data_source_id=%s AND business_rule_id=%s""",
                     (event.source_id, rule_id),
                 ).fetchone()
                 if candidate is not None:
@@ -1993,11 +1987,11 @@ class BusinessRuleMemoryStore:
                     )
                     connection.execute(
                         """UPDATE business_rule_candidates SET review_status='revoked',
-                               publication_status=?, term=NULL, definition=NULL,
+                               publication_status=%s, term=NULL, definition=NULL,
                                mdl_references_json=NULL, clarification_question=NULL,
-                               reviewed_by=?, reviewed_at=?, review_reason_code='admin_revoked',
-                               version=version+1, updated_at=?
-                           WHERE business_rule_id=?""",
+                               reviewed_by=%s, reviewed_at=%s, review_reason_code='admin_revoked',
+                               version=version+1, updated_at=%s
+                           WHERE business_rule_id=%s""",
                         (
                             new_publication,
                             actor_id,
@@ -2036,7 +2030,7 @@ class BusinessRuleMemoryStore:
                                 source_thread_hash, term_label, content_hash,
                                 active_wren_revision_id, publication_status, published_at,
                                 redacted_at, purge_after)
-                               VALUES (?, ?, NULL, ?, NULL, ?, ?, 'removal_pending', ?, ?, ?)""",
+                               VALUES (%s, %s, NULL, %s, NULL, %s, %s, 'removal_pending', %s, %s, %s) ON CONFLICT(data_source_id, business_rule_id) DO NOTHING""",
                             (
                                 event.source_id,
                                 rule_id,
@@ -2056,12 +2050,12 @@ class BusinessRuleMemoryStore:
                         )
                     connection.execute(
                         """UPDATE business_rule_origins SET source_thread_id=NULL,
-                               source_thread_hash=?, term_label=NULL,
+                               source_thread_hash=%s, term_label=NULL,
                                publication_status=CASE WHEN publication_status='removed'
                                  THEN 'removed' ELSE 'removal_pending' END,
-                               redacted_at=COALESCE(redacted_at, ?),
-                               purge_after=COALESCE(purge_after, ?)
-                           WHERE data_source_id=? AND business_rule_id=?""",
+                               redacted_at=COALESCE(redacted_at, %s),
+                               purge_after=COALESCE(purge_after, %s)
+                           WHERE data_source_id=%s AND business_rule_id=%s""",
                         (
                             source_thread_hash,
                             now.isoformat(),

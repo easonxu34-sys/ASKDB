@@ -21,29 +21,41 @@ cp .env.example .env
 
 编辑 `.env`，填写本机 Wren 项目目录和模型服务信息。默认使用 DeepSeek OpenAI 兼容接口及 `deepseek-v4-flash` 模型名；API Key 只放本机 `.env` 或密钥管理服务，不要提交凭证。Wren 数据源页面按锁定的 Wren 版本提供数据库/数仓 connector 表单。本文后续 `askdb_mysql` 命令仅用于现有 MySQL 示例项目。
 
-模型目录支持多份 OpenAI 兼容模型配置；用户可在每个会话的输入框中选择模型。配置保存在 `ASKDB_SETTINGS_DB_PATH` 指向的 SQLite 文件中，并用 Fernet 加密每份 API Key。生成一把 Fernet 密钥并通过部署密钥管理系统注入 `ASKDB_SETTINGS_ENCRYPTION_KEY`：
+模型目录支持多份 OpenAI 兼容模型配置；用户可在每个会话的输入框中选择模型。账号、模型配置、Wren 数据源、会话与记忆元数据统一保存在 `ASKDB_DATABASE_DSN` 指向的 PostgreSQL 数据库中；模型 API Key 和 Wren 凭据仍由 Fernet 加密。生成一把 Fernet 密钥并通过部署密钥管理系统注入 `ASKDB_SETTINGS_ENCRYPTION_KEY`：
 
 ```bash
 python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
-开发环境可将密钥写入本机 `.env`；生产环境不要把密钥写进仓库镜像或 SQLite 卷。默认数据库路径为 `./data/model-settings.sqlite3`，实际默认位置在 Agent 包目录下的 `data/model-settings.sqlite3`；可通过 `ASKDB_SETTINGS_DB_PATH` 指定持久化卷。Agent 会限制新建数据目录为 `0700`、数据库文件为 `0600`。备份时同时保护 SQLite 文件和 Fernet 密钥；只有数据库密文而没有原密钥无法恢复 API Key。
+通过 `ASKDB_DATABASE_DSN` 配置 PostgreSQL 连接；部署密钥不要提交到仓库。启动时 Agent 会把仓库内的版本化 PostgreSQL schema 应用到目标库。开发环境可将 DSN 和 Fernet key 写入本机 `.env`；生产环境应由密钥管理系统提供。数据库备份和 Fernet key 必须一并保护；只有数据库密文而没有原 key 无法恢复 API Key。
+
+### PostgreSQL 迁移与 pgvector
+
+Agent 按 `askdb-agent/src/integrations/migrations/NNN_name.sql` 的版本顺序初始化和升级数据库。已执行版本及 SQL 文件 SHA-256 校验和写在 `app_schema_migrations`；启动只应用尚未记录的迁移。已有 `001_initial` 数据库会继续升级，新数据库首次启动会依次创建完整 schema；校验和变化、缺少历史版本或未受管理的现存表会使启动失败，避免静默覆盖结构。添加迁移时使用下一个连续编号，并保留已发布的 SQL 文件不变。
+
+PostgreSQL 服务器必须先安装与其主版本匹配的 pgvector 扩展文件，并在每个目标数据库中由数据库管理员启用一次。普通 Agent 数据库角色不应设置为超级用户。新建数据库后、Agent 首次启动前，用管理员连接执行：
+
+```sql
+CREATE EXTENSION vector WITH SCHEMA public;
+```
+
+例如 Homebrew PostgreSQL 18 可先执行 `brew install pgvector`；其他安装方式见 [pgvector 官方安装说明](https://github.com/pgvector/pgvector#installation)。之后 Agent 的 `002_enable_pgvector` 迁移会验证或在管理员运行迁移时启用该扩展。当前应用尚未直接读写向量列，因此不依赖 Python `pgvector` 适配包。
 
 ### 持久会话记忆与在线召回
 
-持久会话记忆和在线召回默认启动，无需设置启用开关。首次启动时，Agent 在设置数据库旁创建独立的 `data/agent-memory/` 目录，自动生成并以 `0600` 权限保存稳定的 Fernet journal 密钥，同时创建加密删除 journal。journal 与设置数据库及默认语料目录分开；启动时会先执行迁移、journal 校验、恢复和过期清理，再接受会话请求。
+持久会话记忆和在线召回默认启动，无需设置启用开关。首次启动时，Agent 在 `ASKDB_AGENT_DATA_DIR` 下创建独立的 `agent-memory/` 目录，自动生成并以 `0600` 权限保存稳定的 Fernet journal 密钥，同时创建加密删除 journal。journal 和语料文件仍是独立文件工件，不写进 PostgreSQL；启动时会先应用数据库迁移、校验 journal、恢复状态并清理过期记录，再接受会话请求。
 
-必须把 `data/agent-memory/` 放在持久卷中，并与设置数据库一起备份。密钥丢失或更换会使已加密的 journal 无法恢复。在线召回只使用已绑定并激活的语料；gold 评测与 runtime-ready 环境变量不再是启动门槛。若需关闭在线召回，可设置 `ASKDB_AGENT_RECALL_ENABLED=0`。也可通过 `ASKDB_MEMORY_JOURNAL_PATH`、`ASKDB_MEMORY_JOURNAL_KEY` 或 `ASKDB_AGENT_MEMORY_CORPUS_DIR` 覆盖默认存储位置/密钥，生产环境建议从部署密钥管理器注入稳定密钥。已有部署若曾使用 `ASKDB_MEMORY_JOURNAL_KEY`，迁移到自动生成的本地 key 文件前，必须先把原密钥安全迁移到 `data/agent-memory/deletion-journal.key`，或继续由密钥管理器提供原密钥；不要让新生成的密钥替换现有 journal 的密钥。
+必须把 `data/agent-memory/` 和语料目录放在持久卷中，并与 PostgreSQL 一起备份。密钥丢失或更换会使已加密的 journal 无法恢复。在线召回只使用已绑定并激活的语料；gold 评测与 runtime-ready 环境变量不再是启动门槛。若需关闭在线召回，可设置 `ASKDB_AGENT_RECALL_ENABLED=0`。也可通过 `ASKDB_MEMORY_JOURNAL_PATH`、`ASKDB_MEMORY_JOURNAL_KEY` 或 `ASKDB_AGENT_MEMORY_CORPUS_DIR` 覆盖默认存储位置/密钥，生产环境建议从部署密钥管理器注入稳定密钥。
 
-如果尚无 SQLite 模型记录但没有配置 Fernet 密钥，现有 `.env` 模型仍可用于聊天，设置 API 会返回 `MODEL_SETTINGS_UNAVAILABLE`。数据库已有加密设置而密钥缺失或不匹配时，Agent 会失败关闭，不回退到 `.env` 模型。
+如果尚无 PostgreSQL 模型记录但没有配置 Fernet 密钥，现有 `.env` 模型仍可用于聊天，设置 API 会返回 `MODEL_SETTINGS_UNAVAILABLE`。数据库已有加密设置而密钥缺失或不匹配时，Agent 会失败关闭，不回退到 `.env` 模型。
 
-首次启动且 SQLite 没有模型目录时，Agent 从 `ASKDB_MODEL`、`OPENAI_BASE_URL`、`OPENAI_API_KEY` 初始化一个默认模型配置。原有单行 `model_settings` 记录会迁移为默认 profile，并保留其密文；之后 SQLite 配置目录优先于 `.env`。聊天请求只传 profile ID，Agent 从 SQLite 解析模型详情。密钥轮换目前需在维护窗口停止 Agent，使用旧 Fernet 密钥解密后再用新密钥重加密；若旧密钥丢失，需重新录入模型 API Key。
+首次启动且 PostgreSQL 没有模型目录时，Agent 从 `ASKDB_MODEL`、`OPENAI_BASE_URL`、`OPENAI_API_KEY` 初始化一个默认模型配置。聊天请求只传 profile ID，Agent 从 PostgreSQL 解析模型详情。密钥轮换目前需在维护窗口停止 Agent，使用旧 Fernet 密钥解密后再用新密钥重加密；若旧密钥丢失，需重新录入模型 API Key。
 
 会话的模型选择保存在浏览器按用户 ID 分区的本地会话 metadata 中，不含 API Key，也不会在不同浏览器间同步。旧的匿名本地会话 key 会保留，但登录后不再读取；既有 thread 未保存选择时采用当前默认 profile。
 
 ## 本地账号与登录
 
-AskDB 使用 Agent 本地账号，Agent 是用户身份、角色、会话和数据源授权的权威方。账号、会话、登录限流和用户数据源授权与模型/Wren 设置共用 `ASKDB_SETTINGS_DB_PATH` 指向的 SQLite 文件。首次受保护请求会幂等创建 auth 表；Wren 设置初始化会给 thread 数据源绑定表增加可空 `owner_user_id`，不回填或认领旧行。这个 demo 版本按单 Agent 实例运行设计；不要让多个独立 Agent 实例各自使用不同的数据库文件。
+AskDB 使用 Agent 本地账号，Agent 是用户身份、角色、会话和数据源授权的权威方。账号、会话、登录限流、模型/Wren 设置和记忆元数据都使用同一个 PostgreSQL 数据库。表结构由版本化迁移初始化。这个 demo 版本的 runtime 注册表按单 Agent 实例运行设计；多个 Agent 进程不能共用单机 runtime 状态。
 
 完成依赖配置后，在 Agent 主机上首次启动前交互式创建唯一的初始管理员：
 
@@ -70,7 +82,7 @@ Web 使用 HttpOnly、Secure、SameSite=Lax 的会话 Cookie；生产部署必�
 
 登录失败限流只按规范化账号标识执行，不读取 `X-Forwarded-For` 或其他客户端可伪造的转发头。若未来需要按来源 IP 限流，必须先明确可信代理及其覆盖头配置，再单独实现。
 
-登录账号、会话、模型设置和数据源配置共享同一 SQLite 文件。备份/恢复时应沿用现有 SQLite 与 Fernet 密钥的保护策略，并同时保留数据库文件和 Fernet 密钥；丢失数据库会同时丢失本地账号、会话和配置。SQLite 账号/会话方案未验证多 worker 或多实例并发部署。
+登录账号、会话、模型设置和数据源配置共享同一 PostgreSQL 数据库。备份/恢复时应同时保护 PostgreSQL 备份、Fernet key、独立删除 journal 和记忆语料；丢失 PostgreSQL 会同时丢失账号、会话和配置。应用写事务通过 PostgreSQL advisory lock 串行执行，并以唯一部分索引作为单会话运行轮次的额外约束。
 
 Wren 项目至少应完成：
 
@@ -120,7 +132,7 @@ Web 端默认通过 Next.js `/api/chat` 转发至 `http://127.0.0.1:8000/v1/chat
 
 公网演示直接在 Mac 上按 `uv.lock`、`pnpm-lock.yaml` 构建 Agent 与 Web，不构建 Docker 镜像。完整首次配置、Tailscale Funnel、服务端口和运行边界见[根目录 README](../README.md#本机本地构建--tailscale-funnel-公网演示)。Agent 绑定 `127.0.0.1:8001`，Web 绑定 `127.0.0.1:3001`，只有 Web 经 Funnel HTTPS `:8443` 对外提供访问。本机 Agent 可直接连接宿主机数据库的 `localhost`/`127.0.0.1`。
 
-全新部署先复制 `.env.local.example` 为 `.env.local`，并设置 Fernet key。已有 Docker 部署迁移时，首次启动前运行 `scripts/migrate-docker-data-local.sh`；该命令只停止旧 Agent/Web 并把 `agent_data` 复制到 `~/Library/Application Support/ASKDB-Agent/data`，不会构建镜像或删除旧数据卷。它也会将 SQLite 中 Docker `/app/data/...` 的 Wren revision 路径切到本机目录。必须沿用 `.env.docker` 的原 key；若同时创建 `.env.local`，两份 key 必须一致。源码与构建产物放在 `~/Library/Application Support/ASKDB-Agent/app`，SQLite、Wren 数据和持久记忆在 `data`，日志、密钥和 launchd 配置也放在该私有目录中。
+本机部署先复制仓库根目录 `.env.local.example` 为 `.env.local` 设置 Fernet key，再复制 `askdb-agent/.env.example` 为 `askdb-agent/.env` 设置 `ASKDB_DATABASE_DSN`。本地启动脚本会从 Agent 模块的 `.env` 读取 DSN。源码与构建产物放在 `~/Library/Application Support/ASKDB-Agent/app`；PostgreSQL 是唯一应用数据库，本机 `data` 目录只存放 Wren 文件、删除 journal 和记忆语料，日志、密钥和 launchd 配置也放在该私有目录中。
 
 本地打包完成后，在有交互 TTY 的终端初始化首位管理员：
 
@@ -134,7 +146,7 @@ scripts/askdb-agent-local.sh auth init-admin
 scripts/askdb-agent-local.sh auth recover-admin
 ```
 
-已有 Docker 数据迁移后会保留原账号和配置，无需重复初始化。之后在 Web 设置页面配置模型、数据源和只读数据库账号，构建语义模型并分配用户数据源权限。
+导入的 PostgreSQL 数据包含原账号时无需重复初始化。之后在 Web 设置页面配置模型、数据源和只读数据库账号，构建语义模型并分配用户数据源权限。
 
 `scripts/stop-test.sh` 只卸载本部署的 launchd 服务，关闭 Tailscale Funnel，并保留 `~/Library/Application Support/ASKDB-Agent/data`。服务由当前用户的 launchd 会话托管；用户注销时会停止，重新启动公网服务需再次运行 `scripts/start-test.sh`。备份时同时保护整个数据目录和原 Fernet key。旧 Compose 与 Dockerfile 仅作为可选开发/回退材料；确认本机部署正常前不要删除旧 `agent_data` 卷。
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -20,52 +19,106 @@ from domain.conversation_memory import (
 )
 from domain.auth import Principal
 from integrations.conversation_store import ConversationMemoryStore
+from integrations.database import PostgresDatabase
 from integrations.deletion_journal import (
     DeletionJournalUnavailable,
     EncryptedDeletionJournal,
 )
 
 
-def _seed_catalog(database_path) -> None:
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE wren_data_sources (
-                id TEXT PRIMARY KEY,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                runtime_status TEXT NOT NULL DEFAULT 'ready'
-            );
-            CREATE TABLE auth_users (
-                id TEXT PRIMARY KEY,
-                role TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE auth_user_data_sources (
-                user_id TEXT NOT NULL,
-                data_source_id TEXT NOT NULL,
-                PRIMARY KEY(user_id, data_source_id)
-            );
-            CREATE TABLE chat_thread_data_sources (
-                thread_id TEXT PRIMARY KEY,
-                data_source_id TEXT NOT NULL,
-                owner_user_id TEXT,
-                created_at TEXT NOT NULL
-            );
-            INSERT INTO wren_data_sources(id, enabled, runtime_status)
-              VALUES ('source-a', 1, 'ready'), ('source-b', 1, 'ready');
-            INSERT INTO auth_users(id, role, is_active)
-              VALUES ('admin-1', 'admin', 1), ('member-1', 'member', 1),
-                     ('member-2', 'member', 1);
-            INSERT INTO auth_user_data_sources(user_id, data_source_id)
-              VALUES ('member-1', 'source-a');
-            """
+def _snapshot_thread_schema(postgres_database, postgres_dsn, thread_id: str):
+    import uuid
+
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    schema = f"test_snapshot_{uuid.uuid4().hex}"
+    with postgres_database.connect() as source:
+        source_schema = source.execute("SELECT current_schema()").fetchone()[0]
+        source.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+
+    from integrations.database import PostgresDatabase
+
+    snapshot_database = PostgresDatabase(
+        make_conninfo(postgres_dsn, options=f"-c search_path={schema}")
+    )
+    with snapshot_database.connect():
+        pass
+
+    filters = (
+        ("wren_data_sources", "id='source-a'", ()),
+        ("auth_users", "id IN ('admin-1', 'member-1')", ()),
+        (
+            "auth_user_data_sources",
+            "user_id='member-1' AND data_source_id='source-a'",
+            (),
+        ),
+        ("chat_thread_data_sources", "thread_id=%s", (thread_id,)),
+        ("agent_conversation_threads", "thread_id=%s", (thread_id,)),
+        ("agent_thread_list_revisions", "owner_user_id='member-1'", ()),
+        ("agent_conversation_turns", "thread_id=%s", (thread_id,)),
+        ("agent_turn_requests", "thread_id=%s", (thread_id,)),
+        ("agent_thread_deletion_impacts", "thread_id=%s", (thread_id,)),
+        ("agent_memory_journal_state", "id=1", ()),
+    )
+    with postgres_database.connect() as source, snapshot_database.connect() as target:
+        for table, predicate, parameters in filters:
+            columns = tuple(
+                row[0]
+                for row in source.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position""",
+                    (source_schema, table),
+                ).fetchall()
+            )
+            column_sql = sql.SQL(", ").join(map(sql.Identifier, columns))
+            statement = sql.SQL(
+                "INSERT INTO {}.{} ({}) SELECT {} FROM {}.{} WHERE "
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+                column_sql,
+                column_sql,
+                sql.Identifier(source_schema),
+                sql.Identifier(table),
+            ) + sql.SQL(predicate)
+            target.execute(statement, parameters)
+    return schema, snapshot_database
+
+
+def _seed_catalog(database: PostgresDatabase) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC).isoformat()
+    with database.connect() as connection:
+        connection.executemany(
+            """INSERT INTO wren_data_sources
+               (id, display_name, connector_type, enabled, runtime_status, created_at, updated_at)
+               VALUES (%s, %s, 'mysql', 1, 'ready', %s, %s)""",
+            ((source_id, label, now, now) for source_id, label in (
+                ("source-a", "Source A"), ("source-b", "Source B")
+            )),
+        )
+        connection.executemany(
+            """INSERT INTO auth_users
+               (id, username, username_key, role, password_hash, is_active,
+                must_change_password, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, 'test-only-hash', 1, 0, %s, %s)""",
+            ((user_id, username, username, role, now, now) for user_id, username, role in (
+                ("admin-1", "admin", "admin"),
+                ("member-1", "member-1", "member"),
+                ("member-2", "member-2", "member"),
+            )),
+        )
+        connection.execute(
+            """INSERT INTO auth_user_data_sources
+               (user_id, data_source_id, granted_by, granted_at)
+               VALUES ('member-1', 'source-a', 'admin-1', %s)""",
+            (now,),
         )
 
 
-def test_thread_turns_are_owner_scoped_and_idempotent(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
-    store = ConversationMemoryStore(database_path)
+def test_thread_turns_are_owner_scoped_and_idempotent(postgres_database) -> None:
+    _seed_catalog(postgres_database)
+    store = ConversationMemoryStore(postgres_database)
 
     thread = store.create_thread(
         owner_user_id="member-1",
@@ -126,10 +179,9 @@ def test_thread_turns_are_owner_scoped_and_idempotent(tmp_path) -> None:
         store.load_context(thread.thread_id, owner_user_id="member-2")
 
 
-def test_concurrent_turn_retry_creates_one_user_turn(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
-    store = ConversationMemoryStore(database_path)
+def test_concurrent_turn_retry_creates_one_user_turn(postgres_database) -> None:
+    _seed_catalog(postgres_database)
+    store = ConversationMemoryStore(postgres_database)
     thread = store.create_thread(owner_user_id="member-1", source_id="source-a")
 
     def start_turn(_index: int):
@@ -142,21 +194,20 @@ def test_concurrent_turn_retry_creates_one_user_turn(tmp_path) -> None:
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         outcomes = list(pool.map(start_turn, range(5)))
-    with sqlite3.connect(database_path) as connection:
+    with postgres_database.connect() as connection:
         count = connection.execute(
-            "SELECT COUNT(*) FROM agent_conversation_turns WHERE thread_id=? AND role='user'",
+            "SELECT COUNT(*) FROM agent_conversation_turns WHERE thread_id=%s AND role='user'",
             (thread.thread_id,),
         ).fetchone()[0]
     assert sum(outcome.is_new for outcome in outcomes) == 1
     assert count == 1
 
 
-def test_thread_expiry_is_based_on_last_user_turn(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
+def test_thread_expiry_is_based_on_last_user_turn(postgres_database) -> None:
+    _seed_catalog(postgres_database)
     now = datetime(2026, 10, 2, tzinfo=UTC)
     clock = [now]
-    store = ConversationMemoryStore(database_path, clock=lambda: clock[0])
+    store = ConversationMemoryStore(postgres_database, clock=lambda: clock[0])
     thread = store.create_thread(
         owner_user_id="admin-1",
         source_id="source-a",
@@ -176,27 +227,26 @@ def test_thread_expiry_is_based_on_last_user_turn(tmp_path) -> None:
     )
 
     assert thread.expires_at == now + timedelta(days=30)
-    with sqlite3.connect(database_path) as connection:
+    with postgres_database.connect() as connection:
         stored_text = connection.execute(
-            "SELECT group_concat(content, ' ') FROM agent_conversation_turns"
+            "SELECT string_agg(content, ' ') FROM agent_conversation_turns"
         ).fetchone()[0]
         expires_at = connection.execute(
-            "SELECT expires_at FROM agent_conversation_threads WHERE thread_id=?",
+            "SELECT expires_at FROM agent_conversation_threads WHERE thread_id=%s",
             (thread.thread_id,),
         ).fetchone()[0]
     assert "最近 30 天收入？" in stored_text
     assert datetime.fromisoformat(expires_at) == clock[0] + timedelta(days=30)
 
 
-def test_inactive_expiry_journals_rule_suppression_and_removes_turns(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
+def test_inactive_expiry_journals_rule_suppression_and_removes_turns(tmp_path, postgres_database) -> None:
+    _seed_catalog(postgres_database)
     now = [datetime(2026, 10, 2, tzinfo=UTC)]
     journal = EncryptedDeletionJournal(
         tmp_path / "journal.enc", Fernet.generate_key().decode("ascii")
     )
     store = ConversationMemoryStore(
-        database_path,
+        postgres_database,
         clock=lambda: now[0],
         deletion_journal=journal,
         rule_preview=lambda _connection, _thread, _source: (("rule-vip-2",), ("VIP",)),
@@ -218,13 +268,13 @@ def test_inactive_expiry_journals_rule_suppression_and_removes_turns(tmp_path) -
     now[0] += timedelta(days=30)
 
     assert store.expire_inactive_threads() == 1
-    with sqlite3.connect(database_path) as connection:
+    with postgres_database.connect() as connection:
         row = connection.execute(
-            "SELECT status FROM agent_conversation_threads WHERE thread_id=?",
+            "SELECT status FROM agent_conversation_threads WHERE thread_id=%s",
             (thread.thread_id,),
         ).fetchone()
         turn_count = connection.execute(
-            "SELECT COUNT(*) FROM agent_conversation_turns WHERE thread_id=?",
+            "SELECT COUNT(*) FROM agent_conversation_turns WHERE thread_id=%s",
             (thread.thread_id,),
         ).fetchone()[0]
         suppressed = connection.execute(
@@ -235,11 +285,10 @@ def test_inactive_expiry_journals_rule_suppression_and_removes_turns(tmp_path) -
     assert suppressed == "rule-vip-2"
 
 
-def test_stale_in_progress_turns_become_failed_without_exception_text(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
+def test_stale_in_progress_turns_become_failed_without_exception_text(postgres_database) -> None:
+    _seed_catalog(postgres_database)
     now = [datetime(2026, 10, 2, tzinfo=UTC)]
-    store = ConversationMemoryStore(database_path, clock=lambda: now[0])
+    store = ConversationMemoryStore(postgres_database, clock=lambda: now[0])
     thread = store.create_thread(owner_user_id="member-1", source_id="source-a")
     store.begin_turn(
         thread_id=thread.thread_id,
@@ -261,16 +310,16 @@ def test_stale_in_progress_turns_become_failed_without_exception_text(tmp_path) 
     assert retry.assistant_content is None
 
 
-def test_thread_delete_journals_suppression_and_replays_before_history_returns(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    backup_path = tmp_path / "pre-delete.sqlite3"
+def test_thread_delete_journals_suppression_before_history_returns(
+    tmp_path, postgres_database, postgres_dsn
+) -> None:
     journal_path = tmp_path / "durable" / "deletions.enc"
-    _seed_catalog(database_path)
+    _seed_catalog(postgres_database)
     key = Fernet.generate_key().decode("ascii")
     journal = EncryptedDeletionJournal(journal_path, key)
     rules = (("rule-vip-1",), ("VIP 用户定义",))
     store = ConversationMemoryStore(
-        database_path,
+        postgres_database,
         deletion_journal=journal,
         rule_preview=lambda _connection, _thread, _source: rules,
     )
@@ -305,10 +354,10 @@ def test_thread_delete_journals_suppression_and_replays_before_history_returns(t
     )
     assert impact.rule_count == 1
     assert impact.rule_labels == ("VIP 用户定义",)
+    snapshot_schema, snapshot_database = _snapshot_thread_schema(
+        postgres_database, postgres_dsn, thread.thread_id
+    )
 
-    # Snapshot using SQLite's backup API before the irreversible event.
-    with sqlite3.connect(database_path) as original, sqlite3.connect(backup_path) as backup:
-        original.backup(backup)
     operation = store.delete_thread(
         thread_id=thread.thread_id,
         owner_user_id="member-1",
@@ -338,23 +387,37 @@ def test_thread_delete_journals_suppression_and_replays_before_history_returns(t
     assert "VIP 用户定义".encode("utf-8") not in encrypted_bytes
     assert b"10000" not in encrypted_bytes
 
-    # Simulate restoring a snapshot taken before deletion. Reconciliation must
-    # apply the independent journal before context reads can return.
-    restored = ConversationMemoryStore(backup_path, deletion_journal=journal)
-    assert restored.reconcile_journal() == 1
-    with pytest.raises(ThreadNotFound):
-        restored.load_context(thread.thread_id, owner_user_id="member-1")
+    # Restore the PostgreSQL snapshot taken before the journal event. Startup
+    # reconciliation must apply the independent journal before history is read.
+    try:
+        restored = ConversationMemoryStore(
+            snapshot_database,
+            deletion_journal=journal,
+        )
+        with snapshot_database.connect() as connection:
+            applied_sequence = connection.execute(
+                "SELECT journal_applied_seq FROM agent_memory_journal_state WHERE id=1"
+            ).fetchone()[0]
+        assert applied_sequence == 1
+        assert restored.reconcile_journal() == 0
+        with pytest.raises(ThreadNotFound):
+            restored.load_context(thread.thread_id, owner_user_id="member-1")
+    finally:
+        from psycopg import sql
 
+        with postgres_database.connect() as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(snapshot_schema))
+            )
 
-def test_delete_requires_fresh_impact_and_allows_owner_after_grant_revocation(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
+def test_delete_requires_fresh_impact_and_allows_owner_after_grant_revocation(tmp_path, postgres_database) -> None:
+    _seed_catalog(postgres_database)
     journal = EncryptedDeletionJournal(
         tmp_path / "journal.enc", Fernet.generate_key().decode("ascii")
     )
     rules = [((), ())]
     store = ConversationMemoryStore(
-        database_path,
+        postgres_database,
         deletion_journal=journal,
         rule_preview=lambda _connection, _thread, _source: rules[0],
     )
@@ -377,7 +440,7 @@ def test_delete_requires_fresh_impact_and_allows_owner_after_grant_revocation(tm
         thread_id=thread.thread_id,
         owner_user_id="member-1",
     )
-    with sqlite3.connect(database_path) as connection:
+    with postgres_database.connect() as connection:
         connection.execute(
             "DELETE FROM auth_user_data_sources WHERE user_id='member-1' AND data_source_id='source-a'"
         )
@@ -417,10 +480,9 @@ def test_journal_detects_corruption_and_is_idempotent(tmp_path) -> None:
         journal.read_all()
 
 
-def test_thread_api_uses_server_memory_and_owner_scoped_history(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
-    memory = ConversationMemoryStore(database_path)
+def test_thread_api_uses_server_memory_and_owner_scoped_history(postgres_database) -> None:
+    _seed_catalog(postgres_database)
+    memory = ConversationMemoryStore(postgres_database)
     app = FastAPI()
     app.state.conversation_memory = memory
     app.include_router(threads_router)
@@ -447,13 +509,12 @@ def test_thread_api_uses_server_memory_and_owner_scoped_history(tmp_path) -> Non
     assert client.get(f"/v1/threads/{thread_id}/history").status_code == 404
 
 
-def test_thread_api_delete_requires_confirmation_and_journal(tmp_path) -> None:
-    database_path = tmp_path / "agent.sqlite3"
-    _seed_catalog(database_path)
+def test_thread_api_delete_requires_confirmation_and_journal(tmp_path, postgres_database) -> None:
+    _seed_catalog(postgres_database)
     journal = EncryptedDeletionJournal(
         tmp_path / "durable-journal.enc", Fernet.generate_key().decode("ascii")
     )
-    memory = ConversationMemoryStore(database_path, deletion_journal=journal)
+    memory = ConversationMemoryStore(postgres_database, deletion_journal=journal)
     app = FastAPI()
     app.state.conversation_memory = memory
     app.include_router(threads_router)

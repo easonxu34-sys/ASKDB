@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import weakref
 
 import pytest
@@ -17,52 +16,9 @@ from model_settings import (
 )
 
 
-def test_legacy_single_row_migrates_ciphertext_to_default_profile(tmp_path) -> None:
-    database_path = tmp_path / "legacy.sqlite3"
+def test_failed_default_deletion_keeps_default_and_profile(postgres_database) -> None:
     encryption_key = Fernet.generate_key().decode("ascii")
-    cipher = Fernet(encryption_key.encode("ascii"))
-    encrypted_key = cipher.encrypt(b"test-only-api-key")
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """CREATE TABLE model_settings (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                base_url TEXT NOT NULL,
-                api_key_ciphertext BLOB,
-                updated_at TEXT NOT NULL
-            )"""
-        )
-        connection.execute(
-            "INSERT INTO model_settings VALUES (1, ?, ?, ?, ?, ?)",
-            (
-                "deepseek",
-                "deepseek-v4-flash",
-                "https://api.deepseek.com",
-                encrypted_key,
-                "2026-10-01T12:00:00+00:00",
-            ),
-        )
-
-    store = ModelSettingsStore(database_path, encryption_key)
-    default_id, profiles = store.list_profiles()
-
-    assert len(profiles) == 1
-    assert default_id == profiles[0].id
-    assert profiles[0].api_key == "test-only-api-key"
-    with sqlite3.connect(database_path) as connection:
-        migrated_ciphertext = connection.execute(
-            "SELECT api_key_ciphertext FROM model_profiles WHERE id = ?",
-            (default_id,),
-        ).fetchone()[0]
-    assert migrated_ciphertext == encrypted_key
-    assert "api_key" not in profiles[0].public()
-    assert "test-only-api-key" not in repr(profiles[0].public())
-
-
-def test_failed_default_deletion_keeps_default_and_profile(tmp_path) -> None:
-    encryption_key = Fernet.generate_key().decode("ascii")
-    store = ModelSettingsStore(tmp_path / "settings.sqlite3", encryption_key)
+    store = ModelSettingsStore(postgres_database, encryption_key)
     profile = store.create(
         ModelConfiguration(
             provider="custom",
@@ -82,9 +38,9 @@ def test_failed_default_deletion_keeps_default_and_profile(tmp_path) -> None:
     assert [item.id for item in profiles] == [profile.id]
 
 
-def test_successful_default_deletion_reassigns_default_in_catalog(tmp_path) -> None:
+def test_successful_default_deletion_reassigns_default_in_catalog(postgres_database) -> None:
     encryption_key = Fernet.generate_key().decode("ascii")
-    store = ModelSettingsStore(tmp_path / "settings.sqlite3", encryption_key)
+    store = ModelSettingsStore(postgres_database, encryption_key)
     first = store.create(
         ModelConfiguration("custom", "first", "https://models.example.test/v1", "key-one"),
         "First",
@@ -103,10 +59,9 @@ def test_successful_default_deletion_reassigns_default_in_catalog(tmp_path) -> N
         store.get_profile(first.id)
 
 
-def test_failed_default_delete_rolls_back_default_reassignment(tmp_path) -> None:
+def test_failed_default_delete_rolls_back_default_reassignment(postgres_database) -> None:
     encryption_key = Fernet.generate_key().decode("ascii")
-    database_path = tmp_path / "settings.sqlite3"
-    store = ModelSettingsStore(database_path, encryption_key)
+    store = ModelSettingsStore(postgres_database, encryption_key)
     first = store.create(
         ModelConfiguration("custom", "first", "https://models.example.test/v1", "key-one"),
         "First",
@@ -116,11 +71,16 @@ def test_failed_default_delete_rolls_back_default_reassignment(tmp_path) -> None
         ModelConfiguration("custom", "second", "https://models.example.test/v1", "key-two"),
         "Second",
     )
-    with sqlite3.connect(database_path) as connection:
+    with postgres_database.connect() as connection:
         connection.execute(
-            """CREATE TRIGGER reject_profile_delete
-               BEFORE DELETE ON model_profiles
-               BEGIN SELECT RAISE(ABORT, 'synthetic delete failure'); END"""
+            """CREATE FUNCTION reject_profile_delete() RETURNS trigger
+               LANGUAGE plpgsql AS $$
+               BEGIN RAISE EXCEPTION 'synthetic delete failure'; END;
+               $$"""
+        )
+        connection.execute(
+            """CREATE TRIGGER reject_profile_delete BEFORE DELETE ON model_profiles
+               FOR EACH ROW EXECUTE FUNCTION reject_profile_delete()"""
         )
 
     with pytest.raises(ModelSettingsUnavailable):
@@ -133,12 +93,11 @@ def test_failed_default_delete_rolls_back_default_reassignment(tmp_path) -> None
 
 @pytest.mark.parametrize("replacement_key_kind", ["missing", "malformed", "mismatched"])
 def test_saved_settings_fail_closed_without_a_valid_fernet_key(
-    tmp_path, monkeypatch, replacement_key_kind
+    postgres_database, monkeypatch, replacement_key_kind
 ) -> None:
     monkeypatch.setenv("ASKDB_SETTINGS_ENCRYPTION_KEY", "")
-    database_path = tmp_path / "settings.sqlite3"
     encryption_key = Fernet.generate_key().decode("ascii")
-    original_store = ModelSettingsStore(database_path, encryption_key)
+    original_store = ModelSettingsStore(postgres_database, encryption_key)
     original_store.create(
         ModelConfiguration(
             "custom", "configured-model", "https://models.example.test/v1", "test-only-api-key"
@@ -152,7 +111,7 @@ def test_saved_settings_fail_closed_without_a_valid_fernet_key(
         "malformed": "not-a-fernet-key",
         "mismatched": Fernet.generate_key().decode("ascii"),
     }[replacement_key_kind]
-    unavailable_store = ModelSettingsStore(database_path, replacement_key)
+    unavailable_store = ModelSettingsStore(postgres_database, replacement_key)
     with pytest.raises(ModelSettingsUnavailable) as error:
         unavailable_store.list_profiles()
 
@@ -161,14 +120,14 @@ def test_saved_settings_fail_closed_without_a_valid_fernet_key(
 
 
 def test_clearing_legacy_default_credential_evicts_cached_runtime(
-    tmp_path, monkeypatch
+    postgres_database, monkeypatch
 ) -> None:
     class Runtime:
         pass
 
     async def scenario() -> None:
         encryption_key = Fernet.generate_key().decode("ascii")
-        store = ModelSettingsStore(tmp_path / "settings.sqlite3", encryption_key)
+        store = ModelSettingsStore(postgres_database, encryption_key)
         application = ModelSettingsApplication(store=store)
         monkeypatch.setattr(
             application,
@@ -199,14 +158,14 @@ def test_clearing_legacy_default_credential_evicts_cached_runtime(
 
 
 def test_profile_update_replaces_catalog_runtime_without_changing_captured_reference(
-    tmp_path, monkeypatch
+    postgres_database, monkeypatch
 ) -> None:
     class Runtime:
         pass
 
     async def scenario() -> None:
         encryption_key = Fernet.generate_key().decode("ascii")
-        store = ModelSettingsStore(tmp_path / "settings.sqlite3", encryption_key)
+        store = ModelSettingsStore(postgres_database, encryption_key)
         application = ModelSettingsApplication(store=store)
         monkeypatch.setattr(
             application,
@@ -244,14 +203,14 @@ def test_profile_update_replaces_catalog_runtime_without_changing_captured_refer
 
 
 def test_deleted_profile_fails_new_requests_but_keeps_captured_runtime_reference(
-    tmp_path, monkeypatch
+    postgres_database, monkeypatch
 ) -> None:
     class Runtime:
         pass
 
     async def scenario() -> None:
         encryption_key = Fernet.generate_key().decode("ascii")
-        store = ModelSettingsStore(tmp_path / "settings.sqlite3", encryption_key)
+        store = ModelSettingsStore(postgres_database, encryption_key)
         application = ModelSettingsApplication(store=store)
         monkeypatch.setattr(
             application,

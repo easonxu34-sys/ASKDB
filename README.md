@@ -6,7 +6,7 @@ AskDB 是一个自然语言问数产品，当前工作区按职责拆成两个�
 - [`askdb-agent/`](askdb-agent/)：FastAPI + LangGraph + WrenToolkit 服务。
 - [`docs/开发文档.md`](docs/开发文档.md)：架构、开发顺序、安全边界和验收条件。
 
-当前已包含部署级全局模型设置入口与 Agent 设置 API；生产部署前需配置持久化 SQLite 路径、Fernet 加密密钥、可信内网访问边界和 HTTPS。
+当前已包含部署级全局模型设置入口与 Agent 设置 API；Agent 使用 PostgreSQL 保存账号、模型配置、数据源、会话和记忆元数据，Fernet 密钥、可信内网访问边界和 HTTPS 仍需按部署配置。
 
 ## 本地开发
 
@@ -43,28 +43,21 @@ Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只
    uv run --project askdb-agent python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
    ```
 
-   已有 Docker 部署可继续使用 `.env.docker` 中原来的 key；若同时保留 `.env.local`，两处 key 必须完全相同，不能重新生成，否则已有 SQLite 内加密的模型和数据源凭证无法解密。启动脚本只把该 key 写入 `~/Library/Application Support/ASKDB-Agent/secrets.env`（权限 `0600`）；仓库中的配置文件会被 Git 忽略。备份数据时必须同时保护数据目录和这把 key。模型凭证仍在登录后的设置页面配置。
-3. 从旧 Docker 部署切换时，先在旧容器仍存在时执行一次数据迁移；脚本会停止旧 Agent/Web、复制并检查数据，然后保留旧容器与 `agent_data` 卷作为回退副本，不构建镜像：
-
-   ```bash
-   ./scripts/migrate-docker-data-local.sh
-   ```
-
-   若是全新部署，没有旧数据卷，则跳过这一步。迁移会将 SQLite 内 Docker `/app/data/...` 的 Wren revision 路径改成本机目录，原 Docker 命名卷不修改。迁移完成后不要再让旧 Docker Agent 和本机 Agent 同时写同一份数据。
-4. 构建并启动公网版：
+   将 `askdb-agent/.env.example` 复制为 `askdb-agent/.env`，在其中设置 PostgreSQL DSN。默认值 `service=askdb-agent-dev` 对应 `~/.pg_service.conf` 中的同名 service；也可填 PostgreSQL URL。启动脚本从 Agent 模块的 `.env` 读取 DSN，并将它和 Fernet key 写入 `~/Library/Application Support/ASKDB-Agent/secrets.env`（权限 `0600`）。这两个 env 文件均会被 Git 忽略。备份 PostgreSQL 数据库时必须同时保护 Fernet key。模型凭证仍在登录后的设置页面配置。
+3. 构建并启动公网版：
 
    ```bash
    ./scripts/start-test.sh
    ```
 
    脚本把 Agent/Web 源码复制到 `~/Library/Application Support/ASKDB-Agent/app/`，在那里按锁文件构建；Python 环境、运行数据、密钥、launchd 配置和日志也放在同一私有目录。它随后注册当前用户的两个 launchd 后台服务，等待 Agent `/healthz` 和 Web 首页就绪，再把 Funnel HTTPS `:8443` 指向本机 `3001`，从 Tailscale 读取公网 origin 并写入 Web 服务配置。首次启动可能需要浏览器批准 Funnel。服务会在启动终端关闭后继续运行；用户注销或 Mac 休眠/关机时公网服务不可用。成功后会显示本机健康地址和公网地址；公网登录及受保护操作请使用 HTTPS 公网地址，本机地址仅用于健康检查。
-5. 全新部署时，在有交互 TTY 的终端创建首位管理员：
+4. 在有交互 TTY 的终端创建首位管理员：
 
    ```bash
    scripts/askdb-agent-local.sh auth init-admin
    ```
 
-   已迁移的 Docker 数据已包含原账号，无需重新初始化。管理员临时密码只显示一次，没有默认账号密码。随后在 Web 设置页配置模型和数据源，使用只读数据库账号并构建语义模型。
+   管理员临时密码只显示一次，没有默认账号密码。随后在 Web 设置页配置模型和数据源，使用只读数据库账号并构建语义模型。
 
 ### 本机数据库、运行状态和数据保留
 
@@ -76,11 +69,11 @@ Agent 在宿主机运行，因此数据库就在这台 Mac 上时，连接地址
 ./scripts/stop-test.sh
 ```
 
-停止脚本只卸载本部署使用的两个 launchd 标签，并关闭 Funnel `:8443`；不会按端口杀进程，也不会删除 `~/Library/Application Support/ASKDB-Agent/data`。本机数据目录保存 SQLite 账号/会话、模型与数据源配置、Wren 文件和持久记忆。备份时同时保护整个目录和 Fernet key。旧 Docker 命名卷会保留，确认本机部署正常前不要清除。
+停止脚本只卸载本部署使用的两个 launchd 标签，并关闭 Funnel `:8443`；不会按端口杀进程，也不会删除 `~/Library/Application Support/ASKDB-Agent/data`。PostgreSQL 保存账号、会话、模型与数据源配置及记忆元数据；本机数据目录只保存 Wren 文件、删除 journal 和记忆语料。分别备份 PostgreSQL、本机数据目录和 Fernet key。
 
 公开主机名的访问者能到达登录页，因此只使用获得授权的测试数据。状态显示健康不代表公网登录、SSE 聊天、SQL 权限或真实查询已经完成端到端验证。
 
-仓库中的 Compose 文件和 Dockerfile 暂时保留给可选的容器开发/旧部署回退；`start-test.sh` 和 `stop-test.sh` 的日常公网流程不依赖 Docker。
+仓库中的 Compose 文件和 Dockerfile 保留给可选的容器开发；`start-test.sh` 和 `stop-test.sh` 的日常公网流程不依赖 Docker。
 
 管理员恢复及本地运行说明见 [`askdb-agent/README.md`](askdb-agent/README.md#本机本地公网部署)。
 

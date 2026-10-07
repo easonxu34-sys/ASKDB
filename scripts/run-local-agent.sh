@@ -7,8 +7,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/local-deploy-common.sh"
 
 ASKDB_SETTINGS_ENCRYPTION_KEY="$(local_deploy_load_encryption_key)"
+ASKDB_DATABASE_DSN="$(local_deploy_load_database_dsn)"
 export ASKDB_SETTINGS_ENCRYPTION_KEY
-export ASKDB_SETTINGS_DB_PATH="$LOCAL_DEPLOY_DATA_DIR/model-settings.sqlite3"
+export ASKDB_DATABASE_DSN
+export ASKDB_AGENT_DATA_DIR="$LOCAL_DEPLOY_DATA_DIR"
 export ASKDB_WREN_DATA_DIR="$LOCAL_DEPLOY_DATA_DIR/wren"
 export WREN_HOME="$LOCAL_DEPLOY_DATA_DIR/wren-home"
 

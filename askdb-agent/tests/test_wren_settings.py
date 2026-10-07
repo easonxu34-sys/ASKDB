@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 from cryptography.fernet import Fernet
 
@@ -9,9 +7,9 @@ from wren_settings import ChatDataSourceMismatch, WrenSettingsStore
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(postgres_database):
     return WrenSettingsStore(
-        tmp_path / "settings.sqlite3",
+        postgres_database,
         Fernet.generate_key().decode("ascii"),
     )
 
@@ -26,12 +24,12 @@ def test_creates_two_independent_sources(store):
     assert store.get_data_source(second.id).display_name == "运营库"
 
 
-def test_secret_is_encrypted_at_rest(store, tmp_path):
+def test_secret_is_encrypted_at_rest(store, postgres_database):
     source = store.create_data_source(
         "分析库", "mysql", {"host": "db.internal"}, {"password": "secret-marker"}
     )
 
-    with sqlite3.connect(tmp_path / "settings.sqlite3") as connection:
+    with postgres_database.connect() as connection:
         stored = connection.execute("SELECT ciphertext FROM wren_secrets").fetchone()[0]
 
     assert b"secret-marker" not in stored

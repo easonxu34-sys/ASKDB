@@ -6,7 +6,6 @@ import json
 import math
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import replace
@@ -14,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import psycopg
 from domain.memory_recall import (
     PublicationStatus,
     QueryExample,
@@ -25,8 +25,8 @@ from domain.memory_recall import (
     verify_query_example_content_hash,
 )
 from domain.query_memory import QueryCorpusRevision, QueryExampleCandidate
+from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
 from integrations.deletion_journal import EncryptedDeletionJournal, JournalEvent
-from integrations.memory_migrations import apply_memory_migrations
 
 
 def _canonical(value: Any) -> bytes:
@@ -98,16 +98,18 @@ class QueryMemoryStore:
 
     def __init__(
         self,
-        database_path: Path,
+        database: PostgresDatabase | None = None,
         *,
         corpus_root: Path | None = None,
         clock: Any = None,
         deletion_journal: EncryptedDeletionJournal | None = None,
     ) -> None:
-        self.database_path = Path(database_path).expanduser().resolve()
+        self.database = database or PostgresDatabase()
         configured_root = os.environ.get("ASKDB_AGENT_MEMORY_CORPUS_DIR", "").strip()
         self.corpus_root = Path(
-            corpus_root or configured_root or self.database_path.parent / "agent-memory-corpus"
+            corpus_root
+            or configured_root
+            or Path(__file__).resolve().parents[2] / "data" / "agent-memory-corpus"
         ).expanduser().resolve()
         self.clock = clock or (lambda: datetime.now(UTC))
         self.deletion_journal = deletion_journal
@@ -118,20 +120,13 @@ class QueryMemoryStore:
         value = self.clock()
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
-    def _connect(self) -> sqlite3.Connection:
-        self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
-        os.chmod(self.database_path, 0o600)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA synchronous = FULL")
-        return connection
+    def _connect(self) -> PostgresConnection:
+        return self.database.connect()
 
     def initialize(self) -> None:
         connection = self._connect()
         try:
-            apply_memory_migrations(connection)
+            connection.execute("SELECT 1 FROM query_corpus_revisions LIMIT 1")
         finally:
             connection.close()
 
@@ -166,10 +161,10 @@ class QueryMemoryStore:
                 seen.add(name)
             return tuple(result)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise sqlite3.DatabaseError("stored query example parameter metadata is invalid") from exc
+            raise ValueError("stored query example parameter metadata is invalid") from exc
 
     @classmethod
-    def _candidate(cls, row: sqlite3.Row) -> QueryExampleCandidate:
+    def _candidate(cls, row: PostgresRow) -> QueryExampleCandidate:
         try:
             source_turn_id = uuid.UUID(row["source_turn_id"]) if row["source_turn_id"] else None
             return QueryExampleCandidate(
@@ -198,7 +193,7 @@ class QueryMemoryStore:
                 expires_at=_parse_time(row["expires_at"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise sqlite3.DatabaseError("stored query example record is invalid") from exc
+            raise ValueError("stored query example record is invalid") from exc
 
     @staticmethod
     def _hash_example(
@@ -221,18 +216,18 @@ class QueryMemoryStore:
 
     @staticmethod
     def _record_event(
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *, example_id: str, source_id: str, actor_id: str, event_type: str,
         previous_review: str | None, review: str, previous_publication: str | None,
         publication: str, content_hash: str, reason: str, now: datetime,
         event_id: str | None = None,
     ) -> None:
         connection.execute(
-            """INSERT OR IGNORE INTO query_example_candidate_events
+            """INSERT INTO query_example_candidate_events
                (event_id, query_example_id, data_source_id, actor_user_id, event_type,
                 previous_review_status, review_status, previous_publication_status,
                 publication_status, content_hash, reason_code, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             (event_id or uuid.uuid4().hex, example_id, source_id, actor_id, event_type,
              previous_review, review, previous_publication, publication,
              content_hash, reason, _iso(now)),
@@ -240,13 +235,13 @@ class QueryMemoryStore:
 
     @staticmethod
     def _assert_actor_source(
-        connection: sqlite3.Connection, *, actor_id: str, source_id: str, admin_only: bool = False
-    ) -> sqlite3.Row:
+        connection: PostgresConnection, *, actor_id: str, source_id: str, admin_only: bool = False
+    ) -> PostgresRow:
         source = connection.execute(
-            "SELECT enabled FROM wren_data_sources WHERE id=?", (source_id,)
+            "SELECT enabled FROM wren_data_sources WHERE id=%s", (source_id,)
         ).fetchone()
         actor = connection.execute(
-            "SELECT role, is_active FROM auth_users WHERE id=?", (actor_id,)
+            "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_id,)
         ).fetchone()
         if source is None or not source["enabled"]:
             raise QueryMemoryNotFound("source is unavailable")
@@ -256,7 +251,7 @@ class QueryMemoryStore:
             if actor["role"] != "admin":
                 raise QueryMemoryForbidden("admin role required")
         elif actor["role"] == "member" and connection.execute(
-            "SELECT 1 FROM auth_user_data_sources WHERE user_id=? AND data_source_id=?",
+            "SELECT 1 FROM auth_user_data_sources WHERE user_id=%s AND data_source_id=%s",
             (actor_id, source_id),
         ).fetchone() is None:
             raise QueryMemoryForbidden("source grant required")
@@ -265,7 +260,7 @@ class QueryMemoryStore:
         return actor
 
     @staticmethod
-    def _example_from_row(row: sqlite3.Row) -> QueryExample:
+    def _example_from_row(row: PostgresRow) -> QueryExample:
         candidate = QueryMemoryStore._candidate(row)
         example = candidate.recall_record()
         if example is None:
@@ -306,7 +301,7 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             actor = self._assert_actor_source(
                 connection, actor_id=actor_id, source_id=data_source_id
             )
@@ -316,7 +311,7 @@ class QueryMemoryStore:
                    FROM chat_thread_data_sources AS binding
                    JOIN agent_conversation_threads AS memory
                      ON memory.thread_id=binding.thread_id
-                   WHERE binding.thread_id=?""", (thread_id,),
+                   WHERE binding.thread_id=%s""", (thread_id,),
             ).fetchone()
             if (
                 thread is None or thread["data_source_id"] != data_source_id
@@ -331,7 +326,7 @@ class QueryMemoryStore:
                        JOIN agent_turn_requests AS request
                          ON request.thread_id=turn.thread_id
                         AND request.turn_id=turn.turn_id
-                       WHERE turn.thread_id=? AND turn.turn_id=?
+                       WHERE turn.thread_id=%s AND turn.turn_id=%s
                          AND turn.role='user' AND request.status='completed'""",
                     (thread_id, source_turn_key),
                 ).fetchone()
@@ -346,7 +341,7 @@ class QueryMemoryStore:
                    FROM wren_data_sources AS source
                    JOIN wren_revisions AS revision
                      ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                   WHERE source.id=? AND source.enabled=1""", (data_source_id,),
+                   WHERE source.id=%s AND source.enabled=1""", (data_source_id,),
             ).fetchone()
             if (
                 revision is None or revision["active_revision_id"] != wren_revision_id
@@ -356,7 +351,7 @@ class QueryMemoryStore:
             ):
                 raise QueryMemoryStaleSource("active source semantics changed")
             previous = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE submitted_by=? AND idempotency_hash=?",
+                "SELECT * FROM query_example_candidates WHERE submitted_by=%s AND idempotency_hash=%s",
                 (actor_id, idempotency_hash),
             ).fetchone()
             if previous is not None:
@@ -366,7 +361,7 @@ class QueryMemoryStore:
                 return self._candidate(previous)
             submitter_count = connection.execute(
                 """SELECT COUNT(*) FROM query_example_candidates
-                   WHERE data_source_id=? AND submitted_by=?
+                   WHERE data_source_id=%s AND submitted_by=%s
                      AND review_status IN ('pending','needs_revalidation','approved')
                      AND publication_status NOT IN ('active','superseded','removed')""",
                 (data_source_id, actor_id),
@@ -375,7 +370,7 @@ class QueryMemoryStore:
                 raise QueryMemoryQuotaExceeded(3600)
             thread_count = connection.execute(
                 """SELECT COUNT(*) FROM query_example_candidates
-                   WHERE data_source_id=? AND source_thread_id=?
+                   WHERE data_source_id=%s AND source_thread_id=%s
                      AND review_status IN ('pending','needs_revalidation','approved')
                      AND publication_status NOT IN ('active','superseded','removed')""",
                 (data_source_id, thread_id),
@@ -384,11 +379,11 @@ class QueryMemoryStore:
                 raise QueryMemoryQuotaExceeded(3600)
             cutoff = _iso(now - timedelta(hours=1))
             recent_query = connection.execute(
-                "SELECT COUNT(*), MIN(created_at) FROM query_example_candidates WHERE submitted_by=? AND created_at>=?",
+                "SELECT COUNT(*), MIN(created_at) FROM query_example_candidates WHERE submitted_by=%s AND created_at>=%s",
                 (actor_id, cutoff),
             ).fetchone()
             recent_rules = connection.execute(
-                "SELECT COUNT(*), MIN(created_at) FROM business_rule_candidates WHERE submitted_by=? AND created_at>=?",
+                "SELECT COUNT(*), MIN(created_at) FROM business_rule_candidates WHERE submitted_by=%s AND created_at>=%s",
                 (actor_id, cutoff),
             ).fetchone()
             recent_count = int(recent_query[0]) + int(recent_rules[0])
@@ -406,8 +401,8 @@ class QueryMemoryStore:
                     wren_revision_id, mdl_digest, content_hash, submitted_by,
                     idempotency_hash, request_hash, review_status, publication_status,
                     version, created_at, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending',
-                           'not_published', 1, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending',
+                           'not_published', 1, %s, %s)""",
                 (example_id, data_source_id, thread_id, source_turn_id, question, sql_template,
                  _canonical([{"name": p.name, "type": p.value_type.value, "nullable": p.nullable}
                              for p in parameter_specs]).decode("utf-8"), connector_type,
@@ -421,7 +416,7 @@ class QueryMemoryStore:
                 reason="explicit_user_submission", now=now,
             )
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             connection.commit()
             return self._candidate(row)
@@ -441,7 +436,7 @@ class QueryMemoryStore:
                    FROM chat_thread_data_sources AS binding
                    JOIN agent_conversation_threads AS memory
                      ON memory.thread_id=binding.thread_id
-                   WHERE binding.thread_id=?""", (thread_id,),
+                   WHERE binding.thread_id=%s""", (thread_id,),
             ).fetchone()
             if (
                 row is None or row["owner_user_id"] != actor_id
@@ -454,12 +449,12 @@ class QueryMemoryStore:
 
     @staticmethod
     def preview(
-        connection: sqlite3.Connection, thread_id: str, source_id: str
+        connection: PostgresConnection, thread_id: str, source_id: str
     ) -> tuple[str, ...]:
         """Return content-bearing query candidates that thread deletion will remove."""
         rows = connection.execute(
             """SELECT query_example_id FROM query_example_candidates
-               WHERE data_source_id=? AND source_thread_id=?
+               WHERE data_source_id=%s AND source_thread_id=%s
                ORDER BY query_example_id""",
             (source_id, thread_id),
         ).fetchall()
@@ -469,7 +464,7 @@ class QueryMemoryStore:
         connection = self._connect()
         try:
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             if row is None:
                 raise QueryMemoryNotFound("query example is unavailable")
@@ -492,15 +487,15 @@ class QueryMemoryStore:
             )
             if is_admin and actor["role"] != "admin":
                 raise QueryMemoryForbidden("admin role required")
-            clauses = ["data_source_id=?"]
+            clauses = ["data_source_id=%s"]
             parameters: list[object] = [data_source_id]
             if not is_admin:
-                clauses.append("submitted_by=?")
+                clauses.append("submitted_by=%s")
                 parameters.append(actor_id)
             if review_status:
                 if review_status not in {item.value for item in ReviewStatus}:
                     raise QueryMemoryValidationError("review status is invalid")
-                clauses.append("review_status=?")
+                clauses.append("review_status=%s")
                 parameters.append(review_status)
             scope = "admin" if is_admin else actor_id
             boundary = self._decode_cursor(
@@ -513,13 +508,13 @@ class QueryMemoryStore:
             ) if cursor else None
             if boundary is not None:
                 clauses.append(
-                    "(created_at < ? OR (created_at = ? AND query_example_id > ?))"
+                    "(created_at < %s OR (created_at = %s AND query_example_id > %s))"
                 )
                 parameters.extend((boundary["created_at"], boundary["created_at"], boundary["id"]))
             parameters.append(limit + 1)
             rows = connection.execute(
                 f"SELECT * FROM query_example_candidates WHERE {' AND '.join(clauses)} "
-                "ORDER BY created_at DESC, query_example_id ASC LIMIT ?", parameters,
+                "ORDER BY created_at DESC, query_example_id ASC LIMIT %s", parameters,
             ).fetchall()
             connection.commit()
             has_more = len(rows) > limit
@@ -635,11 +630,11 @@ class QueryMemoryStore:
         return str(path), content_hash, tuple(record["id"] for record in records)
 
     @staticmethod
-    def _record_payload(row: sqlite3.Row) -> dict[str, Any]:
+    def _record_payload(row: PostgresRow) -> dict[str, Any]:
         try:
             parameters = json.loads(row["parameter_specs_json"] or "[]")
         except (TypeError, json.JSONDecodeError) as exc:
-            raise sqlite3.DatabaseError("stored query example parameter metadata is invalid") from exc
+            raise ValueError("stored query example parameter metadata is invalid") from exc
         return {
             "id": row["query_example_id"],
             "normalized_question": row["normalized_question"],
@@ -652,36 +647,36 @@ class QueryMemoryStore:
         }
 
     def _prepare_revision(
-        self, connection: sqlite3.Connection, *, source_id: str,
+        self, connection: PostgresConnection, *, source_id: str,
         connector_type: str, wren_revision_id: str, mdl_digest: str,
         actor_id: str, operation_type: str, item_id: str | None, now: datetime,
     ) -> QueryCorpusRevision:
         connection.execute(
-            """INSERT OR IGNORE INTO query_corpus_source_state
+            """INSERT INTO query_corpus_source_state
                (data_source_id, active_revision, prepared_revision, generation, updated_at)
-               VALUES (?, NULL, NULL, 0, ?)""", (source_id, _iso(now)),
+               VALUES (%s, NULL, NULL, 0, %s) ON CONFLICT(data_source_id) DO NOTHING""", (source_id, _iso(now)),
         )
         state = connection.execute(
-            "SELECT * FROM query_corpus_source_state WHERE data_source_id=?", (source_id,)
+            "SELECT * FROM query_corpus_source_state WHERE data_source_id=%s", (source_id,)
         ).fetchone()
         prior_prepared = state["prepared_revision"]
         if prior_prepared is not None:
             connection.execute(
-                """UPDATE query_corpus_revisions SET status='superseded', superseded_at=?,
-                       delete_after=? WHERE data_source_id=? AND corpus_revision=?
+                """UPDATE query_corpus_revisions SET status='superseded', superseded_at=%s,
+                       delete_after=%s WHERE data_source_id=%s AND corpus_revision=%s
                          AND status='prepared'""",
                 (_iso(now), _iso(now + self.REVISION_TTL), source_id, prior_prepared),
             )
         next_revision = connection.execute(
-            "SELECT COALESCE(MAX(corpus_revision), 0) + 1 FROM query_corpus_revisions WHERE data_source_id=?",
+            "SELECT COALESCE(MAX(corpus_revision), 0) + 1 FROM query_corpus_revisions WHERE data_source_id=%s",
             (source_id,),
         ).fetchone()[0]
         rows = connection.execute(
             """SELECT candidate.* FROM query_example_candidates AS candidate
-               WHERE candidate.data_source_id=? AND candidate.review_status='approved'
+               WHERE candidate.data_source_id=%s AND candidate.review_status='approved'
                  AND candidate.publication_status IN ('active','queued','failed')
-                 AND candidate.connector_type=? AND candidate.wren_revision_id=?
-                 AND candidate.mdl_digest=?
+                 AND candidate.connector_type=%s AND candidate.wren_revision_id=%s
+                 AND candidate.mdl_digest=%s
                  AND NOT EXISTS (
                     SELECT 1 FROM agent_memory_suppressions AS suppression
                     WHERE suppression.data_source_id=candidate.data_source_id
@@ -701,22 +696,22 @@ class QueryMemoryStore:
             """INSERT INTO query_corpus_revisions
                (data_source_id, corpus_revision, connector_type, wren_revision_id,
                 mdl_digest, content_hash, record_ids_json, canonical_path, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'prepared', %s)""",
             (source_id, next_revision, connector_type, wren_revision_id, mdl_digest,
              content_hash, _canonical(list(record_ids)).decode("utf-8"), path, _iso(now)),
         )
         generation = int(state["generation"]) + 1
         operation_id = uuid.uuid4().hex
         connection.execute(
-            """UPDATE query_corpus_source_state SET prepared_revision=?, generation=?, updated_at=?
-               WHERE data_source_id=? AND generation=?""",
+            """UPDATE query_corpus_source_state SET prepared_revision=%s, generation=%s, updated_at=%s
+               WHERE data_source_id=%s AND generation=%s""",
             (next_revision, generation, _iso(now), source_id, state["generation"]),
         )
         connection.execute(
             """INSERT INTO query_corpus_operations
                (operation_id, data_source_id, operation_type, base_revision, target_revision,
                 generation, actor_user_id, item_id, content_hash, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'prepared', %s, %s)""",
             (operation_id, source_id, operation_type, state["active_revision"], next_revision,
              generation, actor_id, item_id, content_hash, _iso(now), _iso(now)),
         )
@@ -738,9 +733,9 @@ class QueryMemoryStore:
         with self._source_lock(source_id):
             connection = self._connect()
             try:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.acquire_write_lock()
                 row = connection.execute(
-                    "SELECT * FROM query_example_candidates WHERE query_example_id=? AND data_source_id=?",
+                    "SELECT * FROM query_example_candidates WHERE query_example_id=%s AND data_source_id=%s",
                     (example_id, source_id),
                 ).fetchone()
                 if row is None:
@@ -751,7 +746,7 @@ class QueryMemoryStore:
                               source.runtime_status, revision.status, revision.mdl_digest
                        FROM wren_data_sources AS source JOIN wren_revisions AS revision
                          ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                       WHERE source.id=? AND source.enabled=1""", (source_id,),
+                       WHERE source.id=%s AND source.enabled=1""", (source_id,),
                 ).fetchone()
                 if (
                     source is None or source["active_revision_id"] != wren_revision_id
@@ -773,9 +768,9 @@ class QueryMemoryStore:
                 self._example_from_row(row)
                 connection.execute(
                     """UPDATE query_example_candidates SET review_status='approved',
-                           publication_status='queued', reviewed_by=?, reviewed_at=?,
+                           publication_status='queued', reviewed_by=%s, reviewed_at=%s,
                            review_reason_code='admin_approved', version=version+1
-                       WHERE query_example_id=? AND version=?""",
+                       WHERE query_example_id=%s AND version=%s""",
                     (actor_id, _iso(now), example_id, expected_version),
                 )
                 revision = self._prepare_revision(
@@ -791,7 +786,7 @@ class QueryMemoryStore:
                     reason="admin_approved_pending_activation", now=now,
                 )
                 updated = connection.execute(
-                    "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                    "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
                 ).fetchone()
                 connection.commit()
                 return self._candidate(updated), revision
@@ -805,7 +800,7 @@ class QueryMemoryStore:
         connection = self._connect()
         try:
             row = connection.execute(
-                "SELECT data_source_id FROM query_example_candidates WHERE query_example_id=?",
+                "SELECT data_source_id FROM query_example_candidates WHERE query_example_id=%s",
                 (example_id,),
             ).fetchone()
             if row is None:
@@ -825,10 +820,10 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._assert_actor_source(connection, actor_id=actor_id, source_id=source_id, admin_only=True)
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             if row is None:
                 raise QueryMemoryNotFound("query example is unavailable")
@@ -836,9 +831,9 @@ class QueryMemoryStore:
                 raise QueryMemoryConflict("query example state changed")
             connection.execute(
                 """UPDATE query_example_candidates SET review_status='rejected',
-                       publication_status='removed', reviewed_by=?, reviewed_at=?,
-                       review_reason_code=?, version=version+1
-                   WHERE query_example_id=? AND version=?""",
+                       publication_status='removed', reviewed_by=%s, reviewed_at=%s,
+                       review_reason_code=%s, version=version+1
+                   WHERE query_example_id=%s AND version=%s""",
                 (actor_id, _iso(now), reason_code, example_id, expected_version),
             )
             self._record_event(
@@ -848,7 +843,7 @@ class QueryMemoryStore:
                 content_hash=row["content_hash"], reason=reason_code, now=now,
             )
             result = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             connection.commit()
             return self._candidate(result)
@@ -865,10 +860,10 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._assert_actor_source(connection, actor_id=actor_id, source_id=source_id)
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             if row is None or row["submitted_by"] != actor_id:
                 raise QueryMemoryNotFound("query example is unavailable")
@@ -879,7 +874,7 @@ class QueryMemoryStore:
                        publication_status='removed', normalized_question=NULL,
                        sql_template=NULL, parameter_specs_json=NULL, source_thread_id=NULL,
                        source_turn_id=NULL, version=version+1
-                   WHERE query_example_id=? AND version=?""", (example_id, expected_version),
+                   WHERE query_example_id=%s AND version=%s""", (example_id, expected_version),
             )
             self._record_event(
                 connection, example_id=example_id, source_id=source_id, actor_id=actor_id,
@@ -888,7 +883,7 @@ class QueryMemoryStore:
                 content_hash=row["content_hash"], reason="submitter_withdrew", now=now,
             )
             result = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             connection.commit()
             return self._candidate(result)
@@ -905,10 +900,10 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._assert_actor_source(connection, actor_id=actor_id, source_id=source_id, admin_only=True)
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             if row is None or row["version"] != expected_version:
                 raise QueryMemoryConflict("query example state changed")
@@ -919,7 +914,7 @@ class QueryMemoryStore:
                        publication_status=CASE WHEN publication_status='active'
                          THEN 'superseded' ELSE publication_status END,
                        review_reason_code='active_semantics_changed', version=version+1
-                   WHERE query_example_id=? AND version=?""", (example_id, expected_version),
+                   WHERE query_example_id=%s AND version=%s""", (example_id, expected_version),
             )
             self._record_event(
                 connection, example_id=example_id, source_id=source_id, actor_id=actor_id,
@@ -929,7 +924,7 @@ class QueryMemoryStore:
                 content_hash=row["content_hash"], reason="active_semantics_changed", now=now,
             )
             result = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             connection.commit()
             return self._candidate(result)
@@ -947,17 +942,17 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._assert_actor_source(connection, actor_id=actor_id, source_id=source_id, admin_only=True)
             source = connection.execute(
                 """SELECT source.active_revision_id, source.connector_type, source.runtime_status,
                           revision.status, revision.mdl_digest FROM wren_data_sources AS source
                    JOIN wren_revisions AS revision
                      ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                   WHERE source.id=? AND source.enabled=1""", (source_id,),
+                   WHERE source.id=%s AND source.enabled=1""", (source_id,),
             ).fetchone()
             row = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             if row is None or row["version"] != expected_version or row["review_status"] != "needs_revalidation":
                 raise QueryMemoryConflict("query example state changed")
@@ -979,10 +974,10 @@ class QueryMemoryStore:
             )
             connection.execute(
                 """UPDATE query_example_candidates SET review_status='pending',
-                       publication_status='not_published', connector_type=?, wren_revision_id=?,
-                       mdl_digest=?, content_hash=?, reviewed_by=?, reviewed_at=?,
+                       publication_status='not_published', connector_type=%s, wren_revision_id=%s,
+                       mdl_digest=%s, content_hash=%s, reviewed_by=%s, reviewed_at=%s,
                        review_reason_code='revalidated_requires_review', version=version+1
-                   WHERE query_example_id=? AND version=?""",
+                   WHERE query_example_id=%s AND version=%s""",
                 (connector_type, wren_revision_id, mdl_digest, content_hash, actor_id,
                  _iso(now), example_id, expected_version),
             )
@@ -993,7 +988,7 @@ class QueryMemoryStore:
                 content_hash=content_hash, reason="new_semantics_requires_fresh_approval", now=now,
             )
             result = connection.execute(
-                "SELECT * FROM query_example_candidates WHERE query_example_id=?", (example_id,)
+                "SELECT * FROM query_example_candidates WHERE query_example_id=%s", (example_id,)
             ).fetchone()
             connection.commit()
             return self._candidate(result)
@@ -1003,14 +998,14 @@ class QueryMemoryStore:
         finally:
             connection.close()
 
-    def apply_suppression(self, connection: sqlite3.Connection, event: JournalEvent) -> None:
+    def apply_suppression(self, connection: PostgresConnection, event: JournalEvent) -> None:
         """Apply query-example revoke and thread deletion during journal replay."""
         now = event.created_at
         if event.event_type == "query_example_revoke":
             for example_id in event.item_ids:
                 row = connection.execute(
                     """SELECT * FROM query_example_candidates
-                       WHERE data_source_id=? AND query_example_id=?""",
+                       WHERE data_source_id=%s AND query_example_id=%s""",
                     (event.source_id, example_id),
                 ).fetchone()
                 if row is None:
@@ -1030,11 +1025,11 @@ class QueryMemoryStore:
                     )
                 connection.execute(
                     """UPDATE query_example_candidates SET review_status='revoked',
-                           publication_status='removed', reviewed_by=?, reviewed_at=?,
-                           revoked_at=?, normalized_question=NULL, sql_template=NULL,
+                           publication_status='removed', reviewed_by=%s, reviewed_at=%s,
+                           revoked_at=%s, normalized_question=NULL, sql_template=NULL,
                            parameter_specs_json=NULL, source_thread_id=NULL, source_turn_id=NULL,
-                           source_thread_hash=?, source_turn_hash=?,
-                           version=version+1 WHERE query_example_id=?""",
+                           source_thread_hash=%s, source_turn_hash=%s,
+                           version=version+1 WHERE query_example_id=%s""",
                     (event.actor_id or "system:journal-replay", _iso(now), _iso(now),
                      thread_hash, turn_hash, example_id),
                 )
@@ -1051,7 +1046,7 @@ class QueryMemoryStore:
             return
         rows = connection.execute(
             """SELECT * FROM query_example_candidates
-               WHERE data_source_id=? AND source_thread_id=?""",
+               WHERE data_source_id=%s AND source_thread_id=%s""",
             (event.source_id, event.thread_id),
         ).fetchall()
         actor_id = event.actor_id or "system:thread-deletion"
@@ -1071,9 +1066,9 @@ class QueryMemoryStore:
                     )
                 connection.execute(
                     """UPDATE query_example_candidates SET source_thread_id=NULL,
-                           source_turn_id=NULL, source_thread_hash=COALESCE(source_thread_hash, ?),
-                           source_turn_hash=COALESCE(source_turn_hash, ?), version=version+1
-                       WHERE query_example_id=?""",
+                           source_turn_id=NULL, source_thread_hash=COALESCE(source_thread_hash, %s),
+                           source_turn_hash=COALESCE(source_turn_hash, %s), version=version+1
+                       WHERE query_example_id=%s""",
                     (thread_hash, turn_hash, example_id),
                 )
                 new_review, new_publication = "approved", "active"
@@ -1085,14 +1080,15 @@ class QueryMemoryStore:
                     """UPDATE query_example_candidates SET source_thread_id=NULL,
                            source_turn_id=NULL, normalized_question=NULL, sql_template=NULL,
                            source_thread_hash=NULL, source_turn_hash=NULL,
-                           parameter_specs_json=NULL, review_status=?, publication_status='removed',
-                           version=version+1 WHERE query_example_id=?""",
+                           parameter_specs_json=NULL, review_status=%s, publication_status='removed',
+                           version=version+1 WHERE query_example_id=%s""",
                     (new_review, example_id),
                 )
                 connection.execute(
-                    """INSERT OR IGNORE INTO agent_memory_suppressions
+                    """INSERT INTO agent_memory_suppressions
                        (event_sequence, data_source_id, item_type, item_id, reason, created_at)
-                       VALUES (?, ?, 'query_example', ?, ?, ?)""",
+                       VALUES (%s, %s, 'query_example', %s, %s, %s)
+                       ON CONFLICT(event_sequence, item_type, item_id) DO NOTHING""",
                     (event.sequence, event.source_id, example_id, event.event_type, _iso(now)),
                 )
                 event_type, reason = event.event_type, "unpublished_candidate_deleted_with_thread"
@@ -1111,12 +1107,12 @@ class QueryMemoryStore:
         now = self._now()
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT * FROM query_example_candidates
                    WHERE review_status IN ('pending','approved')
                      AND publication_status IN ('not_published','queued','failed')
-                     AND expires_at<=? ORDER BY expires_at LIMIT ?""",
+                     AND expires_at<=%s ORDER BY expires_at LIMIT %s""",
                 (_iso(now), limit),
             ).fetchall()
             for row in rows:
@@ -1125,13 +1121,14 @@ class QueryMemoryStore:
                     """UPDATE query_example_candidates SET review_status='expired',
                            publication_status='removed', source_thread_id=NULL, source_turn_id=NULL,
                            normalized_question=NULL, sql_template=NULL, parameter_specs_json=NULL,
-                           version=version+1 WHERE query_example_id=?""", (example_id,),
+                           version=version+1 WHERE query_example_id=%s""", (example_id,),
                 )
                 connection.execute(
-                    """INSERT OR IGNORE INTO agent_memory_suppressions
+                    """INSERT INTO agent_memory_suppressions
                        (event_sequence, data_source_id, item_type, item_id, reason, created_at)
                        VALUES ((SELECT journal_applied_seq FROM agent_memory_journal_state WHERE id=1),
-                               ?, 'query_example', ?, 'candidate_expired', ?)""",
+                               %s, 'query_example', %s, 'candidate_expired', %s)
+                       ON CONFLICT(event_sequence, item_type, item_id) DO NOTHING""",
                     (row["data_source_id"], example_id, _iso(now)),
                 )
                 self._record_event(
@@ -1159,17 +1156,17 @@ class QueryMemoryStore:
         with self._source_lock(data_source_id):
             connection = self._connect()
             try:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.acquire_write_lock()
                 self._assert_actor_source(
                     connection, actor_id=actor_id, source_id=data_source_id, admin_only=True
                 )
                 state = connection.execute(
-                    "SELECT * FROM query_corpus_source_state WHERE data_source_id=?",
+                    "SELECT * FROM query_corpus_source_state WHERE data_source_id=%s",
                     (data_source_id,),
                 ).fetchone()
                 row = connection.execute(
                     """SELECT * FROM query_corpus_revisions
-                       WHERE data_source_id=? AND corpus_revision=?""",
+                       WHERE data_source_id=%s AND corpus_revision=%s""",
                     (data_source_id, target_revision),
                 ).fetchone()
                 source = connection.execute(
@@ -1177,22 +1174,22 @@ class QueryMemoryStore:
                               revision.status, revision.mdl_digest
                        FROM wren_data_sources AS source JOIN wren_revisions AS revision
                          ON revision.source_id=source.id AND revision.id=source.active_revision_id
-                       WHERE source.id=? AND source.enabled=1""", (data_source_id,),
+                       WHERE source.id=%s AND source.enabled=1""", (data_source_id,),
                 ).fetchone()
                 wren_operation = connection.execute(
                     """SELECT operation_type, status, base_revision_id, base_generation,
                               target_revision_id, actor_id, payload_json
-                       FROM wren_operations WHERE id=? AND source_id=?""",
+                       FROM wren_operations WHERE id=%s AND source_id=%s""",
                     (wren_operation_id, data_source_id),
                 ).fetchone()
                 corpus_operation = connection.execute(
                     """SELECT status, content_hash FROM query_corpus_operations
-                       WHERE data_source_id=? AND target_revision=? AND generation=?""",
+                       WHERE data_source_id=%s AND target_revision=%s AND generation=%s""",
                     (data_source_id, target_revision, expected_generation),
                 ).fetchone()
                 wren_state = connection.execute(
                     """SELECT generation, active_operation_id
-                       FROM wren_source_operation_state WHERE source_id=?""",
+                       FROM wren_source_operation_state WHERE source_id=%s""",
                     (data_source_id,),
                 ).fetchone()
                 if (
@@ -1237,11 +1234,11 @@ class QueryMemoryStore:
                 record_ids = tuple(item["id"] for item in manifest["records"])
                 suppressed = set()
                 if record_ids:
-                    placeholders = ",".join("?" for _ in record_ids)
+                    placeholders = ",".join("%s" for _ in record_ids)
                     suppressed = {
                         item[0] for item in connection.execute(
                             f"""SELECT item_id FROM agent_memory_suppressions
-                                WHERE data_source_id=? AND item_type='query_example'
+                                WHERE data_source_id=%s AND item_type='query_example'
                                   AND item_id IN ({placeholders})""",
                             (data_source_id, *record_ids),
                         ).fetchall()
@@ -1252,22 +1249,22 @@ class QueryMemoryStore:
                 if active_revision is not None:
                     connection.execute(
                         """UPDATE query_corpus_revisions SET status='superseded',
-                               superseded_at=?, delete_after=?
-                           WHERE data_source_id=? AND corpus_revision=? AND status='active'""",
+                               superseded_at=%s, delete_after=%s
+                           WHERE data_source_id=%s AND corpus_revision=%s AND status='active'""",
                         (_iso(now), _iso(now + self.REVISION_TTL), data_source_id, active_revision),
                     )
                     connection.execute(
                         """UPDATE query_example_candidates SET publication_status='superseded',
-                               superseded_at=COALESCE(superseded_at, ?)
-                           WHERE data_source_id=? AND publication_status='active'""",
+                               superseded_at=COALESCE(superseded_at, %s)
+                           WHERE data_source_id=%s AND publication_status='active'""",
                         (_iso(now), data_source_id),
                     )
                 if record_ids:
-                    placeholders = ",".join("?" for _ in record_ids)
+                    placeholders = ",".join("%s" for _ in record_ids)
                     provenance_rows = connection.execute(
                         f"""SELECT query_example_id, source_thread_id, source_turn_id
                             FROM query_example_candidates
-                            WHERE data_source_id=? AND query_example_id IN ({placeholders})
+                            WHERE data_source_id=%s AND query_example_id IN ({placeholders})
                               AND review_status='approved'""",
                         (data_source_id, *record_ids),
                     ).fetchall()
@@ -1302,53 +1299,53 @@ class QueryMemoryStore:
                         connection.execute(
                             """UPDATE query_example_candidates SET source_thread_id=NULL,
                                    source_turn_id=NULL,
-                                   source_thread_hash=COALESCE(source_thread_hash, ?),
-                                   source_turn_hash=COALESCE(source_turn_hash, ?)
-                               WHERE data_source_id=? AND query_example_id=?""",
+                                   source_thread_hash=COALESCE(source_thread_hash, %s),
+                                   source_turn_hash=COALESCE(source_turn_hash, %s)
+                               WHERE data_source_id=%s AND query_example_id=%s""",
                             (thread_hash, turn_hash, data_source_id,
                              provenance["query_example_id"]),
                         )
                     connection.execute(
                         f"""UPDATE query_example_candidates SET publication_status='active',
-                               activated_at=COALESCE(activated_at, ?), version=version+1
-                           WHERE data_source_id=? AND query_example_id IN ({placeholders})
+                               activated_at=COALESCE(activated_at, %s), version=version+1
+                           WHERE data_source_id=%s AND query_example_id IN ({placeholders})
                              AND review_status='approved'""",
                         (_iso(now), data_source_id, *record_ids),
                     )
                     activated_count = connection.execute(
                         f"""SELECT COUNT(*) FROM query_example_candidates
-                            WHERE data_source_id=? AND query_example_id IN ({placeholders})
+                            WHERE data_source_id=%s AND query_example_id IN ({placeholders})
                               AND review_status='approved' AND publication_status='active'""",
                         (data_source_id, *record_ids),
                     ).fetchone()[0]
                     if activated_count != len(record_ids):
                         raise QueryMemoryConflict("prepared corpus records no longer match approved records")
                 changed = connection.execute(
-                    """UPDATE query_corpus_revisions SET status='active', activated_at=?
-                       WHERE data_source_id=? AND corpus_revision=? AND status='prepared'""",
+                    """UPDATE query_corpus_revisions SET status='active', activated_at=%s
+                       WHERE data_source_id=%s AND corpus_revision=%s AND status='prepared'""",
                     (_iso(now), data_source_id, target_revision),
                 )
                 if changed.rowcount != 1:
                     raise QueryMemoryConflict("prepared query corpus revision changed")
                 changed = connection.execute(
-                    """UPDATE query_corpus_source_state SET active_revision=?, prepared_revision=NULL,
-                           generation=generation+1, updated_at=?
-                       WHERE data_source_id=? AND generation=? AND prepared_revision=?""",
+                    """UPDATE query_corpus_source_state SET active_revision=%s, prepared_revision=NULL,
+                           generation=generation+1, updated_at=%s
+                       WHERE data_source_id=%s AND generation=%s AND prepared_revision=%s""",
                     (target_revision, _iso(now), data_source_id, expected_generation, target_revision),
                 )
                 if changed.rowcount != 1:
                     raise QueryMemoryConflict("query corpus generation changed")
                 changed = connection.execute(
-                    """UPDATE query_corpus_operations SET status='active', updated_at=?
-                       WHERE data_source_id=? AND target_revision=? AND generation=? AND status='prepared'""",
+                    """UPDATE query_corpus_operations SET status='active', updated_at=%s
+                       WHERE data_source_id=%s AND target_revision=%s AND generation=%s AND status='prepared'""",
                     (_iso(now), data_source_id, target_revision, expected_generation),
                 )
                 if changed.rowcount != 1:
                     raise QueryMemoryConflict("query corpus operation changed")
                 next_wren_generation = wren_generation + 1
                 changed = connection.execute(
-                    """UPDATE wren_source_operation_state SET generation=?, updated_at=?
-                       WHERE source_id=? AND generation=? AND active_operation_id=?""",
+                    """UPDATE wren_source_operation_state SET generation=%s, updated_at=%s
+                       WHERE source_id=%s AND generation=%s AND active_operation_id=%s""",
                     (next_wren_generation, _iso(now), data_source_id, wren_generation,
                      wren_operation_id),
                 )
@@ -1356,22 +1353,22 @@ class QueryMemoryStore:
                     raise QueryMemoryConflict("source operation generation changed")
                 changed = connection.execute(
                     """UPDATE wren_operations SET phase='generation_persisted',
-                           activated_generation=?, updated_at=?
-                       WHERE id=? AND source_id=? AND status='running'
+                           activated_generation=%s, updated_at=%s
+                       WHERE id=%s AND source_id=%s AND status='running'
                          AND operation_type='query_corpus_activate'""",
                     (next_wren_generation, _iso(now), wren_operation_id, data_source_id),
                 )
                 if changed.rowcount != 1:
                     raise QueryMemoryConflict("source activation operation changed")
                 changed = connection.execute(
-                    """UPDATE wren_data_sources SET runtime_status='unavailable', updated_at=?
-                       WHERE id=? AND active_revision_id=? AND runtime_status='ready'""",
+                    """UPDATE wren_data_sources SET runtime_status='unavailable', updated_at=%s
+                       WHERE id=%s AND active_revision_id=%s AND runtime_status='ready'""",
                     (_iso(now), data_source_id, wren_revision_id),
                 )
                 if changed.rowcount != 1:
                     raise QueryMemoryConflict("source runtime state changed")
                 updated = connection.execute(
-                    "SELECT * FROM query_corpus_revisions WHERE data_source_id=? AND corpus_revision=?",
+                    "SELECT * FROM query_corpus_revisions WHERE data_source_id=%s AND corpus_revision=%s",
                     (data_source_id, target_revision),
                 ).fetchone()
                 connection.commit()
@@ -1392,12 +1389,12 @@ class QueryMemoryStore:
                 connection, actor_id=actor_id, source_id=data_source_id, admin_only=True
             )
             state = connection.execute(
-                "SELECT * FROM query_corpus_source_state WHERE data_source_id=?",
+                "SELECT * FROM query_corpus_source_state WHERE data_source_id=%s",
                 (data_source_id,),
             ).fetchone()
             row = connection.execute(
                 """SELECT * FROM query_corpus_revisions
-                   WHERE data_source_id=? AND corpus_revision=?""",
+                   WHERE data_source_id=%s AND corpus_revision=%s""",
                 (data_source_id, target_revision),
             ).fetchone()
             is_currently_active = (
@@ -1411,7 +1408,7 @@ class QueryMemoryStore:
             if not is_currently_active and not is_currently_prepared:
                 raise QueryMemoryConflict("query corpus revision is no longer prepared")
             return self._revision(row), int(state["generation"])
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise QueryMemoryUnavailable("query corpus state is unavailable") from exc
         finally:
             connection.close()
@@ -1426,7 +1423,7 @@ class QueryMemoryStore:
         try:
             row = connection.execute(
                 """SELECT * FROM query_corpus_revisions
-                   WHERE data_source_id=? AND corpus_revision=? AND status='prepared'""",
+                   WHERE data_source_id=%s AND corpus_revision=%s AND status='prepared'""",
                 (revision.data_source_id, revision.corpus_revision),
             ).fetchone()
             if (
@@ -1449,12 +1446,12 @@ class QueryMemoryStore:
             for item in manifest["records"]:
                 candidate = connection.execute(
                     """SELECT * FROM query_example_candidates
-                       WHERE data_source_id=? AND query_example_id=?""",
+                       WHERE data_source_id=%s AND query_example_id=%s""",
                     (revision.data_source_id, item["id"]),
                 ).fetchone()
                 suppressed = connection.execute(
                     """SELECT 1 FROM agent_memory_suppressions
-                       WHERE data_source_id=? AND item_type='query_example' AND item_id=?""",
+                       WHERE data_source_id=%s AND item_type='query_example' AND item_id=%s""",
                     (revision.data_source_id, item["id"]),
                 ).fetchone()
                 if (
@@ -1471,7 +1468,7 @@ class QueryMemoryStore:
             if len(examples) != len(manifest["records"]):
                 raise QueryMemoryConflict("prepared corpus records are incomplete")
             return tuple(examples)
-        except sqlite3.Error as exc:
+        except psycopg.Error as exc:
             raise QueryMemoryUnavailable("prepared query corpus is unavailable") from exc
         finally:
             connection.close()
@@ -1497,7 +1494,7 @@ class QueryMemoryStore:
             raise QueryMemoryUnavailable("canonical query corpus is missing or corrupt") from exc
 
     @staticmethod
-    def _revision(row: sqlite3.Row) -> QueryCorpusRevision:
+    def _revision(row: PostgresRow) -> QueryCorpusRevision:
         try:
             ids = json.loads(row["record_ids_json"])
             if not isinstance(ids, list):
@@ -1514,7 +1511,7 @@ class QueryMemoryStore:
                 delete_after=_parse_time(row["delete_after"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise sqlite3.DatabaseError("stored query corpus revision is invalid") from exc
+            raise ValueError("stored query corpus revision is invalid") from exc
 
     def active_revision_identity(
         self, *, data_source_id: str, connector_type: str,
@@ -1524,14 +1521,14 @@ class QueryMemoryStore:
         connection = self._connect()
         try:
             state = connection.execute(
-                "SELECT active_revision FROM query_corpus_source_state WHERE data_source_id=?",
+                "SELECT active_revision FROM query_corpus_source_state WHERE data_source_id=%s",
                 (data_source_id,),
             ).fetchone()
             if state is None or state["active_revision"] is None:
                 return "none"
             revision = connection.execute(
-                """SELECT * FROM query_corpus_revisions WHERE data_source_id=?
-                   AND corpus_revision=? AND status='active'""",
+                """SELECT * FROM query_corpus_revisions WHERE data_source_id=%s
+                   AND corpus_revision=%s AND status='active'""",
                 (data_source_id, state["active_revision"]),
             ).fetchone()
             if (
@@ -1564,7 +1561,7 @@ class QueryMemoryStore:
         try:
             rows = connection.execute(
                 """SELECT item_id FROM agent_memory_suppressions
-                   WHERE data_source_id=? AND item_type IN ('business_rule','query_example')""",
+                   WHERE data_source_id=%s AND item_type IN ('business_rule','query_example')""",
                 (data_source_id,),
             ).fetchall()
             return frozenset(str(row["item_id"]) for row in rows)
@@ -1575,14 +1572,14 @@ class QueryMemoryStore:
         connection = self._connect()
         try:
             state = connection.execute(
-                "SELECT active_revision FROM query_corpus_source_state WHERE data_source_id=?",
+                "SELECT active_revision FROM query_corpus_source_state WHERE data_source_id=%s",
                 (data_source_id,),
             ).fetchone()
             if state is None or state["active_revision"] is None:
                 return ()
             revision = connection.execute(
-                """SELECT * FROM query_corpus_revisions WHERE data_source_id=?
-                   AND corpus_revision=? AND status='active'""",
+                """SELECT * FROM query_corpus_revisions WHERE data_source_id=%s
+                   AND corpus_revision=%s AND status='active'""",
                 (data_source_id, state["active_revision"]),
             ).fetchone()
             if revision is None or revision["mdl_digest"] != mdl_digest:
@@ -1600,7 +1597,7 @@ class QueryMemoryStore:
             for item in manifest["records"]:
                 row = connection.execute(
                     """SELECT * FROM query_example_candidates
-                       WHERE data_source_id=? AND query_example_id=?""",
+                       WHERE data_source_id=%s AND query_example_id=%s""",
                     (data_source_id, item["id"]),
                 ).fetchone()
                 if (
@@ -1611,8 +1608,8 @@ class QueryMemoryStore:
                 ):
                     continue
                 suppressed = connection.execute(
-                    """SELECT 1 FROM agent_memory_suppressions WHERE data_source_id=?
-                       AND item_type='query_example' AND item_id=? LIMIT 1""",
+                    """SELECT 1 FROM agent_memory_suppressions WHERE data_source_id=%s
+                       AND item_type='query_example' AND item_id=%s LIMIT 1""",
                     (data_source_id, item["id"]),
                 ).fetchone()
                 if suppressed is None:
@@ -1626,8 +1623,8 @@ class QueryMemoryStore:
         try:
             self._assert_actor_source(connection, actor_id=actor_id, source_id=data_source_id, admin_only=True)
             rows = connection.execute(
-                """SELECT * FROM query_corpus_revisions WHERE data_source_id=?
-                   ORDER BY corpus_revision DESC LIMIT ?""", (data_source_id, limit),
+                """SELECT * FROM query_corpus_revisions WHERE data_source_id=%s
+                   ORDER BY corpus_revision DESC LIMIT %s""", (data_source_id, limit),
             ).fetchall()
             return tuple(self._revision(row) for row in rows)
         finally:
@@ -1638,11 +1635,11 @@ class QueryMemoryStore:
         paths_to_delete: list[Path] = []
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             rows = connection.execute(
                 """SELECT * FROM query_corpus_revisions
-                   WHERE status IN ('superseded','expired') AND delete_after<=?
-                   ORDER BY delete_after LIMIT ?""", (_iso(now), limit),
+                   WHERE status IN ('superseded','expired') AND delete_after<=%s
+                   ORDER BY delete_after LIMIT %s""", (_iso(now), limit),
             ).fetchall()
             changed = 0
             for row in rows:
@@ -1651,7 +1648,7 @@ class QueryMemoryStore:
                     continue
                 connection.execute(
                     """UPDATE query_corpus_revisions SET status='expired'
-                       WHERE data_source_id=? AND corpus_revision=? AND status='superseded'""",
+                       WHERE data_source_id=%s AND corpus_revision=%s AND status='superseded'""",
                     (revision.data_source_id, revision.corpus_revision),
                 )
                 paths_to_delete.append(Path(revision.canonical_path).resolve())
@@ -1699,7 +1696,7 @@ class QueryMemoryStore:
                         continue
                     revision = connection.execute(
                         """SELECT status FROM query_corpus_revisions
-                           WHERE data_source_id=? AND corpus_revision=?""",
+                           WHERE data_source_id=%s AND corpus_revision=%s""",
                         (state["data_source_id"], revision_number),
                     ).fetchone()
                     if revision is None or revision["status"] != required_status:

@@ -82,21 +82,19 @@ class EncryptedDeletionJournal:
 
     @classmethod
     def from_environment(
-        cls, *, settings_database_path: Path, corpus_path: Path | None = None
+        cls, *, storage_root: Path, corpus_path: Path | None = None
     ) -> EncryptedDeletionJournal:
-        settings_database_path = settings_database_path.expanduser().resolve()
+        storage_root = storage_root.expanduser().resolve()
         configured_path = os.environ.get("ASKDB_MEMORY_JOURNAL_PATH", "").strip()
         path = (
             Path(configured_path).expanduser().resolve()
             if configured_path
-            else settings_database_path.parent
-            / "agent-memory"
-            / "deletion-journal.jsonl"
+            else storage_root / "agent-memory" / "deletion-journal.jsonl"
         )
         journal_root = path.parent
-        if path == settings_database_path or journal_root == settings_database_path.parent:
+        if path == storage_root or journal_root == storage_root:
             raise DeletionJournalUnavailable(
-                "journal must use a separate directory from the settings database"
+                "journal must use a separate directory from the application data root"
             )
         if corpus_path is not None:
             corpus_root = corpus_path.expanduser().resolve()

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Iterator
 
+import psycopg
 from domain.auth import (
     AccountNotFound,
     AdminPrivilegeRequired,
@@ -20,6 +18,7 @@ from domain.auth import (
     UserRole,
     UsernameConflict,
 )
+from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
 
 
 IDLE_TIMEOUT = timedelta(minutes=30)
@@ -42,7 +41,7 @@ def _parse_timestamp(value: str) -> datetime:
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
-def _row_user(row: sqlite3.Row) -> StoredUser:
+def _row_user(row: PostgresRow) -> StoredUser:
     role = row["role"]
     if role not in {"admin", "member"}:
         raise AuthStoreUnavailable("账号存储格式无效。")
@@ -63,122 +62,27 @@ def _row_user(row: sqlite3.Row) -> StoredUser:
 class AuthStore:
     """Local account, session, grant, throttle, and security-audit store."""
 
-    def __init__(self, database_path: Path | None = None):
-        configured_path = database_path or Path(
-            os.environ.get(
-                "ASKDB_SETTINGS_DB_PATH",
-                str(Path(__file__).resolve().parents[1] / "data" / "model-settings.sqlite3"),
-            )
-        )
-        self.database_path = configured_path.expanduser().resolve()
+    def __init__(self, database: PostgresDatabase | None = None):
+        self.database = database or PostgresDatabase()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection: sqlite3.Connection | None = None
+    def _connect(self) -> Iterator[PostgresConnection]:
         try:
-            self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.database_path, timeout=5)
-            os.chmod(self.database_path, 0o600)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA busy_timeout = 5000")
-            connection.execute("PRAGMA foreign_keys = ON")
-            yield connection
-            connection.commit()
-        except (OSError, sqlite3.Error) as exc:
-            if connection is not None:
-                connection.rollback()
+            with self.database.connect() as connection:
+                yield connection
+        except psycopg.Error as exc:
             raise AuthStoreUnavailable("账号存储当前不可用。") from exc
-        except BaseException:
-            if connection is not None:
-                connection.rollback()
-            raise
-        finally:
-            if connection is not None:
-                connection.close()
 
     def initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_users (
-                    id TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    username_key TEXT NOT NULL UNIQUE,
-                    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
-                    password_hash TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    must_change_password INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_login_at TEXT
-                )"""
+                "INSERT INTO auth_schema_meta(id, schema_version) VALUES (1, 1) "
+                "ON CONFLICT(id) DO NOTHING"
             )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_sessions (
-                    token_hash TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL REFERENCES auth_users(id),
-                    created_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL,
-                    idle_expires_at TEXT NOT NULL,
-                    absolute_expires_at TEXT NOT NULL,
-                    revoked_at TEXT
-                )"""
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user "
-                "ON auth_sessions(user_id, revoked_at)"
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_user_data_sources (
-                    user_id TEXT NOT NULL REFERENCES auth_users(id),
-                    data_source_id TEXT NOT NULL,
-                    granted_by TEXT NOT NULL REFERENCES auth_users(id),
-                    granted_at TEXT NOT NULL,
-                    PRIMARY KEY(user_id, data_source_id)
-                )"""
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_auth_user_data_sources_source "
-                "ON auth_user_data_sources(data_source_id)"
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_login_throttles (
-                    username_key TEXT PRIMARY KEY,
-                    failed_count INTEGER NOT NULL,
-                    window_started_at TEXT NOT NULL,
-                    blocked_until TEXT,
-                    updated_at TEXT NOT NULL
-                )"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_audit_events (
-                    id TEXT PRIMARY KEY,
-                    actor_user_id TEXT,
-                    target_user_id TEXT,
-                    action TEXT NOT NULL,
-                    request_id TEXT,
-                    summary_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )"""
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_auth_audit_created "
-                "ON auth_audit_events(created_at)"
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS auth_schema_meta (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    schema_version INTEGER NOT NULL
-                )"""
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO auth_schema_meta(id, schema_version) VALUES (1, 1)"
-            )
-            connection.commit()
 
     @staticmethod
     def _audit(
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *,
         actor_user_id: str | None,
         target_user_id: str | None,
@@ -191,7 +95,7 @@ class AuthStore:
         connection.execute(
             """INSERT INTO auth_audit_events
                (id, actor_user_id, target_user_id, action, request_id, summary_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 uuid.uuid4().hex,
                 actor_user_id,
@@ -205,7 +109,7 @@ class AuthStore:
 
     def _insert_user(
         self,
-        connection: sqlite3.Connection,
+        connection: PostgresConnection,
         *,
         user_id: str,
         username: str,
@@ -216,7 +120,7 @@ class AuthStore:
         request_id: str | None = None,
     ) -> StoredUser:
         duplicate = connection.execute(
-            "SELECT 1 FROM auth_users WHERE username_key=?", (username_key,)
+            "SELECT 1 FROM auth_users WHERE username_key=%s", (username_key,)
         ).fetchone()
         if duplicate:
             raise UsernameConflict("用户名已存在。")
@@ -225,7 +129,7 @@ class AuthStore:
             """INSERT INTO auth_users
                (id, username, username_key, role, password_hash, is_active,
                 must_change_password, created_at, updated_at, last_login_at)
-               VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, NULL)""",
+               VALUES (%s, %s, %s, %s, %s, 1, 1, %s, %s, NULL)""",
             (user_id, username, username_key, role, password_hash, now, now),
         )
         self._audit(
@@ -236,15 +140,15 @@ class AuthStore:
             summary={"role": role},
             request_id=request_id,
         )
-        row = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+        row = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
         if row is None:
             raise AuthStoreUnavailable("账号创建后无法读取。")
         return _row_user(row)
 
     @staticmethod
-    def _require_admin_actor(connection: sqlite3.Connection, actor_user_id: str) -> None:
+    def _require_admin_actor(connection: PostgresConnection, actor_user_id: str) -> None:
         actor = connection.execute(
-            "SELECT role, is_active FROM auth_users WHERE id=?", (actor_user_id,)
+            "SELECT role, is_active FROM auth_users WHERE id=%s", (actor_user_id,)
         ).fetchone()
         if actor is None or not actor["is_active"] or actor["role"] != "admin":
             raise AdminPrivilegeRequired("当前账号没有管理员权限。")
@@ -253,7 +157,7 @@ class AuthStore:
         self, *, user_id: str, username: str, username_key: str, password_hash: str
     ) -> StoredUser:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             count = connection.execute("SELECT COUNT(*) FROM auth_users").fetchone()[0]
             if count:
                 raise BootstrapAlreadyInitialized("首位管理员已经初始化。")
@@ -273,22 +177,22 @@ class AuthStore:
         password_hash: str,
     ) -> StoredUser:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             row = connection.execute(
-                "SELECT * FROM auth_users WHERE username_key=?", (username_key,)
+                "SELECT * FROM auth_users WHERE username_key=%s", (username_key,)
             ).fetchone()
             if row is None:
                 raise AccountNotFound("找不到此账号，无法恢复管理员权限。")
             now = _timestamp(utc_now())
             connection.execute(
                 """UPDATE auth_users
-                   SET role='admin', is_active=1, password_hash=?,
-                       must_change_password=1, updated_at=?
-                   WHERE id=?""",
+                   SET role='admin', is_active=1, password_hash=%s,
+                       must_change_password=1, updated_at=%s
+                   WHERE id=%s""",
                 (password_hash, now, row["id"]),
             )
             connection.execute(
-                "UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
                 (now, row["id"]),
             )
             self._audit(
@@ -299,7 +203,7 @@ class AuthStore:
                 summary={"role": "admin", "active": True},
             )
             recovered = connection.execute(
-                "SELECT * FROM auth_users WHERE id=?", (row["id"],)
+                "SELECT * FROM auth_users WHERE id=%s", (row["id"],)
             ).fetchone()
             if recovered is None:
                 raise AuthStoreUnavailable("管理员恢复后无法读取账号。")
@@ -317,7 +221,7 @@ class AuthStore:
         request_id: str | None = None,
     ) -> StoredUser:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
             return self._insert_user(
                 connection,
@@ -333,13 +237,13 @@ class AuthStore:
     def get_user_for_login(self, username_key: str) -> StoredUser | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM auth_users WHERE username_key=?", (username_key,)
+                "SELECT * FROM auth_users WHERE username_key=%s", (username_key,)
             ).fetchone()
         return _row_user(row) if row else None
 
     def get_user(self, user_id: str) -> StoredUser:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            row = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
         if row is None:
             raise AccountNotFound("找不到此账号。")
         return _row_user(row)
@@ -370,9 +274,9 @@ class AuthStore:
         request_id: str | None = None,
     ) -> StoredUser:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
-            row = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            row = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
             if row is None:
                 raise AccountNotFound("找不到此账号。")
             current = _row_user(row)
@@ -392,19 +296,19 @@ class AuthStore:
             new_username = current.username if username is None else username
             new_key = current.username_key if username_key is None else username_key
             duplicate = connection.execute(
-                "SELECT 1 FROM auth_users WHERE username_key=? AND id<>?", (new_key, user_id)
+                "SELECT 1 FROM auth_users WHERE username_key=%s AND id<>%s", (new_key, user_id)
             ).fetchone()
             if duplicate:
                 raise UsernameConflict("用户名已存在。")
             now = _timestamp(utc_now())
             connection.execute(
-                """UPDATE auth_users SET username=?, username_key=?, role=?, is_active=?, updated_at=?
-                   WHERE id=?""",
+                """UPDATE auth_users SET username=%s, username_key=%s, role=%s, is_active=%s, updated_at=%s
+                   WHERE id=%s""",
                 (new_username, new_key, new_role, int(new_active), now, user_id),
             )
             if role_changed or active_changed:
                 connection.execute(
-                    "UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                    "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
                     (now, user_id),
                 )
             self._audit(
@@ -419,7 +323,7 @@ class AuthStore:
                 },
                 request_id=request_id,
             )
-            updated = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            updated = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
             if updated is None:
                 raise AuthStoreUnavailable("账号更新后无法读取。")
             return _row_user(updated)
@@ -433,19 +337,19 @@ class AuthStore:
         request_id: str | None = None,
     ) -> None:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
-            row = connection.execute("SELECT 1 FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            row = connection.execute("SELECT 1 FROM auth_users WHERE id=%s", (user_id,)).fetchone()
             if row is None:
                 raise AccountNotFound("找不到此账号。")
             now = _timestamp(utc_now())
             connection.execute(
-                """UPDATE auth_users SET password_hash=?, must_change_password=1, updated_at=?
-                   WHERE id=?""",
+                """UPDATE auth_users SET password_hash=%s, must_change_password=1, updated_at=%s
+                   WHERE id=%s""",
                 (password_hash, now, user_id),
             )
             connection.execute(
-                "UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
                 (now, user_id),
             )
             self._audit(
@@ -466,10 +370,10 @@ class AuthStore:
         request_id: str | None = None,
     ) -> None:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
             target = connection.execute(
-                "SELECT role FROM auth_users WHERE id=?", (user_id,)
+                "SELECT role FROM auth_users WHERE id=%s", (user_id,)
             ).fetchone()
             if target is None:
                 raise AccountNotFound("找不到此账号。")
@@ -477,14 +381,15 @@ class AuthStore:
                 raise DataSourceGrantError("数据源只需分配给普通用户。")
             source = connection.execute(
                 """SELECT 1 FROM wren_data_sources
-                   WHERE id=? AND enabled=1 AND runtime_status='ready'""",
+                   WHERE id=%s AND enabled=1 AND runtime_status='ready'""",
                 (source_id,),
             ).fetchone()
             if source is None:
                 raise DataSourceGrantError("只能分配已启用且配置就绪的数据源。")
             connection.execute(
-                """INSERT OR IGNORE INTO auth_user_data_sources
-                   (user_id, data_source_id, granted_by, granted_at) VALUES (?, ?, ?, ?)""",
+                """INSERT INTO auth_user_data_sources
+                   (user_id, data_source_id, granted_by, granted_at) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT(user_id, data_source_id) DO NOTHING""",
                 (user_id, source_id, actor_user_id, _timestamp(utc_now())),
             )
             self._audit(
@@ -505,12 +410,12 @@ class AuthStore:
         request_id: str | None = None,
     ) -> None:
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
-            if connection.execute("SELECT 1 FROM auth_users WHERE id=?", (user_id,)).fetchone() is None:
+            if connection.execute("SELECT 1 FROM auth_users WHERE id=%s", (user_id,)).fetchone() is None:
                 raise AccountNotFound("找不到此账号。")
             deleted = connection.execute(
-                "DELETE FROM auth_user_data_sources WHERE user_id=? AND data_source_id=?",
+                "DELETE FROM auth_user_data_sources WHERE user_id=%s AND data_source_id=%s",
                 (user_id, source_id),
             ).rowcount
             if deleted:
@@ -526,7 +431,7 @@ class AuthStore:
     def granted_data_source_ids(self, user_id: str) -> set[str]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT data_source_id FROM auth_user_data_sources WHERE user_id=?",
+                "SELECT data_source_id FROM auth_user_data_sources WHERE user_id=%s",
                 (user_id,),
             ).fetchall()
         return {row["data_source_id"] for row in rows}
@@ -535,8 +440,8 @@ class AuthStore:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT 1 FROM auth_users AS u
-                   JOIN wren_data_sources AS d ON d.id=? AND d.enabled=1
-                   WHERE u.id=? AND u.is_active=1 AND (
+                   JOIN wren_data_sources AS d ON d.id=%s AND d.enabled=1
+                   WHERE u.id=%s AND u.is_active=1 AND (
                      u.role='admin' OR (
                        u.role='member' AND EXISTS (
                          SELECT 1 FROM auth_user_data_sources AS g
@@ -552,7 +457,7 @@ class AuthStore:
         now = now or utc_now()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT blocked_until FROM auth_login_throttles WHERE username_key=?",
+                "SELECT blocked_until FROM auth_login_throttles WHERE username_key=%s",
                 (username_key,),
             ).fetchone()
         return bool(row and row["blocked_until"] and _parse_timestamp(row["blocked_until"]) > now)
@@ -561,9 +466,9 @@ class AuthStore:
         now = now or utc_now()
         now_text = _timestamp(now)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             row = connection.execute(
-                "SELECT failed_count, window_started_at FROM auth_login_throttles WHERE username_key=?",
+                "SELECT failed_count, window_started_at FROM auth_login_throttles WHERE username_key=%s",
                 (username_key,),
             ).fetchone()
             if row is None or now - _parse_timestamp(row["window_started_at"]) >= LOGIN_WINDOW:
@@ -582,7 +487,7 @@ class AuthStore:
             connection.execute(
                 """INSERT INTO auth_login_throttles
                    (username_key, failed_count, window_started_at, blocked_until, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
+                   VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT(username_key) DO UPDATE SET
                      failed_count=excluded.failed_count,
                      window_started_at=excluded.window_started_at,
@@ -592,7 +497,7 @@ class AuthStore:
             )
             stale_before = _timestamp(now - timedelta(days=1))
             connection.execute(
-                "DELETE FROM auth_login_throttles WHERE updated_at < ?", (stale_before,)
+                "DELETE FROM auth_login_throttles WHERE updated_at < %s", (stale_before,)
             )
             connection.execute(
                 """DELETE FROM auth_login_throttles
@@ -604,7 +509,7 @@ class AuthStore:
 
     def clear_login_failures(self, username_key: str) -> None:
         with self._connect() as connection:
-            connection.execute("DELETE FROM auth_login_throttles WHERE username_key=?", (username_key,))
+            connection.execute("DELETE FROM auth_login_throttles WHERE username_key=%s", (username_key,))
 
     def create_session(
         self,
@@ -616,15 +521,15 @@ class AuthStore:
         now = now or utc_now()
         now_text = _timestamp(now)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             connection.execute(
                 """DELETE FROM auth_sessions
-                   WHERE absolute_expires_at < ? OR
-                     (revoked_at IS NOT NULL AND revoked_at < ?)""",
+                   WHERE absolute_expires_at < %s OR
+                     (revoked_at IS NOT NULL AND revoked_at < %s)""",
                 (now_text, _timestamp(now - timedelta(days=30))),
             )
             user = connection.execute(
-                "SELECT is_active FROM auth_users WHERE id=?", (user_id,)
+                "SELECT is_active FROM auth_users WHERE id=%s", (user_id,)
             ).fetchone()
             if user is None or not user["is_active"]:
                 raise AccountNotFound("找不到此账号。")
@@ -632,7 +537,7 @@ class AuthStore:
                 """INSERT INTO auth_sessions
                    (token_hash, user_id, created_at, last_seen_at, idle_expires_at,
                     absolute_expires_at, revoked_at)
-                   VALUES (?, ?, ?, ?, ?, ?, NULL)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, NULL)""",
                 (
                     token_hash,
                     user_id,
@@ -643,7 +548,7 @@ class AuthStore:
                 ),
             )
             connection.execute(
-                "UPDATE auth_users SET last_login_at=?, updated_at=? WHERE id=?",
+                "UPDATE auth_users SET last_login_at=%s, updated_at=%s WHERE id=%s",
                 (now_text, now_text, user_id),
             )
 
@@ -651,9 +556,9 @@ class AuthStore:
         now = now or utc_now()
         now_text = _timestamp(now)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             session = connection.execute(
-                "SELECT * FROM auth_sessions WHERE token_hash=?", (token_hash,)
+                "SELECT * FROM auth_sessions WHERE token_hash=%s", (token_hash,)
             ).fetchone()
             if session is None or session["revoked_at"] is not None:
                 connection.commit()
@@ -663,11 +568,11 @@ class AuthStore:
                 or _parse_timestamp(session["absolute_expires_at"]) <= now
             )
             user_row = connection.execute(
-                "SELECT * FROM auth_users WHERE id=?", (session["user_id"],)
+                "SELECT * FROM auth_users WHERE id=%s", (session["user_id"],)
             ).fetchone()
             if expired or user_row is None or not user_row["is_active"]:
                 connection.execute(
-                    "UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?",
+                    "UPDATE auth_sessions SET revoked_at=%s WHERE token_hash=%s",
                     (now_text, token_hash),
                 )
                 connection.commit()
@@ -675,8 +580,8 @@ class AuthStore:
             absolute_expiry = _parse_timestamp(session["absolute_expires_at"])
             idle_expiry = min(now + IDLE_TIMEOUT, absolute_expiry)
             connection.execute(
-                """UPDATE auth_sessions SET last_seen_at=?, idle_expires_at=?
-                   WHERE token_hash=? AND revoked_at IS NULL""",
+                """UPDATE auth_sessions SET last_seen_at=%s, idle_expires_at=%s
+                   WHERE token_hash=%s AND revoked_at IS NULL""",
                 (now_text, _timestamp(idle_expiry), token_hash),
             )
             return _row_user(user_row)
@@ -684,7 +589,7 @@ class AuthStore:
     def revoke_session(self, token_hash: str, now: datetime | None = None) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE auth_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
+                "UPDATE auth_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",
                 (_timestamp(now or utc_now()), token_hash),
             )
 
@@ -700,13 +605,13 @@ class AuthStore:
         now = now or utc_now()
         now_text = _timestamp(now)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.acquire_write_lock()
             session = connection.execute(
-                """SELECT * FROM auth_sessions WHERE token_hash=? AND user_id=?
+                """SELECT * FROM auth_sessions WHERE token_hash=%s AND user_id=%s
                    AND revoked_at IS NULL""",
                 (old_token_hash, user_id),
             ).fetchone()
-            user = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            user = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
             if session is None or user is None or not user["is_active"]:
                 raise InvalidSession("登录状态已失效，请重新登录。")
             if (
@@ -714,25 +619,25 @@ class AuthStore:
                 or _parse_timestamp(session["absolute_expires_at"]) <= now
             ):
                 connection.execute(
-                    "UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?",
+                    "UPDATE auth_sessions SET revoked_at=%s WHERE token_hash=%s",
                     (now_text, old_token_hash),
                 )
                 raise InvalidSession("登录状态已失效，请重新登录。")
             absolute_expiry = _parse_timestamp(session["absolute_expires_at"])
             connection.execute(
-                "UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?",
+                "UPDATE auth_sessions SET revoked_at=%s WHERE token_hash=%s",
                 (now_text, old_token_hash),
             )
             connection.execute(
-                """UPDATE auth_users SET password_hash=?, must_change_password=0, updated_at=?
-                   WHERE id=?""",
+                """UPDATE auth_users SET password_hash=%s, must_change_password=0, updated_at=%s
+                   WHERE id=%s""",
                 (password_hash, now_text, user_id),
             )
             connection.execute(
                 """INSERT INTO auth_sessions
                    (token_hash, user_id, created_at, last_seen_at, idle_expires_at,
                     absolute_expires_at, revoked_at)
-                   VALUES (?, ?, ?, ?, ?, ?, NULL)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, NULL)""",
                 (
                     new_token_hash,
                     user_id,
@@ -749,7 +654,7 @@ class AuthStore:
                 action="user.password_change",
                 summary={},
             )
-            updated = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+            updated = connection.execute("SELECT * FROM auth_users WHERE id=%s", (user_id,)).fetchone()
             if updated is None:
                 raise AuthStoreUnavailable("密码更新后无法读取账号。")
             return _row_user(updated)

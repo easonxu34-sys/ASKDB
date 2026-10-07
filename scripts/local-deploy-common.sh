@@ -57,6 +57,34 @@ local_deploy_load_encryption_key() {
   printf '%s' "$key"
 }
 
+local_deploy_read_database_dsn_from_file() {
+  local env_file="$1"
+  "${LOCAL_DEPLOY_VENV_DIR}/bin/python" - "$env_file" <<'PY'
+import sys
+
+from dotenv import dotenv_values
+
+value = dotenv_values(sys.argv[1]).get("ASKDB_DATABASE_DSN")
+dsn = value.strip() if isinstance(value, str) else ""
+print(dsn, end="")
+PY
+}
+
+local_deploy_load_database_dsn() {
+  local dsn="${ASKDB_DATABASE_DSN:-}"
+  if [[ -z "$dsn" && -f "$LOCAL_DEPLOY_SECRET_FILE" ]]; then
+    dsn="$(local_deploy_read_database_dsn_from_file "$LOCAL_DEPLOY_SECRET_FILE")" || {
+      local_deploy_fail '无法读取 Application Support 中的 PostgreSQL DSN。'
+      return 1
+    }
+  fi
+  [[ -n "$dsn" ]] || {
+    local_deploy_fail '缺少 PostgreSQL DSN；请在 askdb-agent/.env 设置 ASKDB_DATABASE_DSN 并重新运行 scripts/start-test.sh。'
+    return 1
+  }
+  printf '%s' "$dsn"
+}
+
 local_deploy_process_matches() {
   local pid="$1" expected_command="$2" process_command=""
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1

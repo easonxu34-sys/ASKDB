@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from api import create_app
-from api.routes.chat import _attach_turn_metadata
+from api.chat_stream import _attach_turn_metadata
 from api.streaming import encode_sse
 from application.model_settings import ModelSettingsApplication
 from model_settings import ModelConfiguration, ModelSettingsStore
@@ -88,9 +88,8 @@ def test_chat_rejects_model_overrides_without_echoing_values(forbidden_field) ->
     assert "DO_NOT_ECHO_TEST_MARKER" not in response.text
 
 
-def test_chat_unknown_profile_id_is_not_routed_to_default(tmp_path) -> None:
-    # Seed a real catalog entry with a test-only key in an isolated database.
-    store = ModelSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_chat_unknown_profile_id_is_not_routed_to_default(postgres_database) -> None:
+    store = ModelSettingsStore(postgres_database, Fernet.generate_key().decode())
     store.create(
         ModelConfiguration(
             provider="custom",
@@ -117,8 +116,8 @@ def test_chat_unknown_profile_id_is_not_routed_to_default(tmp_path) -> None:
     assert response.json()["detail"]["code"] == "MODEL_PROFILE_NOT_FOUND"
 
 
-def test_injected_runtime_does_not_bypass_unknown_profile_validation(tmp_path) -> None:
-    store = ModelSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_injected_runtime_does_not_bypass_unknown_profile_validation(postgres_database) -> None:
+    store = ModelSettingsStore(postgres_database, Fernet.generate_key().decode())
     store.create(
         ModelConfiguration(
             "custom", "configured-model", "https://models.example.test/v1", "test-only-api-key"
@@ -145,8 +144,8 @@ def test_injected_runtime_does_not_bypass_unknown_profile_validation(tmp_path) -
     assert response.json()["detail"]["code"] == "MODEL_PROFILE_NOT_FOUND"
 
 
-def test_singular_model_settings_route_remains_default_profile_alias(tmp_path) -> None:
-    store = ModelSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_singular_model_settings_route_remains_default_profile_alias(postgres_database) -> None:
+    store = ModelSettingsStore(postgres_database, Fernet.generate_key().decode())
     profile = store.create(
         ModelConfiguration(
             provider="custom",
@@ -169,10 +168,9 @@ def test_singular_model_settings_route_remains_default_profile_alias(tmp_path) -
     assert "test-only-api-key" not in response.text
 
 
-def test_settings_api_fails_closed_without_fernet_key_and_does_not_echo_secret(tmp_path, monkeypatch) -> None:
+def test_settings_api_fails_closed_without_fernet_key_and_does_not_echo_secret(postgres_database, monkeypatch) -> None:
     monkeypatch.setenv("ASKDB_SETTINGS_ENCRYPTION_KEY", "")
-    database_path = tmp_path / "settings.sqlite3"
-    store_with_key = ModelSettingsStore(database_path, Fernet.generate_key().decode())
+    store_with_key = ModelSettingsStore(postgres_database, Fernet.generate_key().decode())
     store_with_key.create(
         ModelConfiguration(
             "custom", "configured-model", "https://models.example.test/v1", "test-only-api-key"
@@ -182,7 +180,7 @@ def test_settings_api_fails_closed_without_fernet_key_and_does_not_echo_secret(t
     )
     app = create_app()
     app.state.model_settings = ModelSettingsApplication(
-        store=ModelSettingsStore(database_path, None)
+        store=ModelSettingsStore(postgres_database, None)
     )
 
     response = TestClient(app).get("/v1/settings/models")
@@ -193,8 +191,8 @@ def test_settings_api_fails_closed_without_fernet_key_and_does_not_echo_secret(t
     assert "test-only-api-key" not in response.text
 
 
-def test_data_source_catalog_exposes_only_safe_fields(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_data_source_catalog_exposes_only_safe_fields(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source = store.create_data_source(
         "分析库", "mysql", {"host": "db.internal", "database": "analytics", "user": "reader"},
         {"password": "test-only-password"},
@@ -214,8 +212,8 @@ def test_data_source_catalog_exposes_only_safe_fields(tmp_path):
     assert "password" not in response.text
 
 
-def test_wren_settings_rejects_paths_and_unknown_fields(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_wren_settings_rejects_paths_and_unknown_fields(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     client = TestClient(create_app(wren_store=store))
 
     response = client.post(
@@ -234,8 +232,8 @@ def test_wren_settings_rejects_paths_and_unknown_fields(tmp_path):
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_source_create_and_detail_never_return_password(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_source_create_and_detail_never_return_password(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     client = TestClient(create_app(wren_store=store))
 
     created = client.post(
@@ -263,8 +261,8 @@ def test_source_create_and_detail_never_return_password(tmp_path):
     assert "test-only-password" not in detail.text
 
 
-def test_source_can_be_reenabled_after_deactivation(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_source_can_be_reenabled_after_deactivation(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source = store.create_data_source("分析库", "mysql", {"host": "db"}, {})
     store.activate_revision(source.id, source.draft_revision_id)
     client = TestClient(create_app(wren_store=store))
@@ -299,8 +297,8 @@ def _active_source(store, name):
     return source
 
 
-def test_chat_uses_requested_source_runtime(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_chat_uses_requested_source_runtime(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source = _active_source(store, "分析库")
     manager = FakeSourceRuntimeManager()
     client = TestClient(create_app(runtime=FakeRuntime(), wren_store=store, runtime_manager=manager))
@@ -319,8 +317,8 @@ def test_chat_uses_requested_source_runtime(tmp_path):
     assert store.get_thread_source("thread-1") == source.id
 
 
-def test_existing_thread_rejects_source_change_before_sse(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_existing_thread_rejects_source_change_before_sse(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source_a = _active_source(store, "分析库")
     source_b = _active_source(store, "运营库")
     store.bind_thread_source("thread-1", source_a.id)
@@ -341,8 +339,8 @@ def test_existing_thread_rejects_source_change_before_sse(tmp_path):
     assert manager.acquired == []
 
 
-def test_legacy_chat_uses_only_configured_default_source(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_legacy_chat_uses_only_configured_default_source(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source = _active_source(store, "默认库")
     store.set_default(source.id)
     manager = FakeSourceRuntimeManager()
@@ -357,8 +355,8 @@ def test_legacy_chat_uses_only_configured_default_source(tmp_path):
     assert manager.acquired == [(source.id, None)]
 
 
-def test_missing_default_and_unavailable_source_do_not_fall_back(tmp_path):
-    store = WrenSettingsStore(tmp_path / "settings.sqlite3", Fernet.generate_key().decode())
+def test_missing_default_and_unavailable_source_do_not_fall_back(postgres_database):
+    store = WrenSettingsStore(postgres_database, Fernet.generate_key().decode())
     source = _active_source(store, "暂不可用")
     manager = FakeSourceRuntimeManager(unavailable={source.id})
     client = TestClient(create_app(runtime=FakeRuntime(), wren_store=store, runtime_manager=manager))

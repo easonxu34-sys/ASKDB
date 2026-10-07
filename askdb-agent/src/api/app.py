@@ -47,6 +47,7 @@ from application.business_rule_memory import BusinessRuleMemoryApplication
 from integrations.business_rule_store import BusinessRuleMemoryStore
 from application.query_memory import QueryMemoryApplication
 from integrations.query_memory_store import QueryMemoryStore
+from integrations.database import PostgresConnection
 
 
 def create_app(
@@ -63,7 +64,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         memory_task: asyncio.Task[None] | None = None
         revision_retention_task: asyncio.Task[None] | None = None
-        sweeper_lease: int | None = None
+        sweeper_lease: PostgresConnection | None = None
         try:
             await asyncio.to_thread(store.list_data_sources)
             await wren_settings.initialize()
@@ -73,23 +74,24 @@ def create_app(
             recall_requested = recall_setting is None or recall_setting.strip() == "1"
             app.state.memory_recall_enabled = recall_requested
             if memory_enabled:
-                database_path = store.database_path.resolve()
+                storage_root = Path(
+                    os.environ.get(
+                        "ASKDB_AGENT_DATA_DIR",
+                        str(Path(__file__).resolve().parents[2] / "data"),
+                    )
+                ).expanduser().resolve()
                 corpus_setting = os.environ.get(
                     "ASKDB_AGENT_MEMORY_CORPUS_DIR", ""
                 ).strip()
                 corpus_path = (
                     Path(corpus_setting).expanduser().resolve()
                     if corpus_setting
-                    else database_path.parent / "agent-memory-corpus"
+                    else storage_root / "agent-memory-corpus"
                 )
                 journal = EncryptedDeletionJournal.from_environment(
-                    settings_database_path=database_path,
+                    storage_root=storage_root,
                     corpus_path=corpus_path,
                 )
-                if journal.path == database_path or journal.path.parent == database_path.parent:
-                    raise RuntimeError(
-                        "memory journal must use a separate directory from the settings database"
-                    )
                 interval_raw = os.environ.get("ASKDB_AGENT_MEMORY_SWEEP_INTERVAL_SECONDS", "300")
                 try:
                     sweep_interval = int(interval_raw)
@@ -98,18 +100,20 @@ def create_app(
                 if not 30 <= sweep_interval <= 3600:
                     raise RuntimeError("memory sweep interval must be between 30 and 3600 seconds")
                 sweeper_lease = await asyncio.to_thread(
-                    try_acquire_sweeper_lease, database_path
+                    try_acquire_sweeper_lease, store.database
                 )
                 if sweeper_lease is None:
                     raise RuntimeError(
-                        "memory-enabled deployment requires one Agent process per SQLite store"
+                        "memory-enabled deployment requires one Agent process per PostgreSQL database"
                     )
                 business_rule_store = BusinessRuleMemoryStore(
-                    database_path,
+                    store.database,
                     deletion_journal=journal,
                 )
                 query_memory_store = QueryMemoryStore(
-                    database_path, deletion_journal=journal
+                    store.database,
+                    corpus_root=corpus_path,
+                    deletion_journal=journal,
                 )
                 corpus_root = query_memory_store.corpus_root
                 journal_root = journal.path.parent
@@ -117,16 +121,16 @@ def create_app(
                     corpus_root == journal_root
                     or corpus_root.is_relative_to(journal_root)
                     or journal_root.is_relative_to(corpus_root)
-                    or corpus_root == database_path
+                    or corpus_root == storage_root
                 ):
                     raise RuntimeError(
-                        "query corpus, deletion journal, and settings database must use separate paths"
+                        "query corpus and deletion journal must use separate directories"
                     )
                 await asyncio.to_thread(query_memory_store.initialize)
                 wren_settings.attach_query_memory_store(query_memory_store)
                 memory_store = await asyncio.to_thread(
                     lambda: ConversationMemoryStore(
-                        database_path,
+                        store.database,
                         deletion_journal=journal,
                         deletion_participant=business_rule_store,
                         suppression_participants=(query_memory_store,),
@@ -211,12 +215,12 @@ def create_app(
     app = FastAPI(title="AskDB Agent", version="0.1.0", lifespan=lifespan)
     app.add_middleware(ThreadRequestBodyLimitMiddleware)
     app.state.runtime = runtime
-    model_settings = model_settings_application or ModelSettingsApplication(
-        runtime=runtime,
-        store=model_store,
-    )
     store = wren_store or (
         wren_settings_application.store if wren_settings_application else WrenSettingsStore()
+    )
+    model_settings = model_settings_application or ModelSettingsApplication(
+        runtime=runtime,
+        store=model_store or ModelSettingsStore(database=store.database),
     )
     wren_settings = wren_settings_application or WrenSettingsApplication(
         store=store,
@@ -229,7 +233,7 @@ def create_app(
     app.state.wren_store = store
     app.state.runtime_manager = wren_settings.runtime_manager
     app.state.wren_settings = wren_settings
-    auth_database = auth_store or AuthStore(database_path=store.database_path)
+    auth_database = auth_store or AuthStore(database=store.database)
     app.state.auth_store = auth_database
     app.state.auth_application = AuthApplication(auth_database)
     app.state.auth_store_ready = False

@@ -16,8 +16,10 @@ AGENT_CLI="$LOCAL_DEPLOY_VENV_DIR/bin/askdb-agent"
 }
 
 ASKDB_SETTINGS_ENCRYPTION_KEY="$(local_deploy_load_encryption_key)" || exit 1
+ASKDB_DATABASE_DSN="$(local_deploy_load_database_dsn)" || exit 1
 export ASKDB_SETTINGS_ENCRYPTION_KEY
-export ASKDB_SETTINGS_DB_PATH="$LOCAL_DEPLOY_DATA_DIR/model-settings.sqlite3"
+export ASKDB_DATABASE_DSN
+export ASKDB_AGENT_DATA_DIR="$LOCAL_DEPLOY_DATA_DIR"
 export ASKDB_WREN_DATA_DIR="$LOCAL_DEPLOY_DATA_DIR/wren"
 export WREN_HOME="$LOCAL_DEPLOY_DATA_DIR/wren-home"
 
