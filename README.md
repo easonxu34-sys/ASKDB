@@ -42,44 +42,6 @@ npm run dev
 
 Agent 服务需要 Python 3.11+ 和 uv。真实问数需在管理页面配置模型、只读数据源和语义模型（MDL）；仓库不附带特定数据库的 Wren 项目。具体步骤见 [`askdb-agent/README.md`](askdb-agent/README.md)。
 
-## 本机本地构建 + Tailscale Funnel 公网演示
-
-公网演示在 Mac 上把 Agent/Web 源码复制到用户级 Application Support 后本机打包和运行，不构建或运行 Docker 镜像。Tailscale Funnel 提供稳定的 `*.ts.net` HTTPS 地址，公网只进入 Web；Agent 绑定 `127.0.0.1:8001`，Web 绑定 `127.0.0.1:3001`。Mac 必须开机、保持当前用户登录并运行 Tailscale。Funnel 支持当前聊天所需的 SSE；个人免费方案仍受 Tailscale 使用条款和带宽限制。
-
-源码相同不代表容器和本机运行环境完全相同：Dockerfile 使用 Linux 容器，而 Mac 使用本机操作系统和 CPU 架构，带有本机代码的依赖会采用不同 wheel/动态库。这里直接使用本机验证过的 Wren 运行环境，并按 `uv.lock`、`pnpm-lock.yaml` 安装锁定依赖。启动需要 Python 3.13、uv、Node.js 22+、pnpm、Tailscale CLI；部分数据库驱动还需要本机的编译工具和数据库客户端库。
-
-### 首次配置
-
-1. 安装并登录 Tailscale for macOS，确保 `tailscale` CLI 可用。Standalone 客户端可在设置中安装 CLI 集成；macOS 客户端变体若不支持 Funnel，按 [Tailscale macOS 版本说明](https://tailscale.com/docs/concepts/macos-variants)切换到支持的变体。首次启用时按提示批准 Funnel、MagicDNS 和 HTTPS。
-2. 新安装时创建本机密钥文件：
-
-   ```bash
-   cp .env.local.example .env.local
-   chmod 600 .env.local
-   ```
-
-   在 `.env.local` 设置 `ASKDB_SETTINGS_ENCRYPTION_KEY`。生成 Fernet 密钥可执行：
-
-   ```bash
-   uv run --project askdb-agent python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-   ```
-
-   将 `askdb-agent/.env.example` 复制为 `askdb-agent/.env`，在其中设置 PostgreSQL DSN。默认值 `service=askdb-agent-dev` 对应 `~/.pg_service.conf` 中的同名 service；也可填 PostgreSQL URL。启动脚本从 Agent 模块的 `.env` 读取 DSN，并将它和 Fernet key 写入 `~/Library/Application Support/ASKDB-Agent/secrets.env`（权限 `0600`）。这两个 env 文件均会被 Git 忽略。备份 PostgreSQL 数据库时必须同时保护 Fernet key。模型凭证仍在登录后的设置页面配置。
-3. 构建并启动公网版：
-
-   ```bash
-   ./scripts/start-test.sh
-   ```
-
-   脚本把 Agent/Web 源码复制到 `~/Library/Application Support/ASKDB-Agent/app/`，在那里按锁文件构建；Python 环境、运行数据、密钥、launchd 配置和日志也放在同一私有目录。它随后注册当前用户的两个 launchd 后台服务，等待 Agent `/healthz` 和 Web 首页就绪，再把 Funnel HTTPS `:8443` 指向本机 `3001`，从 Tailscale 读取公网 origin 并写入 Web 服务配置。首次启动可能需要浏览器批准 Funnel。服务会在启动终端关闭后继续运行；用户注销或 Mac 休眠/关机时公网服务不可用。成功后会显示本机健康地址和公网地址；公网登录及受保护操作请使用 HTTPS 公网地址，本机地址仅用于健康检查。
-4. 在有交互 TTY 的终端创建首位管理员：
-
-   ```bash
-   scripts/askdb-agent-local.sh auth init-admin
-   ```
-
-   管理员临时密码只显示一次，没有默认账号密码。随后在 Web 设置页配置模型和数据源，使用只读数据库账号并构建语义模型。
-
 ### 本机数据库、运行状态和数据保留
 
 Agent 在宿主机运行，因此数据库就在这台 Mac 上时，连接地址可用 `127.0.0.1` 或 `localhost`；若数据库运行在另一容器中，则使用映射到宿主机的端口或可达的主机名。Agent 仍只绑定 loopback，不能通过公网直接访问。
