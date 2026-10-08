@@ -120,7 +120,7 @@ async def stream_chat_events(
         raise ValueError('turn interpretation question mismatch')
     personal_context = turn.query_context()
     apply_presentation = not bool(personal_state and personal_state.get('presentation_omitted'))
-    agent_context = turn.agent_context(include_presentation=apply_presentation)
+    agent_context = turn.agent_context(include_presentation=False)
     personal_chart_type = turn.presentation.chart_type if apply_presentation else None
     query_gate = getattr(runtime, "query_gate", None)
     query_context = getattr(runtime, "query_context", "")
@@ -143,6 +143,11 @@ async def stream_chat_events(
                         ),
                         "conversation": _visible_conversation(messages),
                         "personal_interpretation": personal_context,
+                        "personal_presentation": (
+                            {key: value for key, value in turn.presentation.projection().items()
+                             if key in {"language", "address"}}
+                            if apply_presentation else {}
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -167,19 +172,20 @@ async def stream_chat_events(
         if gate_decision.startswith('CLARIFY:') else 'INVALID')
     log_chat_diagnostic('gate_result', thread_id, turn_id, decision=decision_kind,
         response=fingerprint(gate_decision), elapsed_ms=round((time.monotonic()-started)*1000))
-    decision = decide_with_issues(gate_decision, turn)
+    decision = decide_with_issues(gate_decision, turn, apply_presentation=apply_presentation)
     log_chat_diagnostic('query_decision', thread_id, turn_id, decision=decision.status,
         reason_codes=[x.code for x in turn.semantics.issues if x.required],
         schema_version=turn.schema_version)
     if decision.status == "INTERNAL":
         yield "progress", {"step_id": "understanding", "label": "理解问题", "status": "completed"}
-        text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
+        text = _personalized_fallback(turn, latest_user_text, _REFUSAL_ZH, _REFUSAL_EN, apply_presentation)
         yield "token", {"text": text}
         return
 
     clarification = decision.clarification or _clarification_from_gate(gate_decision, latest_user_text)
     if clarification is not None:
         yield "progress", {"step_id": "understanding", "label": "理解问题", "status": "completed"}
+        clarification = _apply_saved_address(clarification, turn, latest_user_text, apply_presentation)
         clarification_is_safe = await _is_safe_user_facing_text(
             query_gate, clarification, messages, purpose="clarification"
         )
@@ -188,7 +194,7 @@ async def stream_chat_events(
         if clarification_is_safe:
             text = clarification
         else:
-            text = _CLARIFY_ZH if _contains_chinese(latest_user_text) else _CLARIFY_EN
+            text = _personalized_fallback(turn, latest_user_text, _CLARIFY_ZH, _CLARIFY_EN, apply_presentation)
         yield "token", {"text": text}
         return
 
@@ -304,12 +310,13 @@ async def stream_chat_events(
     yield "progress", {"step_id": "query-analysis", "label": "分析查询需求", "status": "completed"}
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "running"}
     if final_answer:
+        final_answer = _apply_saved_address(final_answer, turn, latest_user_text, apply_presentation)
         answer_is_safe = await _is_safe_user_facing_text(
             query_gate, final_answer, messages, purpose="answer"
         )
         log_chat_diagnostic('answer_review', thread_id, turn_id, safe=answer_is_safe)
         if not answer_is_safe:
-            text = _REFUSAL_ZH if _contains_chinese(latest_user_text) else _REFUSAL_EN
+            text = _personalized_fallback(turn, latest_user_text, _REFUSAL_ZH, _REFUSAL_EN, apply_presentation)
         else:
             text = final_answer
         if (
@@ -317,13 +324,52 @@ async def stream_chat_events(
             and not tool_event_state.chart_rendered_for_latest_result
             and any(marker in text for marker in _CHART_CLAIM_MARKERS)
         ):
-            text = "本轮没有成功生成可显示的图表；我没有取得有效的本轮查询结果，请重新发送查询和分组维度。"
+            text = _personalized_fallback(
+                turn,
+                latest_user_text,
+                "本轮没有成功生成可显示的图表；我没有取得有效的本轮查询结果，请重新发送查询和分组维度。",
+                "I could not generate a displayable chart because this turn has no valid query result. Please resend the query with a grouping dimension.",
+                apply_presentation,
+            )
         yield "token", {"text": text}
         if answer_is_safe and memory_reference_text:
             recall_payload = _memory_recall_payload(memory_references)
             if recall_payload is not None:
                 yield "memory_recall", recall_payload
     yield "progress", {"step_id": "final-answer", "label": "整理结果", "status": "completed"}
+
+
+def _prefers_english(turn: Any, latest_user_text: str, apply_presentation: bool) -> bool:
+    if apply_presentation:
+        language = str(turn.presentation.language or "").casefold()
+        if language in {"english", "英文", "en"}:
+            return True
+        if language in {"中文", "简体中文", "繁体中文", "chinese", "zh", "zh-cn"}:
+            return False
+    return not _contains_chinese(latest_user_text)
+
+
+def _apply_saved_address(
+    text: str, turn: Any, latest_user_text: str, apply_presentation: bool
+) -> str:
+    address = turn.presentation.address if apply_presentation else None
+    address = address.strip() if isinstance(address, str) else ""
+    result = text.strip()
+    if not address or result.startswith(address):
+        return result
+    separator = ", " if _prefers_english(turn, latest_user_text, apply_presentation) else "，"
+    return f"{address}{separator}{result}"
+
+
+def _personalized_fallback(
+    turn: Any,
+    latest_user_text: str,
+    chinese: str,
+    english: str,
+    apply_presentation: bool,
+) -> str:
+    text = english if _prefers_english(turn, latest_user_text, apply_presentation) else chinese
+    return _apply_saved_address(text, turn, latest_user_text, apply_presentation)
 
 
 def _chart_requested_for_turn(messages: Sequence[Mapping[str, str]]) -> bool:

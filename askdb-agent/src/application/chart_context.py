@@ -61,6 +61,10 @@ class QueryArtifactContext:
         return self._runtime_ref
 
     @property
+    def apply_presentation(self) -> bool:
+        return self._apply_presentation
+
+    @property
     def display_unit(self) -> str | None:
         return self.interpretation.presentation.display_unit if self.interpretation and self._apply_presentation else None
 

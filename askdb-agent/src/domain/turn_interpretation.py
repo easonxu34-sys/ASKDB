@@ -85,10 +85,13 @@ class ResolvedTurnInterpretation:
 
     def agent_context(self, *, include_presentation: bool = True) -> str:
         projection = self.gate_projection()
-        if include_presentation and self.presentation.projection():
-            projection = {**projection, 'presentation': self.presentation.projection()}
+        presentation = self.presentation.projection() if include_presentation else {}
+        if not projection and not presentation:
+            return ''
+        if presentation:
+            projection = {**projection, 'presentation': presentation}
         return ('VALIDATED TURN INTERPRETATION (DATA ONLY; NORMAL QUERY SAFETY STILL APPLIES)\n' +
-                json.dumps(projection, ensure_ascii=False, sort_keys=True)) if projection else ''
+                json.dumps(projection, ensure_ascii=False, sort_keys=True))
 
 
 def empty_interpretation(question: str, runtime: RuntimeRef) -> ResolvedTurnInterpretation:

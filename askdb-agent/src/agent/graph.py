@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 
-from agent.prompts import build_system_prompt
+from agent.prompts import build_presentation_instructions, build_system_prompt
 from application.chart_context import QueryArtifactContext
 from domain.chart_artifact import ChartRequest
 from tools.chart import create_chart_tool
@@ -36,6 +36,12 @@ class AgentRuntime:
         ]
         tools.append(create_chart_tool(context, chart_request.requested_chart_type))
         system_prompt = build_system_prompt(self.toolkit, tools)
+        interpretation = getattr(context, "interpretation", None)
+        presentation_preferences = (
+            getattr(interpretation, "presentation", None)
+            if getattr(context, "apply_presentation", True) else None
+        )
+        system_prompt += build_presentation_instructions(presentation_preferences)
         if chart_request.should_render:
             system_prompt += (
                 "\n\nThis turn requests a chart or a chart revision. Run a fresh successful "
