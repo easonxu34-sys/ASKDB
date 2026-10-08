@@ -6,6 +6,27 @@ AskDB 是一个自然语言问数产品，当前工作区按职责拆成两个�
 - [`askdb-agent/`](askdb-agent/)：FastAPI + LangGraph + WrenToolkit 服务。
 - [`docs/开发文档.md`](docs/开发文档.md)：架构、开发顺序、安全边界和验收条件。
 
+## 产品演示
+
+[▶️ 点击查看 AskDB 演示视频（MP4）](docs/assets/askdb-demo.mp4)
+
+## 架构概览
+
+浏览器中的聊天页面通过 Next.js 同源 BFF 将请求转发给 FastAPI Agent。Agent 使用 LangGraph 编排对话和工具调用，再通过 WrenToolkit 调用 Wren 的语义模型、SQL 规划与执行能力，访问授权范围内的只读数据源。回答和查询结果通过 SSE 流式返回 Web。
+
+```text
+用户 → Next.js Web / BFF → FastAPI → LangGraph Agent → WrenToolkit / Wren → 只读数据源
+                         ←────────────── SSE 流式响应 ──────────────
+```
+
+## 功能操作
+
+1. 管理员登录后配置模型和数据源，并为用户分配可访问的数据源；数据源使用只读账号。
+2. 用户登录，选择有权限的数据源，在聊天框用自然语言提出分析问题。
+3. Agent 基于 Wren 语义模型执行受控查询，并流式返回回答、结果表格和可用图表。
+4. 用户可以编辑图表并先预览再应用，也可以选择结果数据填入追问后手动发送。
+5. 按需导出图表 PNG 或查询结果 CSV。
+
 当前已包含部署级全局模型设置入口与 Agent 设置 API；Agent 使用 PostgreSQL 保存账号、模型配置、数据源、会话和记忆元数据，Fernet 密钥、可信内网访问边界和 HTTPS 仍需按部署配置。
 
 ## 本地开发
