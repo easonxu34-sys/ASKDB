@@ -15,7 +15,6 @@ services:
       WREN_HOME: /app/data/wren-home
     volumes:
       - agent_data:/app/data
-      - ./wren-project:/app/wren-template:ro
     healthcheck:
       test:
         - CMD

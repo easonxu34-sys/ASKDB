@@ -7,7 +7,7 @@ def test_build_model_uses_the_configured_deepseek_openai_endpoint(monkeypatch) -
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com")
     settings = Settings(
-        wren_project_dir=Path("/tmp/wren-project"),
+        wren_project_dir=Path("/tmp/askdb-project"),
         wren_profile="askdb_mysql",
         model="openai:deepseek-v4-flash",
     )

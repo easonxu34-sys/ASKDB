@@ -13,10 +13,10 @@ fixture.
 `askdb_tpcc_recall_gold_draft.json` combines those 22 query cases with 20
 schema cases derived from the compiled MDL, 8 no-match prompts, and 2 cross-source
 isolation cases. The user reviewed and approved all 52 case labels on
-2026-10-04. Six damaged schema descriptions have been regenerated from
-`wren-project/target/mdl.json`. Its source/revision IDs are
-offline placeholders. A synthetic control-source document exists only to
-exercise source isolation.
+2026-10-04. Six damaged schema descriptions have been regenerated from a local
+Wren project's compiled MDL. The project and compiled snapshot are intentionally
+excluded from the repository. Its source/revision IDs are offline placeholders.
+A synthetic control-source document exists only to exercise source isolation.
 
 From `askdb-agent/`, run the offline diagnostic:
 

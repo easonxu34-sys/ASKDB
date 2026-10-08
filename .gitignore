@@ -56,4 +56,5 @@ yarn-error.log*
 **/.pytest_cache/
 **/.ruff_cache/
 /askdb-agent/data/
-/wren-project/target/mdl.json
+# Local Wren semantic project: datasource-specific, never shipped with the repo.
+/askdb-project/

@@ -19,7 +19,7 @@ or replace corpus binding, review, SQL validation, and publication.
 
 ## Deferred work
 
-1. **Complete:** repaired the six fragments by regenerating the ten MDL-backed model documents from `wren-project/target/mdl.json`; terms and content hashes were regenerated too.
+1. **Complete:** repaired the six fragments by regenerating the ten MDL-backed model documents from `askdb-project/target/mdl.json`; terms and content hashes were regenerated too.
 2. **Complete:** the user confirmed all 52 expected/prohibited label decisions on 2026-10-04 using `askdb_tpcc_recall_review_sheet.csv`:
    - 22 query-example cases: confirm the question, target example, SQL template, model/field names, and typed parameters agree.
    - 20 schema cases: confirm each question targets the marked model/field and the document text matches the compiled MDL.

@@ -2,14 +2,14 @@
 
 AskDB 的 Python Agent 服务，目标链路为 LangGraph → WrenToolkit → Wren Core → 只读数据库。
 
-当前目录已包含 FastAPI SSE API、LangGraph runtime 和受控 Wren 查询工具。真实问数服务启动前，需要准备 Wren CLI 项目并绑定 profile，构建 `target/mdl.json`，再配置可用的模型服务。WrenToolkit 依赖已准备好的 Wren 项目；仅安装 Python 依赖不会自动连接数据库。
+当前目录已包含 FastAPI SSE API、LangGraph runtime 和受控 Wren 查询工具。Agent 启动不依赖随仓库分发的 Wren 项目；真实问数需在管理页面配置模型、只读数据源和语义模型（MDL）。仓库不附带特定数据库的 Wren 项目。
 
 ## 环境要求
 
 - Python 3.11 或更新版本
 - uv
 - 已安装的 Wren CLI（Agent 依赖会安装 PostgreSQL、MySQL、BigQuery、Snowflake、ClickHouse、Trino、SQL Server、Databricks、Redshift、Oracle、Athena 等 connector；DuckDB 包含在 Wren core 中，Doris 使用 Wren 的 MySQL connector）
-- 已初始化并构建 MDL 的 Wren 项目，且项目显式绑定只读 profile
+- 管理员配置的 Wren 数据源、只读凭证和语义模型（MDL）
 - 可供 LangChain 使用的模型服务凭证
 
 ## 安装依赖
@@ -19,7 +19,7 @@ uv sync --locked
 cp .env.example .env
 ```
 
-编辑 `.env`，填写本机 Wren 项目目录和模型服务信息。默认使用 DeepSeek OpenAI 兼容接口及 `deepseek-v4-flash` 模型名；API Key 只放本机 `.env` 或密钥管理服务，不要提交凭证。Wren 数据源页面按锁定的 Wren 版本提供数据库/数仓 connector 表单。本文后续 `askdb_mysql` 命令仅用于现有 MySQL 示例项目。
+编辑 `.env` 并填写模型服务信息。新安装无需设置 `WREN_PROJECT_DIR` 和 `WREN_PROFILE`；仅从旧版环境变量迁移 Wren 项目时才设置这两个变量。默认使用 DeepSeek OpenAI 兼容接口及 `deepseek-v4-flash` 模型名；API Key 只放本机 `.env` 或密钥管理服务，不要提交凭证。Wren 数据源页面按锁定的 Wren 版本提供数据库/数仓 connector 表单。本文后续 `askdb_mysql` 命令仅用于现有 MySQL 示例项目。
 
 模型目录支持多份 OpenAI 兼容模型配置；用户可在每个会话的输入框中选择模型。账号、模型配置、Wren 数据源、会话与记忆元数据统一保存在 `ASKDB_DATABASE_DSN` 指向的 PostgreSQL 数据库中；模型 API Key 和 Wren 凭据仍由 Fernet 加密。生成一把 Fernet 密钥并通过部署密钥管理系统注入 `ASKDB_SETTINGS_ENCRYPTION_KEY`：
 
@@ -115,19 +115,19 @@ Web 使用 HttpOnly、Secure、SameSite=Lax 的会话 Cookie；生产部署必�
 
 登录账号、会话、模型设置和数据源配置共享同一 PostgreSQL 数据库。备份/恢复时应同时保护 PostgreSQL 备份、Fernet key、独立删除 journal 和记忆语料；丢失 PostgreSQL 会同时丢失账号、会话和配置。应用写事务通过 PostgreSQL advisory lock 串行执行，并以唯一部分索引作为单会话运行轮次的额外约束。
 
-Wren 项目至少应完成：
+如需自行维护 Wren CLI 项目，以下以本机 `../askdb-project` 为工作目录示例。该目录已加入 Git 忽略规则，新克隆仓库后需自行创建；也可以改用其他本机路径。
 
 ```bash
 uv run wren profile add askdb_mysql --datasource mysql --interactive
-uv run wren context init --path ../wren-project
-uv run wren context set-profile askdb_mysql --path ../wren-project
+uv run wren context init --path ../askdb-project
+uv run wren context set-profile askdb_mysql --path ../askdb-project
 uv run wren profile debug askdb_mysql
 ```
 
-在 `../wren-project` 中按目标库实际 schema 编写 `models/`、`views/` 与业务描述后，再运行：
+在 `../askdb-project` 中按目标库实际 schema 编写 `models/`、`views/` 与业务描述后，再运行：
 
 ```bash
-cd ../wren-project
+cd ../askdb-project
 uv run --project ../askdb-agent wren context validate
 uv run --project ../askdb-agent wren context build
 uv run --project ../askdb-agent wren profile debug askdb_mysql

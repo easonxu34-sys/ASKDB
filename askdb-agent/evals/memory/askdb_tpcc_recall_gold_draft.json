@@ -5,7 +5,7 @@
   "source": {
     "jdbc_url": "jdbc:mysql://localhost:3306/askdb_tpcc",
     "connector_type": "mysql",
-    "wren_project": "wren-project"
+    "wren_project": "askdb-project"
   },
   "bindings": {
     "target_data_source_id": "offline:askdb_tpcc",

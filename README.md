@@ -40,7 +40,7 @@ npm run dev
 
 根目录的 `npm run dev` 会转发到 `askdb-web`。首次使用先安装 Web 依赖。
 
-Agent 服务需要 Python 3.11+、uv、一个已构建 MDL 的 Wren 项目和只读数据库 profile。具体步骤见 [`askdb-agent/README.md`](askdb-agent/README.md)。
+Agent 服务需要 Python 3.11+ 和 uv。真实问数需在管理页面配置模型、只读数据源和语义模型（MDL）；仓库不附带特定数据库的 Wren 项目。具体步骤见 [`askdb-agent/README.md`](askdb-agent/README.md)。
 
 ## 本机本地构建 + Tailscale Funnel 公网演示
 

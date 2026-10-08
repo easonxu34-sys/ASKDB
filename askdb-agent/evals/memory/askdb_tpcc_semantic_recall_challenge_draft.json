@@ -5,8 +5,8 @@
   "source": {
     "jdbc_url": "jdbc:mysql://localhost:3306/askdb_tpcc",
     "connector_type": "mysql",
-    "wren_project": "wren-project",
-    "metadata_snapshot": "wren-project/target/mdl.json",
+    "wren_project": "askdb-project",
+    "metadata_snapshot": "askdb-project/target/mdl.json",
     "live_database_connection": "not_connected: MySQL TCP and default socket connections refused",
     "business_rows_read": false
   },

@@ -21,7 +21,7 @@
 .pnpm-store
 coverage
 askdb-agent/data
-wren-project/target/mdl.json
+/askdb-project/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
