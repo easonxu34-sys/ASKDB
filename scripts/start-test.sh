@@ -82,25 +82,23 @@ UV_PROJECT_ENVIRONMENT="$LOCAL_DEPLOY_VENV_DIR" uv sync --locked --no-dev --no-e
 
 sync_encryption_key() {
   local local_file="$SOURCE_ROOT/.env.local"
-  local legacy_file="$SOURCE_ROOT/.env.docker"
   local agent_env_file="$AGENT_SOURCE_DIR/.env"
-  local local_key="" legacy_key="" selected_key="" selected_dsn=""
+  local legacy_file="$SOURCE_ROOT/.env.docker"
+  local selected_key="" selected_dsn=""
 
   if [[ -f "$local_file" ]]; then
-    local_key="$(local_deploy_read_key_from_file "$local_file")" || fail '.env.local 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
+    selected_key="$(local_deploy_read_key_from_file "$local_file")" || fail '.env.local 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
   fi
-  if [[ -f "$legacy_file" ]]; then
-    legacy_key="$(local_deploy_read_key_from_file "$legacy_file")" || fail '.env.docker 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
+  if [[ -z "$selected_key" && -f "$agent_env_file" ]]; then
+    selected_key="$(local_deploy_read_key_from_file "$agent_env_file")" || fail 'askdb-agent/.env 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
   fi
-  if [[ -n "$local_key" && -n "$legacy_key" && "$local_key" != "$legacy_key" ]]; then
-    fail '.env.local 与 .env.docker 的 Fernet key 不一致；迁移过来的加密配置无法解密。'
+  if [[ -z "$selected_key" && -f "$legacy_file" ]]; then
+    selected_key="$(local_deploy_read_key_from_file "$legacy_file")" || fail '.env.docker 中的 ASKDB_SETTINGS_ENCRYPTION_KEY 无效。'
   fi
-  selected_key="$local_key"
-  [[ -n "$selected_key" ]] || selected_key="$legacy_key"
   if [[ -z "$selected_key" && -f "$LOCAL_DEPLOY_SECRET_FILE" ]]; then
     selected_key="$(local_deploy_load_encryption_key)" || exit 1
   fi
-  [[ -n "$selected_key" ]] || fail '缺少 ASKDB_SETTINGS_ENCRYPTION_KEY；请配置 .env.local，旧部署可沿用 .env.docker。'
+  [[ -n "$selected_key" ]] || fail '缺少 ASKDB_SETTINGS_ENCRYPTION_KEY；请配置 .env.local 或 askdb-agent/.env，旧部署可沿用 .env.docker。'
   if [[ -f "$LOCAL_DEPLOY_SECRET_FILE" ]]; then
     local active_key=""
     active_key="$(local_deploy_load_encryption_key)" || exit 1
@@ -134,7 +132,7 @@ set_key(path, "ASKDB_DATABASE_DSN", os.environ["ASKDB_LOCAL_SECRET_DSN"], quote_
 PY
   chmod 600 "$temp_file"
   mv -f -- "$temp_file" "$LOCAL_DEPLOY_SECRET_FILE"
-  unset local_key legacy_key selected_key selected_dsn
+  unset selected_key selected_dsn
 }
 sync_encryption_key
 
