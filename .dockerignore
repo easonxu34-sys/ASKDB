@@ -3,6 +3,8 @@
 .superpowers
 .codex
 .agents
+/docs
+/assets/askdb-demo.mp4
 **/.env*
 **/*.pem
 **/node_modules

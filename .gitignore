@@ -58,3 +58,5 @@ yarn-error.log*
 /askdb-agent/data/
 # Local Wren semantic project: datasource-specific, never shipped with the repo.
 /askdb-project/
+# Maintainer-only working notes; keep them local.
+/docs/

@@ -183,4 +183,4 @@ scripts/askdb-agent-local.sh auth recover-admin
 
 ## 当前进度
 
-API 和 LangGraph runtime 已实现。用户登录、会话、角色授权和用户数据源授权的部署及运行说明见本节；完整开发顺序、SSE 契约和端到端验收条件见 [`docs/开发文档.md`](../docs/开发文档.md)。
+API 和 LangGraph runtime 已实现。用户登录、会话、角色授权和数据源授权说明见本文对应章节。维护者的开发计划与评审记录不随仓库发布。
