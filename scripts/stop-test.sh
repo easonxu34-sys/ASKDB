@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop only this deployment's launchd jobs and Funnel; preserve data.
+# Stop only PID-checked repository services, legacy launchd jobs, and Funnel; preserve data.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +30,7 @@ else
   funnel_status=1
 fi
 
-printf '本机 launchd 服务已停止；%s/data 与日志已保留。\n' "$LOCAL_DEPLOY_DIR"
+printf '本机 Agent/Web 服务已停止；仓库 Wren 项目和 profile，以及 %s 中的语料、删除 journal、日志和密钥配置均已保留。\n' "$LOCAL_DEPLOY_DIR"
 if (( funnel_status != 0 )); then
   printf '请检查 tailscale funnel status，再决定是否运行 tailscale funnel reset；reset 会清除当前设备的全部 Funnel 配置。\n' >&2
   exit 1

@@ -8,12 +8,13 @@ LOCAL_DEPLOY_APP_ROOT="$LOCAL_DEPLOY_DIR/app"
 LOCAL_DEPLOY_AGENT_DIR="$LOCAL_DEPLOY_APP_ROOT/askdb-agent"
 LOCAL_DEPLOY_WEB_DIR="$LOCAL_DEPLOY_APP_ROOT/askdb-web"
 LOCAL_DEPLOY_DATA_DIR="$LOCAL_DEPLOY_DIR/data"
+LOCAL_DEPLOY_JOURNAL_PATH="$LOCAL_DEPLOY_DATA_DIR/agent-memory/deletion-journal.jsonl"
 LOCAL_DEPLOY_RUN_DIR="$LOCAL_DEPLOY_DIR/run"
 LOCAL_DEPLOY_LOG_DIR="$LOCAL_DEPLOY_DIR/logs"
 LOCAL_DEPLOY_VENV_DIR="$LOCAL_DEPLOY_DIR/venv"
 LOCAL_DEPLOY_SECRET_FILE="$LOCAL_DEPLOY_DIR/secrets.env"
-LOCAL_DEPLOY_AGENT_PORT=8001
-LOCAL_DEPLOY_WEB_PORT=3001
+LOCAL_DEPLOY_AGENT_PORT=8000
+LOCAL_DEPLOY_WEB_PORT=3000
 LOCAL_DEPLOY_FUNNEL_PORT=8443
 LOCAL_DEPLOY_AGENT_LABEL="com.askdb.local-public.agent"
 LOCAL_DEPLOY_WEB_LABEL="com.askdb.local-public.web"
@@ -46,7 +47,7 @@ PY
 
 local_deploy_load_encryption_key() {
   [[ -f "$LOCAL_DEPLOY_SECRET_FILE" ]] || {
-    local_deploy_fail '缺少本地部署密钥；请从仓库运行 scripts/start-test.sh 完成本机打包。'
+    local_deploy_fail '缺少本地部署密钥配置；请检查 .env.local 或 askdb-agent/.env，并重新运行 scripts/start-test.sh。'
     return 1
   }
   local key=""
@@ -166,9 +167,10 @@ if not tcp and not web:
 owned_port = set(tcp) == {"8443"} and tcp.get("8443") == {"HTTPS": True}
 owned_web = len(web) == 1
 owned_host = next(iter(web), "")
-owned_handler = web.get(owned_host, {}).get("Handlers") == {
-    "/": {"Proxy": "http://127.0.0.1:3001"}
-}
+owned_handler = web.get(owned_host, {}).get("Handlers") in (
+    {"/": {"Proxy": "http://127.0.0.1:3000"}},
+    {"/": {"Proxy": "http://127.0.0.1:3001"}},
+)
 owned_allow = allowed == {owned_host: True}
 if owned_port and owned_host.endswith(":8443") and owned_handler and owned_allow:
     print("owned")

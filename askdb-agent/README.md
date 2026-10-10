@@ -161,11 +161,24 @@ Web 端默认通过 Next.js `/api/chat` 转发至 `http://127.0.0.1:8000/v1/chat
 
 ## 本机本地公网部署
 
-公网演示直接在 Mac 上按 `uv.lock`、`pnpm-lock.yaml` 构建 Agent 与 Web，不构建 Docker 镜像。完整首次配置、Tailscale Funnel、服务端口和运行边界见[根目录 README](../README.md#本机本地构建--tailscale-funnel-公网演示)。Agent 绑定 `127.0.0.1:8001`，Web 绑定 `127.0.0.1:3001`，只有 Web 经 Funnel HTTPS `:8443` 对外提供访问。本机 Agent 可直接连接宿主机数据库的 `localhost`/`127.0.0.1`。
+公网演示直接在 Mac 上按 `uv.lock`、`pnpm-lock.yaml` 构建 Agent 与 Web，不构建 Docker 镜像。Agent 和 Web 使用与开发环境相同的 `127.0.0.1:8000`、`127.0.0.1:3000` 端口，只有 Web 经 Funnel HTTPS `:8443` 对外提供访问。本机 Agent 可直接连接宿主机数据库的 `localhost`/`127.0.0.1`。若开发服务器已占用这些端口，先停止开发服务器再启动公网演示。
 
-本机部署先复制仓库根目录 `.env.local.example` 为 `.env.local` 设置 Fernet key，再复制 `askdb-agent/.env.example` 为 `askdb-agent/.env` 设置 `ASKDB_DATABASE_DSN`。本地启动脚本会从 Agent 模块的 `.env` 读取 DSN。源码与构建产物放在 `~/Library/Application Support/ASKDB-Agent/app`；PostgreSQL 是唯一应用数据库，本机 `data` 目录只存放 Wren 文件、删除 journal 和记忆语料，日志、密钥和 launchd 配置也放在该私有目录中。
+本机部署先复制仓库根目录 `.env.local.example` 为 `.env.local` 设置 Fernet key，再复制 `askdb-agent/.env.example` 为 `askdb-agent/.env` 设置 `ASKDB_DATABASE_DSN`。本地启动脚本会从这些配置读取密钥和 DSN。公网演示直接使用当前仓库代码：Agent 虚拟环境位于 `askdb-agent/.venv`，Web 依赖和构建产物位于 `askdb-web`。Wren 项目和 profile 使用仓库内已有的 `askdb-agent/data/wren` 与 `askdb-agent/data/wren-home`；记忆语料和删除 journal 使用旧部署的 `~/Library/Application Support/ASKDB-Agent/data`。这些位置分别与当前数据库登记的项目和语料路径对应，脚本不会搬移数据或改写 PostgreSQL 中保存的路径。日志和本机密钥配置也保存在 `~/Library/Application Support/ASKDB-Agent`。PostgreSQL 仍是唯一应用数据库。
 
-本地打包完成后，在有交互 TTY 的终端初始化首位管理员：
+在 `askdb-agent/` 目录下，若使用同一 PostgreSQL 直接启动开发 Agent，也需指定同一组持久化路径，确保开发环境和公网演示读取相同的 Wren、语料及删除 journal：
+
+```bash
+ASKDB_AGENT_DATA_DIR="$HOME/Library/Application Support/ASKDB-Agent/data" \
+ASKDB_AGENT_MEMORY_CORPUS_DIR="$HOME/Library/Application Support/ASKDB-Agent/data/agent-memory-corpus" \
+ASKDB_WREN_DATA_DIR="$PWD/data/wren" \
+WREN_HOME="$PWD/data/wren-home" \
+ASKDB_MEMORY_JOURNAL_PATH="$HOME/Library/Application Support/ASKDB-Agent/data/agent-memory/deletion-journal.jsonl" \
+uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+如果这台机器仍在运行旧版 launchd 部署，升级启动方式前先运行一次 `scripts/stop-test.sh`，关闭旧服务和 Funnel；之后再运行 `scripts/start-test.sh`。启动脚本会从执行它的 macOS 用户会话启动 Agent/Web，Agent 代码、Wren 项目和 profile 使用当前仓库，语料和删除 journal 使用 Application Support。
+
+启动环境准备完成后，在有交互 TTY 的终端初始化首位管理员：
 
 ```bash
 scripts/askdb-agent-local.sh auth init-admin
@@ -179,7 +192,7 @@ scripts/askdb-agent-local.sh auth recover-admin
 
 导入的 PostgreSQL 数据包含原账号时无需重复初始化。之后在 Web 设置页面配置模型、数据源和只读数据库账号，构建语义模型并分配用户数据源权限。
 
-`scripts/stop-test.sh` 只卸载本部署的 launchd 服务，关闭 Tailscale Funnel，并保留 `~/Library/Application Support/ASKDB-Agent/data`。服务由当前用户的 launchd 会话托管；用户注销时会停止，重新启动公网服务需再次运行 `scripts/start-test.sh`。备份时同时保护整个数据目录和原 Fernet key。旧 Compose 与 Dockerfile 仅作为可选开发/回退材料；确认本机部署正常前不要删除旧 `agent_data` 卷。
+`scripts/stop-test.sh` 会停止本脚本启动的 Agent/Web（并兼容卸载旧版 launchd 服务）、关闭 Tailscale Funnel，同时保留仓库内的 Wren 项目和 profile，以及 Application Support 下的语料、删除 journal、日志和密钥配置。Agent/Web 由当前用户会话后台运行，关闭终端后仍会继续；用户注销后会停止，重新启动公网服务需再次运行 `scripts/start-test.sh`。备份时保护仓库内的 `askdb-agent/data/wren`、`askdb-agent/data/wren-home`、Application Support 数据目录和原 Fernet key。旧 Compose 与 Dockerfile 仅作为可选开发/回退材料；确认本机部署正常前不要删除旧 `agent_data` 卷。
 
 ## 当前进度
 

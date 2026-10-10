@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package and run the public demo locally, then expose only Web via Funnel.
+# Run the public demo from this checkout, then expose only Web via Funnel.
 set -euo pipefail
 umask 077
 
@@ -8,14 +8,11 @@ source "$SCRIPT_DIR/local-deploy-common.sh"
 SOURCE_ROOT="$LOCAL_DEPLOY_REPO_ROOT"
 AGENT_SOURCE_DIR="$SOURCE_ROOT/askdb-agent"
 WEB_SOURCE_DIR="$SOURCE_ROOT/askdb-web"
+LOCAL_DEPLOY_VENV_DIR="$AGENT_SOURCE_DIR/.venv"
 AGENT_PID_FILE="$SOURCE_ROOT/.local-deploy/run/agent.pid"
 WEB_PID_FILE="$SOURCE_ROOT/.local-deploy/run/web.pid"
 AGENT_COMMAND_MARKER="uvicorn main:app --host 127.0.0.1 --port $LOCAL_DEPLOY_AGENT_PORT"
 WEB_COMMAND_MARKER="next/dist/bin/next start --hostname 127.0.0.1 --port $LOCAL_DEPLOY_WEB_PORT"
-AGENT_PLIST="$LOCAL_DEPLOY_RUN_DIR/agent.plist"
-WEB_PLIST="$LOCAL_DEPLOY_RUN_DIR/web.plist"
-AGENT_BOOTSTRAPPED=false
-WEB_BOOTSTRAPPED=false
 FUNNEL_CONFIGURED=false
 NODE_BIN=""
 TAILSCALE_BIN="$(command -v tailscale || true)"
@@ -31,12 +28,8 @@ fail() {
 cleanup_failed_start() {
   local exit_status=$?
   if (( exit_status != 0 )); then
-    if [[ "$WEB_BOOTSTRAPPED" == true ]]; then
-      local_deploy_bootout_launchd "$LOCAL_DEPLOY_WEB_LABEL" "$WEB_PLIST" || true
-    fi
-    if [[ "$AGENT_BOOTSTRAPPED" == true ]]; then
-      local_deploy_bootout_launchd "$LOCAL_DEPLOY_AGENT_LABEL" "$AGENT_PLIST" || true
-    fi
+    local_deploy_stop_pidfile Web "$WEB_PID_FILE" "$WEB_COMMAND_MARKER" || true
+    local_deploy_stop_pidfile Agent "$AGENT_PID_FILE" "$AGENT_COMMAND_MARKER" || true
     if [[ "$FUNNEL_CONFIGURED" == true ]]; then
       local_deploy_clear_funnel "$TAILSCALE_BIN" || true
     fi
@@ -45,7 +38,7 @@ cleanup_failed_start() {
 }
 trap cleanup_failed_start EXIT
 
-for tool in uv pnpm node curl lsof launchctl python3 rsync; do
+for tool in uv pnpm node curl lsof launchctl python3; do
   command -v "$tool" >/dev/null 2>&1 || fail "未找到 $tool。"
 done
 [[ -n "$TAILSCALE_BIN" && -x "$TAILSCALE_BIN" ]] || fail '未找到 Tailscale CLI；请安装、登录并启用 CLI 集成。'
@@ -59,25 +52,11 @@ local_deploy_assert_stopped Web "$WEB_PID_FILE" "$WEB_COMMAND_MARKER" || exit 1
 local_deploy_assert_launchd_unloaded Agent "$LOCAL_DEPLOY_AGENT_LABEL" || exit 1
 local_deploy_assert_launchd_unloaded Web "$LOCAL_DEPLOY_WEB_LABEL" || exit 1
 
-mkdir -p -m 700 "$LOCAL_DEPLOY_DIR" "$LOCAL_DEPLOY_RUN_DIR" "$LOCAL_DEPLOY_LOG_DIR" "$LOCAL_DEPLOY_APP_ROOT"
-chmod 700 "$LOCAL_DEPLOY_DIR" "$LOCAL_DEPLOY_RUN_DIR" "$LOCAL_DEPLOY_LOG_DIR" "$LOCAL_DEPLOY_APP_ROOT"
+mkdir -p -m 700 "$LOCAL_DEPLOY_DIR" "$LOCAL_DEPLOY_RUN_DIR" "$LOCAL_DEPLOY_LOG_DIR" "$SOURCE_ROOT/.local-deploy/run"
+chmod 700 "$LOCAL_DEPLOY_DIR" "$LOCAL_DEPLOY_RUN_DIR" "$LOCAL_DEPLOY_LOG_DIR" "$SOURCE_ROOT/.local-deploy/run"
 
-printf '将 Agent 与 Web 源码打包到用户级 Application Support…\n'
-mkdir -p -m 700 "$LOCAL_DEPLOY_AGENT_DIR" "$LOCAL_DEPLOY_WEB_DIR" "$LOCAL_DEPLOY_APP_ROOT/scripts"
-rsync -a --delete \
-  --exclude='.env*' --exclude='.venv/' --exclude='data/' --exclude='__pycache__/' \
-  --exclude='*.pyc' --exclude='.pytest_cache/' --exclude='.mypy_cache/' --exclude='.ruff_cache/' \
-  "$AGENT_SOURCE_DIR/" "$LOCAL_DEPLOY_AGENT_DIR/"
-rsync -a --delete \
-  --exclude='.env*' --exclude='.git/' --exclude='node_modules/' --exclude='.next/' \
-  --exclude='.turbo/' --exclude='.vercel/' \
-  "$WEB_SOURCE_DIR/" "$LOCAL_DEPLOY_WEB_DIR/"
-install -m 700 "$SCRIPT_DIR/run-local-agent.sh" "$LOCAL_DEPLOY_APP_ROOT/scripts/run-local-agent.sh"
-install -m 700 "$SCRIPT_DIR/run-local-web.sh" "$LOCAL_DEPLOY_APP_ROOT/scripts/run-local-web.sh"
-install -m 600 "$SCRIPT_DIR/local-deploy-common.sh" "$LOCAL_DEPLOY_APP_ROOT/scripts/local-deploy-common.sh"
-
-printf '在本机按 uv.lock 安装 Agent 运行时（Python 3.13）…\n'
-UV_PROJECT_ENVIRONMENT="$LOCAL_DEPLOY_VENV_DIR" uv sync --locked --no-dev --no-editable --python 3.13 --project "$LOCAL_DEPLOY_AGENT_DIR"
+printf '在仓库的 askdb-agent/.venv 中按 uv.lock 安装 Agent 运行时（Python 3.13）…\n'
+UV_PROJECT_ENVIRONMENT="$LOCAL_DEPLOY_VENV_DIR" uv sync --locked --no-dev --python 3.13 --project "$AGENT_SOURCE_DIR"
 [[ -x "$LOCAL_DEPLOY_VENV_DIR/bin/uvicorn" && -x "$LOCAL_DEPLOY_VENV_DIR/bin/askdb-agent" ]] || fail 'Agent 本地安装未生成运行命令。'
 
 sync_encryption_key() {
@@ -136,22 +115,17 @@ PY
 }
 sync_encryption_key
 
-printf '在本机按 pnpm-lock.yaml 安装并构建 Next.js Web…\n'
-(cd "$LOCAL_DEPLOY_WEB_DIR" && pnpm install --frozen-lockfile && pnpm exec next build --webpack)
+printf '在仓库的 askdb-web 中按 pnpm-lock.yaml 安装并构建 Next.js Web…\n'
+(cd "$WEB_SOURCE_DIR" && pnpm install --frozen-lockfile && pnpm exec next build --webpack)
 
-prepare_data_directory() {
-  local source_data="$SOURCE_ROOT/.local-deploy/data"
-  if [[ ! -d "$LOCAL_DEPLOY_DATA_DIR" || -z "$(find "$LOCAL_DEPLOY_DATA_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-    if [[ -d "$source_data" ]] && find "$source_data" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-      [[ ! -e "$LOCAL_DEPLOY_DATA_DIR" ]] || rmdir "$LOCAL_DEPLOY_DATA_DIR"
-      mv -- "$source_data" "$LOCAL_DEPLOY_DATA_DIR"
-      printf '已将先前迁移的数据目录移入 Application Support。\n'
-    fi
-  fi
-  mkdir -p -m 700 "$LOCAL_DEPLOY_DATA_DIR" "$LOCAL_DEPLOY_DATA_DIR/wren" "$LOCAL_DEPLOY_DATA_DIR/wren-home"
-  chmod 700 "$LOCAL_DEPLOY_DATA_DIR" "$LOCAL_DEPLOY_DATA_DIR/wren" "$LOCAL_DEPLOY_DATA_DIR/wren-home"
-}
-prepare_data_directory
+ASKDB_SETTINGS_ENCRYPTION_KEY="$(local_deploy_load_encryption_key)" || exit 1
+ASKDB_DATABASE_DSN="$(local_deploy_load_database_dsn)" || exit 1
+export ASKDB_SETTINGS_ENCRYPTION_KEY ASKDB_DATABASE_DSN
+export ASKDB_AGENT_DATA_DIR="$LOCAL_DEPLOY_DATA_DIR"
+export ASKDB_AGENT_MEMORY_CORPUS_DIR="$LOCAL_DEPLOY_DATA_DIR/agent-memory-corpus"
+export ASKDB_WREN_DATA_DIR="$AGENT_SOURCE_DIR/data/wren"
+export WREN_HOME="$AGENT_SOURCE_DIR/data/wren-home"
+export ASKDB_MEMORY_JOURNAL_PATH="$LOCAL_DEPLOY_JOURNAL_PATH"
 
 for port in "$LOCAL_DEPLOY_AGENT_PORT" "$LOCAL_DEPLOY_WEB_PORT"; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
@@ -174,12 +148,13 @@ for log_file in agent.stdout.log agent.stderr.log web.stdout.log web.stderr.log;
   touch "$LOCAL_DEPLOY_LOG_DIR/$log_file"
   chmod 600 "$LOCAL_DEPLOY_LOG_DIR/$log_file"
 done
-python3 "$SCRIPT_DIR/write-local-launchd-plists.py" \
-  "$LOCAL_DEPLOY_APP_ROOT" "$LOCAL_DEPLOY_RUN_DIR" "$LOCAL_DEPLOY_LOG_DIR" "$ASKDB_WEB_ORIGIN" "$NODE_BIN"
-
-printf '通过 launchd 启动 Agent（127.0.0.1:%s）…\n' "$LOCAL_DEPLOY_AGENT_PORT"
-launchctl bootstrap "$LOCAL_DEPLOY_LAUNCHD_DOMAIN" "$AGENT_PLIST"
-AGENT_BOOTSTRAPPED=true
+printf '从仓库启动 Agent（127.0.0.1:%s）…\n' "$LOCAL_DEPLOY_AGENT_PORT"
+(
+  cd "$AGENT_SOURCE_DIR"
+  nohup "$LOCAL_DEPLOY_VENV_DIR/bin/uvicorn" main:app --host 127.0.0.1 --port "$LOCAL_DEPLOY_AGENT_PORT" \
+    > "$LOCAL_DEPLOY_LOG_DIR/agent.stdout.log" 2> "$LOCAL_DEPLOY_LOG_DIR/agent.stderr.log" < /dev/null &
+  printf '%s\n' "$!" > "$AGENT_PID_FILE"
+)
 agent_ready=false
 for _ in {1..120}; do
   if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:$LOCAL_DEPLOY_AGENT_PORT/healthz" >/dev/null 2>&1; then
@@ -190,9 +165,17 @@ for _ in {1..120}; do
 done
 [[ "$agent_ready" == true ]] || fail "Agent 未在 120 秒内就绪；请检查 $LOCAL_DEPLOY_LOG_DIR/agent.stderr.log。"
 
-printf '通过 launchd 启动 Web（127.0.0.1:%s）…\n' "$LOCAL_DEPLOY_WEB_PORT"
-launchctl bootstrap "$LOCAL_DEPLOY_LAUNCHD_DOMAIN" "$WEB_PLIST"
-WEB_BOOTSTRAPPED=true
+printf '从仓库启动 Web（127.0.0.1:%s）…\n' "$LOCAL_DEPLOY_WEB_PORT"
+(
+  cd "$WEB_SOURCE_DIR"
+  export ASKDB_AGENT_URL="http://127.0.0.1:$LOCAL_DEPLOY_AGENT_PORT"
+  export ASKDB_WEB_ORIGIN
+  export NODE_ENV=production
+  nohup "$NODE_BIN" "$WEB_SOURCE_DIR/node_modules/next/dist/bin/next" start \
+    --hostname 127.0.0.1 --port "$LOCAL_DEPLOY_WEB_PORT" \
+    > "$LOCAL_DEPLOY_LOG_DIR/web.stdout.log" 2> "$LOCAL_DEPLOY_LOG_DIR/web.stderr.log" < /dev/null &
+  printf '%s\n' "$!" > "$WEB_PID_FILE"
+)
 
 web_ready=false
 for _ in {1..120}; do
@@ -206,6 +189,7 @@ done
 
 printf '\n本机健康检查: http://127.0.0.1:%s/healthz（Agent）、http://127.0.0.1:%s/（Web）\n' "$LOCAL_DEPLOY_AGENT_PORT" "$LOCAL_DEPLOY_WEB_PORT"
 printf '公网登录及使用: %s\n' "$ASKDB_WEB_ORIGIN"
-printf '本地构建和健康检查通过；Agent/Web 由当前用户的 launchd 后台托管，关闭终端后仍会运行。公网登录及 SSE 聊天仍需浏览器实测确认。\n'
+printf '本地构建和健康检查通过；Agent/Web 从当前仓库以后台进程运行，关闭终端后仍会运行。公网登录及 SSE 聊天仍需浏览器实测确认。\n'
 printf '管理员初始化命令: scripts/askdb-agent-local.sh auth init-admin\n'
-printf '停止服务与公网入口: scripts/stop-test.sh（保留 %s/data）。\n' "$LOCAL_DEPLOY_DIR"
+printf 'Wren 项目和 profile: %s/data；语料和删除 journal: %s。\n' "$AGENT_SOURCE_DIR" "$LOCAL_DEPLOY_DATA_DIR"
+printf '停止服务与公网入口: scripts/stop-test.sh。\n'
