@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 import psycopg
 from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
+from integrations.source_access import has_source_grant
 from integrations.wren_connectors import (
     SUPPORTED_DATABASE_CONNECTORS,
     safe_connection_projection,
@@ -1444,12 +1445,7 @@ class WrenSettingsStore:
             if source is None or not source["enabled"]:
                 raise ChatDataSourceUnavailable("所选数据源当前不可用。")
             if role == "member":
-                grant = connection.execute(
-                    """SELECT 1 FROM auth_user_data_sources
-                       WHERE user_id=%s AND data_source_id=%s""",
-                    (owner_user_id, source_id),
-                ).fetchone()
-                if grant is None:
+                if not has_source_grant(connection, owner_user_id, source_id):
                     raise ChatDataSourceForbidden("当前账号没有权限使用此数据源。")
             if existing:
                 return existing["data_source_id"]

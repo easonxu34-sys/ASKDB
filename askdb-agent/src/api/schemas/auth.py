@@ -25,12 +25,14 @@ class ChangePasswordInput(AuthInput):
 class CreateUserInput(AuthInput):
     username: str = Field(min_length=1, max_length=128)
     role: UserRole = "member"
+    role_ids: list[str] | None = Field(default=None, max_length=100)
 
 
 class UpdateUserInput(AuthInput):
     username: str | None = Field(default=None, min_length=1, max_length=128)
     role: UserRole | None = None
     is_active: bool | None = None
+    role_ids: list[str] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def require_a_change(self) -> UpdateUserInput:

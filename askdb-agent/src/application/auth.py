@@ -35,6 +35,9 @@ class AuthApplication:
         )
         self._dummy_password_hash: str | None = None
 
+    def get_user_role_names(self, user_id: str) -> list[str]:
+        return self.store.get_user_role_names(user_id)
+
     def _dummy_hash(self) -> str:
         if self._dummy_password_hash is None:
             self._dummy_password_hash = self.password_hasher.hash(
@@ -167,6 +170,7 @@ class AuthApplication:
         username: str,
         role: UserRole,
         actor_user_id: str,
+        role_ids: list[str] | None = None,
         request_id: str | None = None,
     ) -> tuple[StoredUser, str]:
         display, key = self.normalize_username(username)
@@ -178,6 +182,7 @@ class AuthApplication:
             role=role,
             password_hash=self._hash_password(temporary_password),
             actor_user_id=actor_user_id,
+            role_ids=role_ids,
             request_id=request_id,
         )
         return user, temporary_password
@@ -189,6 +194,7 @@ class AuthApplication:
         username: str | None,
         role: UserRole | None,
         is_active: bool | None,
+        role_ids: list[str] | None = None,
         actor_user_id: str,
         request_id: str | None = None,
     ) -> StoredUser:
@@ -202,6 +208,7 @@ class AuthApplication:
             username_key=key,
             role=role,
             is_active=is_active,
+            role_ids=role_ids,
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
@@ -234,6 +241,7 @@ class AuthApplication:
                 "updated_at": user.updated_at,
                 "last_login_at": user.last_login_at,
                 "data_source_ids": source_ids,
+                **self.store.permission_details(user.id),
             }
             for user, source_ids in self.store.list_users()
         ]

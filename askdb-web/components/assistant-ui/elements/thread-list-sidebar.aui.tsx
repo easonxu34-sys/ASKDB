@@ -216,7 +216,9 @@ export const ThreadListSidebar = ({
           <AskDbMark className="size-6" />
         </span>
         <div className="min-w-0">
-          <p><AskDbWordmark className="text-sm" /></p>
+          <p>
+            <AskDbWordmark className="text-sm" />
+          </p>
           <p className="mt-0.5 text-[11px] text-[#89847a]">数据查询助手</p>
         </div>
       </header>
@@ -333,7 +335,8 @@ export const ThreadListSidebar = ({
             </span>
             <span className="min-w-0">
               <span className="block truncate text-[10px] text-[#89847a]">
-                {user.username} · {user.role === "admin" ? "管理员" : "普通用户"}
+                {user.username} ·{" "}
+                {user.role === "admin" ? "管理员" : user.role_names?.join("、") || "未绑定角色"}
               </span>
             </span>
           </Link>

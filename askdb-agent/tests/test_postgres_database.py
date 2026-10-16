@@ -10,6 +10,12 @@ from psycopg.conninfo import make_conninfo
 from cryptography.fernet import Fernet
 
 
+def test_discovered_migrations_include_data_source_roles() -> None:
+    from integrations.postgres_migrations import _load_migrations
+
+    assert _load_migrations()[-1].migration_id == "005_data_source_roles"
+
+
 def test_postgres_connection_handles_native_parameters_and_row_access(postgres_dsn: str) -> None:
     from integrations.database import PostgresDatabase
 
@@ -126,6 +132,7 @@ def test_postgres_migrations_upgrade_an_existing_initial_schema(postgres_dsn: st
         "002_enable_pgvector",
         "003_personal_preferences",
         "004_personal_preference_turn_metadata",
+        "005_data_source_roles",
     }
     assert vector_type["vector_type"] is not None
 
@@ -158,6 +165,7 @@ def test_postgres_fresh_start_and_repeated_start_apply_each_migration_once(
             "002_enable_pgvector",
             "003_personal_preferences",
             "004_personal_preference_turn_metadata",
+            "005_data_source_roles",
         }
         assert all(row["row_count"] == 1 for row in migration_rows)
         assert {
@@ -165,6 +173,9 @@ def test_postgres_fresh_start_and_repeated_start_apply_each_migration_once(
             "model_profiles",
             "wren_data_sources",
             "agent_turn_requests",
+            "auth_data_source_roles",
+            "auth_user_role_bindings",
+            "auth_role_data_sources",
         } <= tables
         assert vector_type["vector_type"] is not None
 

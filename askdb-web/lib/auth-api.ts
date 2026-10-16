@@ -2,6 +2,7 @@ export type AuthUser = {
   user_id: string;
   username: string;
   role: "admin" | "member";
+  role_names?: string[];
   must_change_password: boolean;
 };
 
@@ -15,14 +16,26 @@ export type AdminUser = {
   updated_at?: string;
   last_login_at?: string | null;
   data_source_ids: string[];
+  role_ids?: string[];
+  direct_data_source_ids?: string[];
+  data_source_roles?: Array<{ id: string; name: string; data_source_ids: string[] }>;
+  effective_data_sources?: Array<{
+    data_source_id: string;
+    source_ids: string[];
+    available: boolean;
+  }>;
 };
 
 export async function requestCsrfToken(): Promise<string> {
   const response = await fetch("/api/auth/csrf", { cache: "no-store" });
   if (!response.ok) throw new Error("安全校验暂不可用，请刷新后重试。");
   const value: unknown = await response.json();
-  if (!value || typeof value !== "object" || !("csrf_token" in value) ||
-    typeof value.csrf_token !== "string") {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("csrf_token" in value) ||
+    typeof value.csrf_token !== "string"
+  ) {
     throw new Error("安全校验响应无效，请刷新后重试。");
   }
   return value.csrf_token;
@@ -61,9 +74,15 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 export function isAuthUser(value: unknown): value is AuthUser {
   if (!value || typeof value !== "object") return false;
   const user = value as Record<string, unknown>;
-  return typeof user.user_id === "string" && typeof user.username === "string" &&
+  return (
+    typeof user.user_id === "string" &&
+    typeof user.username === "string" &&
     (user.role === "admin" || user.role === "member") &&
-    typeof user.must_change_password === "boolean";
+    (user.role_names === undefined ||
+      (Array.isArray(user.role_names) &&
+        user.role_names.every((name) => typeof name === "string"))) &&
+    typeof user.must_change_password === "boolean"
+  );
 }
 
 export async function responseError(response: Response, fallback: string): Promise<string> {
@@ -73,8 +92,13 @@ export async function responseError(response: Response, fallback: string): Promi
     const body = value as Record<string, unknown>;
     if (typeof body.message === "string") return body.message;
     const detail = body.detail;
-    if (detail && typeof detail === "object" && "message" in detail &&
-      typeof detail.message === "string") return detail.message;
+    if (
+      detail &&
+      typeof detail === "object" &&
+      "message" in detail &&
+      typeof detail.message === "string"
+    )
+      return detail.message;
   } catch {
     // Use the stable fallback when the response isn't JSON.
   }

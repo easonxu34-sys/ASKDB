@@ -81,9 +81,17 @@ class LastActiveAdmin(AuthError):
     code = "LAST_ACTIVE_ADMIN_REQUIRED"
 
 
+class SelfAdminChangeForbidden(AuthError):
+    code = "SELF_ADMIN_CHANGE_FORBIDDEN"
+
+
 class InvalidAccountChange(AuthError):
     code = "USER_UPDATE_INVALID"
 
 
 class DataSourceGrantError(AuthError):
     code = "DATA_SOURCE_GRANT_INVALID"
+
+
+class DataSourceRoleBindingError(AuthError):
+    code = "DATA_SOURCE_ROLE_BINDING_INVALID"

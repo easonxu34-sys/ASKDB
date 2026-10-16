@@ -58,9 +58,17 @@ async def logout(
 async def me(
     response: Response,
     principal: Principal = Depends(get_authenticated_principal),
+    application: AuthApplication = Depends(get_auth_application),
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
-    return _principal_payload(principal)
+    try:
+        role_names = (
+            await run_in_threadpool(application.get_user_role_names, principal.user_id)
+            if principal.role == "member" else []
+        )
+    except AuthError as exc:
+        raise auth_http_exception(exc) from None
+    return {**_principal_payload(principal), "role_names": role_names}
 
 
 @router.post("/change-password")

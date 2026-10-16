@@ -38,7 +38,21 @@ function csrfMatches(request: Request): boolean {
   } catch {
     return false;
   }
-  if (originValue !== expectedValue) return false;
+  const allowedOrigins = (process.env.ASKDB_WEB_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (
+    originValue !== expectedValue &&
+    !allowedOrigins.some((value) => {
+      try {
+        return originValue === new URL(value).origin;
+      } catch {
+        return false;
+      }
+    })
+  )
+    return false;
 
   const cookieToken = cookieValue(request, CSRF_COOKIE);
   const headerToken = request.headers.get("x-csrf-token");
@@ -95,9 +109,10 @@ export async function clearSessionCookie(): Promise<void> {
 export async function csrfTokenFor(): Promise<string> {
   const store = await cookies();
   const current = store.get(CSRF_COOKIE)?.value;
-  const token = current && /^[A-Za-z0-9_-]{40,64}$/.test(current)
-    ? current
-    : randomBytes(32).toString("base64url");
+  const token =
+    current && /^[A-Za-z0-9_-]{40,64}$/.test(current)
+      ? current
+      : randomBytes(32).toString("base64url");
   if (token !== current) {
     store.set(CSRF_COOKIE, token, {
       httpOnly: false,
@@ -114,7 +129,9 @@ export function agentUrl(path: string): string {
   const url = new URL(base);
   const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   const ipv4Parts = hostname.split(".");
-  const isIpv4Loopback = ipv4Parts.length === 4 && ipv4Parts[0] === "127" &&
+  const isIpv4Loopback =
+    ipv4Parts.length === 4 &&
+    ipv4Parts[0] === "127" &&
     ipv4Parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
   const isLoopback = hostname === "localhost" || hostname === "::1" || isIpv4Loopback;
   const internalHttpHosts = new Set(
@@ -123,9 +140,15 @@ export function agentUrl(path: string): string {
       .map((host) => host.trim().toLowerCase())
       .filter(Boolean),
   );
-  if (url.username || url.password || !["http:", "https:"].includes(url.protocol) ||
-    (url.protocol === "http:" && !isLoopback && !internalHttpHosts.has(hostname))) {
-    throw new Error("ASKDB_AGENT_URL must use HTTPS except for loopback or explicitly allowed internal hosts, without credentials.");
+  if (
+    url.username ||
+    url.password ||
+    !["http:", "https:"].includes(url.protocol) ||
+    (url.protocol === "http:" && !isLoopback && !internalHttpHosts.has(hostname))
+  ) {
+    throw new Error(
+      "ASKDB_AGENT_URL must use HTTPS except for loopback or explicitly allowed internal hosts, without credentials.",
+    );
   }
   return `${base}${path}`;
 }
@@ -151,7 +174,8 @@ export async function proxyAgentJson(
     }
     body = JSON.stringify(options.body);
   } else if (
-    !["GET", "HEAD"].includes(method) && request.body &&
+    !["GET", "HEAD"].includes(method) &&
+    request.body &&
     (method !== "DELETE" || request.headers.get("content-type")?.includes("application/json"))
   ) {
     const limit = options.bodyLimit ?? 64 * 1024;
@@ -227,7 +251,7 @@ export async function proxyAgentJson(
   const text = await upstream.text();
   let payload: unknown = null;
   try {
-    payload = text ? JSON.parse(text) as unknown : null;
+    payload = text ? (JSON.parse(text) as unknown) : null;
   } catch {
     return errorResponse("AGENT_RESPONSE_INVALID", "AskDB Agent 返回了无效响应。", 502);
   }
@@ -236,6 +260,59 @@ export async function proxyAgentJson(
     status: upstream.status,
     headers: NO_STORE,
   });
+}
+
+export async function proxyAgentDownload(request: Request, path: string): Promise<Response> {
+  const access = await requireAgentSession(request);
+  if ("response" in access) return access.response;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(agentUrl(path), {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${access.token}`,
+        accept: "text/csv, application/json",
+      },
+      cache: "no-store",
+      signal: request.signal,
+    });
+  } catch {
+    return errorResponse("AGENT_UNAVAILABLE", "AskDB Agent 暂时不可用。", 503);
+  }
+
+  if (upstream.status === 401) await clearSessionCookie();
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    let payload: unknown = null;
+    try {
+      payload = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      return errorResponse("AGENT_RESPONSE_INVALID", "AskDB Agent 返回了无效响应。", 502);
+    }
+    return Response.json(payload ?? {}, { status: upstream.status, headers: NO_STORE });
+  }
+
+  if (
+    !upstream.body ||
+    !upstream.headers.get("content-type")?.toLowerCase().startsWith("text/csv")
+  ) {
+    await upstream.body?.cancel().catch(() => undefined);
+    return errorResponse("AGENT_RESPONSE_INVALID", "AskDB Agent 返回了无效下载。", 502);
+  }
+
+  const headers = new Headers({ "cache-control": NO_STORE["cache-control"] });
+  for (const name of [
+    "content-type",
+    "content-disposition",
+    "x-export-generated-at",
+    "x-export-row-count",
+    "x-export-sha256",
+  ]) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  return new Response(upstream.body, { status: upstream.status, headers });
 }
 
 function hasOnlyBodyKeys(value: unknown, allowedKeys: readonly string[]): boolean {

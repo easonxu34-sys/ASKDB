@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Iterator
+from typing import Any, Iterator
 
 import psycopg
 from domain.auth import (
@@ -12,13 +12,16 @@ from domain.auth import (
     AuthStoreUnavailable,
     BootstrapAlreadyInitialized,
     DataSourceGrantError,
+    DataSourceRoleBindingError,
     InvalidSession,
     LastActiveAdmin,
+    SelfAdminChangeForbidden,
     StoredUser,
     UserRole,
     UsernameConflict,
 )
 from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
+from integrations.source_access import has_source_grant, source_ids_for_user
 
 
 IDLE_TIMEOUT = timedelta(minutes=30)
@@ -195,6 +198,8 @@ class AuthStore:
                 "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
                 (now, row["id"]),
             )
+            connection.execute("DELETE FROM auth_user_role_bindings WHERE user_id=%s", (row["id"],))
+            connection.execute("DELETE FROM auth_user_data_sources WHERE user_id=%s", (row["id"],))
             self._audit(
                 connection,
                 actor_user_id=None,
@@ -218,12 +223,25 @@ class AuthStore:
         role: UserRole,
         password_hash: str,
         actor_user_id: str,
+        role_ids: list[str] | None = None,
         request_id: str | None = None,
     ) -> StoredUser:
         with self._connect() as connection:
             connection.acquire_write_lock()
             self._require_admin_actor(connection, actor_user_id)
-            return self._insert_user(
+            requested_roles = role_ids or []
+            if len(requested_roles) > 100 or any(not item or len(item) > 128 for item in requested_roles):
+                raise DataSourceRoleBindingError("数据源角色列表无效。")
+            if requested_roles and role != "member":
+                raise DataSourceRoleBindingError("只能给普通账号绑定数据源角色。")
+            if len(set(requested_roles)) != len(requested_roles):
+                raise DataSourceRoleBindingError("数据源角色不能重复。")
+            for role_id in requested_roles:
+                if connection.execute(
+                    "SELECT 1 FROM auth_data_source_roles WHERE id=%s", (role_id,)
+                ).fetchone() is None:
+                    raise DataSourceGrantError("找不到数据源角色。")
+            user = self._insert_user(
                 connection,
                 user_id=user_id,
                 username=username,
@@ -233,6 +251,18 @@ class AuthStore:
                 actor_user_id=actor_user_id,
                 request_id=request_id,
             )
+            now = _timestamp(utc_now())
+            for role_id in requested_roles:
+                connection.execute(
+                    """INSERT INTO auth_user_role_bindings(user_id, role_id, bound_by, bound_at)
+                       VALUES (%s, %s, %s, %s)""",
+                    (user_id, role_id, actor_user_id, now),
+                )
+            if requested_roles:
+                self._audit(connection, actor_user_id=actor_user_id, target_user_id=user_id,
+                            action="user.data_source_roles_replace",
+                            summary={"role_ids": requested_roles}, request_id=request_id)
+            return user
 
     def get_user_for_login(self, username_key: str) -> StoredUser | None:
         with self._connect() as connection:
@@ -248,6 +278,16 @@ class AuthStore:
             raise AccountNotFound("找不到此账号。")
         return _row_user(row)
 
+    def get_user_role_names(self, user_id: str) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT r.name FROM auth_user_role_bindings AS b
+                   JOIN auth_data_source_roles AS r ON r.id=b.role_id
+                   WHERE b.user_id=%s ORDER BY r.name_key, r.id""",
+                (user_id,),
+            ).fetchall()
+        return [row["name"] for row in rows]
+
     def list_users(self) -> list[tuple[StoredUser, list[str]]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -262,6 +302,46 @@ class AuthStore:
             by_user.setdefault(row["user_id"], []).append(row["data_source_id"])
         return [(_row_user(row), by_user.get(row["id"], [])) for row in rows]
 
+    def permission_details(self, user_id: str) -> dict[str, object]:
+        with self._connect() as connection:
+            direct_rows = connection.execute(
+                "SELECT data_source_id FROM auth_user_data_sources WHERE user_id=%s ORDER BY data_source_id",
+                (user_id,),
+            ).fetchall()
+            role_rows = connection.execute(
+                """SELECT b.role_id, r.name, g.data_source_id
+                   FROM auth_user_role_bindings AS b
+                   JOIN auth_data_source_roles AS r ON r.id=b.role_id
+                   LEFT JOIN auth_role_data_sources AS g ON g.role_id=b.role_id
+                   WHERE b.user_id=%s ORDER BY r.name_key, b.role_id, g.data_source_id""",
+                (user_id,),
+            ).fetchall()
+            source_rows = connection.execute(
+                "SELECT id, enabled, runtime_status FROM wren_data_sources"
+            ).fetchall()
+        direct = [row["data_source_id"] for row in direct_rows]
+        roles: dict[str, dict[str, Any]] = {}
+        sources: dict[str, set[str]] = {source_id: {"direct"} for source_id in direct}
+        for row in role_rows:
+            role = roles.setdefault(row["role_id"], {
+                "id": row["role_id"], "name": row["name"], "data_source_ids": [],
+            })
+            if row["data_source_id"] is not None:
+                role["data_source_ids"].append(row["data_source_id"])
+                sources.setdefault(row["data_source_id"], set()).add(row["role_id"])
+        status_by_id = {row["id"]: bool(row["enabled"] and row["runtime_status"] == "ready")
+                        for row in source_rows}
+        return {
+            "role_ids": list(roles),
+            "data_source_roles": list(roles.values()),
+            "direct_data_source_ids": direct,
+            "effective_data_sources": [
+                {"data_source_id": source_id, "source_ids": sorted(grant_sources),
+                 "available": status_by_id.get(source_id, False)}
+                for source_id, grant_sources in sorted(sources.items())
+            ],
+        }
+
     def update_user(
         self,
         user_id: str,
@@ -270,6 +350,7 @@ class AuthStore:
         username_key: str | None,
         role: UserRole | None,
         is_active: bool | None,
+        role_ids: list[str] | None = None,
         actor_user_id: str,
         request_id: str | None = None,
     ) -> StoredUser:
@@ -284,6 +365,22 @@ class AuthStore:
             new_active = current.is_active if is_active is None else is_active
             role_changed = new_role != current.role
             active_changed = new_active != current.is_active
+            if role_ids is not None:
+                if current.role != "admin" or new_role != "member":
+                    raise DataSourceRoleBindingError("只能在取消其他账号的管理员权限时同时绑定角色。")
+                if len(role_ids) > 100 or any(not item or len(item) > 128 for item in role_ids):
+                    raise DataSourceRoleBindingError("数据源角色列表无效。")
+                if len(set(role_ids)) != len(role_ids):
+                    raise DataSourceRoleBindingError("数据源角色不能重复。")
+                for role_id in role_ids:
+                    if connection.execute(
+                        "SELECT 1 FROM auth_data_source_roles WHERE id=%s", (role_id,)
+                    ).fetchone() is None:
+                        raise DataSourceGrantError("找不到数据源角色。")
+            if user_id == actor_user_id and current.role == "admin" and (
+                new_role != "admin" or not new_active
+            ):
+                raise SelfAdminChangeForbidden("不能取消当前账号的管理员权限或停用当前账号。")
             if current.role == "admin" and current.is_active and (
                 new_role != "admin" or not new_active
             ):
@@ -311,6 +408,20 @@ class AuthStore:
                     "UPDATE auth_sessions SET revoked_at=%s WHERE user_id=%s AND revoked_at IS NULL",
                     (now, user_id),
                 )
+            if current.role == "member" and new_role == "admin":
+                connection.execute("DELETE FROM auth_user_role_bindings WHERE user_id=%s", (user_id,))
+                connection.execute("DELETE FROM auth_user_data_sources WHERE user_id=%s", (user_id,))
+            if role_ids is not None:
+                connection.execute("DELETE FROM auth_user_role_bindings WHERE user_id=%s", (user_id,))
+                for role_id in role_ids:
+                    connection.execute(
+                        """INSERT INTO auth_user_role_bindings(user_id, role_id, bound_by, bound_at)
+                           VALUES (%s, %s, %s, %s)""",
+                        (user_id, role_id, actor_user_id, now),
+                    )
+                self._audit(connection, actor_user_id=actor_user_id, target_user_id=user_id,
+                            action="user.data_source_roles_replace",
+                            summary={"role_ids": role_ids}, request_id=request_id)
             self._audit(
                 connection,
                 actor_user_id=actor_user_id,
@@ -430,28 +541,20 @@ class AuthStore:
 
     def granted_data_source_ids(self, user_id: str) -> set[str]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT data_source_id FROM auth_user_data_sources WHERE user_id=%s",
-                (user_id,),
-            ).fetchall()
-        return {row["data_source_id"] for row in rows}
+            return source_ids_for_user(connection, user_id)
 
     def can_access_data_source(self, user_id: str, source_id: str) -> bool:
         with self._connect() as connection:
             row = connection.execute(
-                """SELECT 1 FROM auth_users AS u
+                """SELECT u.role FROM auth_users AS u
                    JOIN wren_data_sources AS d ON d.id=%s AND d.enabled=1
-                   WHERE u.id=%s AND u.is_active=1 AND (
-                     u.role='admin' OR (
-                       u.role='member' AND EXISTS (
-                         SELECT 1 FROM auth_user_data_sources AS g
-                         WHERE g.user_id=u.id AND g.data_source_id=d.id
-                       )
-                     )
-                   )""",
+                   WHERE u.id=%s AND u.is_active=1""",
                 (source_id, user_id),
             ).fetchone()
-        return row is not None
+            if row is None:
+                return False
+            role = row["role"]
+            return role == "admin" or (role == "member" and has_source_grant(connection, user_id, source_id))
 
     def is_login_blocked(self, username_key: str, now: datetime | None = None) -> bool:
         now = now or utc_now()

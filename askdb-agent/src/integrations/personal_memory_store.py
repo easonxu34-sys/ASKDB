@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from domain.personal_memory import MemoryInput, PersonalMemoryError
+from integrations.source_access import has_source_grant
 
 
 class PersonalMemoryStore:
@@ -85,8 +86,8 @@ class PersonalMemoryStore:
             self._replay(c)
             if thread_binding:
                 thread_id, source_id = thread_binding
-                access = c.execute("SELECT 1 FROM chat_thread_data_sources b JOIN agent_conversation_threads t ON t.thread_id=b.thread_id JOIN auth_users u ON u.id=b.owner_user_id JOIN wren_data_sources s ON s.id=b.data_source_id WHERE b.thread_id=%s AND b.owner_user_id=%s AND b.data_source_id=%s AND t.status='active' AND u.is_active=1 AND s.enabled=1 AND (u.role='admin' OR EXISTS(SELECT 1 FROM auth_user_data_sources g WHERE g.user_id=u.id AND g.data_source_id=s.id))", (thread_id, owner, source_id)).fetchone()
-                if not access:
+                access = c.execute("SELECT u.role FROM chat_thread_data_sources b JOIN agent_conversation_threads t ON t.thread_id=b.thread_id JOIN auth_users u ON u.id=b.owner_user_id JOIN wren_data_sources s ON s.id=b.data_source_id WHERE b.thread_id=%s AND b.owner_user_id=%s AND b.data_source_id=%s AND t.status='active' AND u.is_active=1 AND s.enabled=1", (thread_id, owner, source_id)).fetchone()
+                if not access or (access['role'] != 'admin' and (access['role'] != 'member' or not has_source_grant(c, owner, source_id))):
                     raise PersonalMemoryError('PERSONAL_MEMORY_SCOPE_UNAVAILABLE','当前账号或会话的数据源权限已变化，未保存。',404)
             previous = c.execute("SELECT payload FROM personal_memory_operations WHERE owner=%s AND id=%s AND kind='action'", (owner, action_id)).fetchone()
             if previous:

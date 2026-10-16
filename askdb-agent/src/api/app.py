@@ -19,6 +19,8 @@ from api.routes.chat import router as chat_router
 from api.routes.chat_options import router as chat_options_router
 from api.routes.auth import router as auth_router
 from api.routes.admin_users import router as admin_users_router
+from api.routes.admin_data_source_roles import router as admin_data_source_roles_router
+from api.routes.admin_effective_permissions import router as admin_effective_permissions_router
 from api.routes.model_settings import router as model_settings_router
 from api.routes.wren_settings import router as wren_settings_router
 from api.routes.threads import router as threads_router
@@ -52,6 +54,10 @@ from integrations.business_rule_store import BusinessRuleMemoryStore
 from application.query_memory import QueryMemoryApplication
 from integrations.query_memory_store import QueryMemoryStore
 from integrations.database import PostgresConnection
+from integrations.data_source_role_store import DataSourceRoleStore
+from application.data_source_roles import DataSourceRolesApplication
+from integrations.effective_permission_store import EffectivePermissionStore
+from application.effective_permissions import EffectivePermissionsApplication
 
 
 def create_app(
@@ -247,10 +253,18 @@ def create_app(
     auth_database = auth_store or AuthStore(database=store.database)
     app.state.auth_store = auth_database
     app.state.auth_application = AuthApplication(auth_database)
+    app.state.data_source_roles = DataSourceRolesApplication(
+        DataSourceRoleStore(auth_database.database)
+    )
+    app.state.effective_permissions = EffectivePermissionsApplication(
+        EffectivePermissionStore(auth_database.database)
+    )
     app.state.auth_store_ready = False
     app.state.auth_store_lock = threading.Lock()
     app.include_router(auth_router)
     app.include_router(admin_users_router)
+    app.include_router(admin_data_source_roles_router)
+    app.include_router(admin_effective_permissions_router)
     app.include_router(chat_router)
     app.include_router(chat_options_router)
     app.include_router(model_settings_router)

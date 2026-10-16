@@ -39,6 +39,7 @@ from domain.conversation_memory import (
 )
 from domain.business_rules import BusinessRuleForbidden
 from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
+from integrations.source_access import has_source_grant
 from integrations.deletion_journal import (
     DeletionJournalUnavailable,
     EncryptedDeletionJournal,
@@ -408,11 +409,7 @@ class ConversationMemoryStore:
             if source is None or not source["enabled"]:
                 raise ThreadNotFound("source unavailable")
             if user["role"] == "member":
-                grant = connection.execute(
-                    "SELECT 1 FROM auth_user_data_sources WHERE user_id=%s AND data_source_id=%s",
-                    (owner_user_id, source_id),
-                ).fetchone()
-                if grant is None:
+                if not has_source_grant(connection, owner_user_id, source_id):
                     raise ThreadGrantRevoked("source grant required")
             elif user["role"] != "admin":
                 raise ThreadNotFound("thread unavailable")
@@ -980,11 +977,9 @@ class ConversationMemoryStore:
             ).fetchone()
             if account is None or not account["is_active"] or source is None or not source["enabled"]:
                 raise ThreadGrantRevoked("source grant required")
-            if account["role"] == "member" and connection.execute(
-                """SELECT 1 FROM auth_user_data_sources
-                   WHERE user_id=%s AND data_source_id=%s""",
-                (owner_user_id, row["data_source_id"]),
-            ).fetchone() is None:
+            if account["role"] == "member" and not has_source_grant(
+                connection, owner_user_id, row["data_source_id"]
+            ):
                 raise ThreadGrantRevoked("source grant required")
             if account["role"] not in {"admin", "member"}:
                 raise ThreadGrantRevoked("source grant required")

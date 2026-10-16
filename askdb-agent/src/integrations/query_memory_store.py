@@ -26,6 +26,7 @@ from domain.memory_recall import (
 )
 from domain.query_memory import QueryCorpusRevision, QueryExampleCandidate
 from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
+from integrations.source_access import has_source_grant
 from integrations.deletion_journal import EncryptedDeletionJournal, JournalEvent
 
 
@@ -250,10 +251,9 @@ class QueryMemoryStore:
         if admin_only:
             if actor["role"] != "admin":
                 raise QueryMemoryForbidden("admin role required")
-        elif actor["role"] == "member" and connection.execute(
-            "SELECT 1 FROM auth_user_data_sources WHERE user_id=%s AND data_source_id=%s",
-            (actor_id, source_id),
-        ).fetchone() is None:
+        elif actor["role"] == "member" and not has_source_grant(
+            connection, actor_id, source_id
+        ):
             raise QueryMemoryForbidden("source grant required")
         elif actor["role"] not in {"admin", "member"}:
             raise QueryMemoryForbidden("active account required")

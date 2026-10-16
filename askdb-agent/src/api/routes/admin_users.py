@@ -56,6 +56,7 @@ async def create_user(
             application.create_user,
             username=body.username,
             role=body.role,
+            role_ids=body.role_ids,
             actor_user_id=admin.user_id,
             request_id=_request_id(request),
         )
@@ -71,6 +72,7 @@ async def create_user(
             "is_active": user.is_active,
             "must_change_password": user.must_change_password,
             "data_source_ids": [],
+            "role_ids": body.role_ids or [],
         },
         "temporary_password": temporary_password,
     }
@@ -93,6 +95,7 @@ async def update_user(
             username=body.username,
             role=body.role,
             is_active=body.is_active,
+            role_ids=body.role_ids,
             actor_user_id=admin.user_id,
             request_id=_request_id(request),
         )

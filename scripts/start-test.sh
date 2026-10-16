@@ -143,6 +143,7 @@ chmod 600 "$LOCAL_DEPLOY_DIR/funnel.log"
 FUNNEL_URL="$(sed -nE 's/^[[:space:]]*(https:\/\/[^[:space:]]+).*$/\1/p' "$LOCAL_DEPLOY_DIR/funnel.log" | head -n 1)"
 [[ "$FUNNEL_URL" =~ ^https://[A-Za-z0-9.-]+:8443/?$ ]] || fail '无法从 Tailscale CLI 输出中取得 HTTPS :8443 公网地址。'
 ASKDB_WEB_ORIGIN="$(printf '%s' "$FUNNEL_URL" | sed 's:/*$::')"
+ASKDB_WEB_ALLOWED_ORIGINS="http://localhost:$LOCAL_DEPLOY_WEB_PORT,http://127.0.0.1:$LOCAL_DEPLOY_WEB_PORT"
 
 for log_file in agent.stdout.log agent.stderr.log web.stdout.log web.stderr.log; do
   touch "$LOCAL_DEPLOY_LOG_DIR/$log_file"
@@ -170,6 +171,7 @@ printf '从仓库启动 Web（127.0.0.1:%s）…\n' "$LOCAL_DEPLOY_WEB_PORT"
   cd "$WEB_SOURCE_DIR"
   export ASKDB_AGENT_URL="http://127.0.0.1:$LOCAL_DEPLOY_AGENT_PORT"
   export ASKDB_WEB_ORIGIN
+  export ASKDB_WEB_ALLOWED_ORIGINS
   export NODE_ENV=production
   nohup "$NODE_BIN" "$WEB_SOURCE_DIR/node_modules/next/dist/bin/next" start \
     --hostname 127.0.0.1 --port "$LOCAL_DEPLOY_WEB_PORT" \

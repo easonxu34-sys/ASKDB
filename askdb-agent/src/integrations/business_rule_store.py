@@ -23,6 +23,7 @@ from domain.business_rules import (
     BusinessRuleValidationError,
 )
 from integrations.database import PostgresConnection, PostgresDatabase, PostgresRow
+from integrations.source_access import has_source_grant
 from integrations.deletion_journal import (
     EncryptedDeletionJournal,
     JournalEvent,
@@ -258,11 +259,9 @@ class BusinessRuleMemoryStore:
             raise BusinessRuleNotFound("source is unavailable")
         if row["role"] not in {"admin", "member"}:
             raise BusinessRuleForbidden("active account required")
-        if row["role"] == "member" and connection.execute(
-            """SELECT 1 FROM auth_user_data_sources
-               WHERE user_id=%s AND data_source_id=%s""",
-            (owner_user_id, data_source_id),
-        ).fetchone() is None:
+        if row["role"] == "member" and not has_source_grant(
+            connection, owner_user_id, data_source_id
+        ):
             raise BusinessRuleForbidden("source grant required")
         if (
             row["active_revision_id"] != revision_id
@@ -486,11 +485,9 @@ class BusinessRuleMemoryStore:
             or thread["runtime_status"] != "ready"
         ):
             raise BusinessRuleNotFound("candidate is unavailable")
-        if thread["role"] == "member" and connection.execute(
-            """SELECT 1 FROM auth_user_data_sources
-               WHERE user_id=%s AND data_source_id=%s""",
-            (actor_id, row["data_source_id"]),
-        ).fetchone() is None:
+        if thread["role"] == "member" and not has_source_grant(
+            connection, actor_id, row["data_source_id"]
+        ):
             raise BusinessRuleForbidden("source grant required")
 
     def get_candidate(self, business_rule_id: str) -> BusinessRuleCandidate:
@@ -534,11 +531,9 @@ class BusinessRuleMemoryStore:
                 if actor["role"] != "admin":
                     raise BusinessRuleForbidden("admin role required")
             else:
-                if actor["role"] != "member" or connection.execute(
-                    """SELECT 1 FROM auth_user_data_sources
-                       WHERE user_id=%s AND data_source_id=%s""",
-                    (actor_id, data_source_id),
-                ).fetchone() is None:
+                if actor["role"] != "member" or not has_source_grant(
+                    connection, actor_id, data_source_id
+                ):
                     raise BusinessRuleForbidden("source grant required")
             clauses = ["data_source_id=%s"]
             parameters: list[object] = [data_source_id]

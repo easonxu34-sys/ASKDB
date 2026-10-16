@@ -13,9 +13,11 @@ from domain.auth import (
     AuthStoreUnavailable,
     BootstrapAlreadyInitialized,
     DataSourceGrantError,
+    DataSourceRoleBindingError,
     InvalidCredentials,
     InvalidSession,
     LastActiveAdmin,
+    SelfAdminChangeForbidden,
     LoginRateLimited,
     PasswordPolicyError,
     Principal,
@@ -69,7 +71,10 @@ def auth_http_exception(error: AuthError) -> HTTPException:
     elif isinstance(error, (AccountNotFound, DataSourceGrantError)):
         status_code = status.HTTP_404_NOT_FOUND
         message = str(error)
-    elif isinstance(error, (LastActiveAdmin, BootstrapAlreadyInitialized)):
+    elif isinstance(error, DataSourceRoleBindingError):
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        message = str(error)
+    elif isinstance(error, (LastActiveAdmin, SelfAdminChangeForbidden, BootstrapAlreadyInitialized)):
         status_code = status.HTTP_409_CONFLICT
         message = str(error)
     elif isinstance(error, AuthStoreUnavailable):
